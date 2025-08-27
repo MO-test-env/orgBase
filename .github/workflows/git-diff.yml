@@ -15,4 +15,4 @@ jobs:
           fetch-depth: 0  #Important to fetch the whole history to compare
 
       - name: Get Git Diff
-        run: git diff --stat
+        run: git diff 
