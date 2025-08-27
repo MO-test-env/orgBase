@@ -2,4 +2,3 @@
 	path = submod
 	url = https://github.com/MOvenshire/submod.git
 	branch = main
-	diff = submodule
