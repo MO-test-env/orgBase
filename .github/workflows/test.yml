@@ -34,6 +34,8 @@ jobs:
               run: cat $DIFF
 
             - name: diff baseline
-              run: git diff --submodule=diff origin/main origin/${GITHUB_HEAD_REF} > diff_baseline.txt
+              run: git branch 
+            - name: diff baseline p2
+              run: git diff --submodule=diff > diff_baseline.txt
             - name: print baseline diff
               run: cat diff_baseline.txt
