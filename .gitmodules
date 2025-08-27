@@ -1,5 +1,5 @@
 [submodule "submod"]
 	path = submod
-	url = ../submod.git
+	url = https://github.com/MOvenshire/submod.git
 	branch = main
 	diff = submodule
