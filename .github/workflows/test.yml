@@ -36,4 +36,4 @@ jobs:
 
 
             - name: diff baseline
-              run: git diff --name-only origin/main origin/${GITHUB_HEAD_REF}
+              run: git diff --submodule=diff
