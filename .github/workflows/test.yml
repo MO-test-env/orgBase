@@ -33,7 +33,5 @@ jobs:
                 DIFF: ${{ steps.git-diff-action.outputs.raw-diff-path }}
               run: cat $DIFF
 
-
-
             - name: diff baseline
               run: git diff --submodule=diff
