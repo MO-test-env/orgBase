@@ -36,6 +36,7 @@ jobs:
             - name: diff baseline
               run: git branch 
             - name: diff baseline p2
-              run: git diff --submodule=diff > diff_baseline.txt
+              run: git diff > diff_baseline.txt
             - name: print baseline diff
               run: cat diff_baseline.txt
+
