@@ -1,0 +1,5 @@
+[submodule "submod"]
+	path = submod
+	url = ../submod.git
+	branch = main
+	diff = submodule
