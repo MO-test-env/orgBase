@@ -1,0 +1,28 @@
+name: 'submodule update'
+
+on: 
+  push:
+    branches:
+      - mo/test
+
+jobs:
+  test:
+    name: sup
+    runs-on: ubuntu-latest
+    env:
+      PARENT_REPOSITORY: 'MOvenshire/base'
+      CHECKOUT_BRANCH: 'mo/base1'
+      PR_AGAINST_BRANCH: 'mo/base1'
+      OWNER: 'MOvenshire'
+    steps:
+    - name: checkout parent 
+      uses: actions/checkout@v2
+    - name: run action
+      id: run_action
+      uses: ./
+      with: 
+        github_token: ${{ secrets.RELEASE_HUB_SECRET }}
+        parent_repository: ${{ env.PARENT_REPOSITORY }}
+        checkout_branch: ${{ env.CHECKOUT_BRANCH}}
+        pr_against_branch: ${{ env.PR_AGAINST_BRANCH }}
+        owner: ${{ env.OWNER }}
