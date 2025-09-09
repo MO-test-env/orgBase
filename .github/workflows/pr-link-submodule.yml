@@ -57,6 +57,7 @@ jobs:
           echo "submodule_path=$SUBMODULE_PATH" >> $GITHUB_OUTPUT
           echo "submodule_repo=$SUBMODULE_REPO" >> $GITHUB_OUTPUT
           echo "Submodule: $SUBMODULE_REPO at $SUBMODULE_PATH"
+
       - name: Check for submodule PR
         id: check_pr
         uses: actions/github-script@v7
@@ -65,7 +66,7 @@ jobs:
           script: |
             const [owner, repo] = '${{ steps.submodule.outputs.submodule_repo }}'.split('/');
             const branchName = '${{ steps.extract.outputs.ticket_num }}';
-            
+
             try {
               // Search for PR with matching branch
               const { data: prs } = await github.rest.pulls.list({
@@ -74,19 +75,27 @@ jobs:
                 state: 'open',
                 head: `${owner}:${branchName}`
               });
+
+              if (prs.length > 0) {
+                const pr = prs[0];
+                core.setOutput('found', 'true');
+                core.setOutput('pr_url', pr.html_url);
+                core.setOutput('pr_number', pr.number.toString());
+                core.setOutput('pr_state', pr.state);
+              } else {
+                core.setOutput('found', 'false');
+                core.setOutput('pr_url', '');
+                core.setOutput('pr_number', '');
+                core.setOutput('pr_state', '');
+              }
             } catch (error) {
               console.error('Error checking PR status:', error);
               core.setOutput('found', 'false');
               core.setOutput('pr_url', '');
               core.setOutput('pr_number', '');
-              return;
+              core.setOutput('pr_state', '');
             }
-            
-            const pr = prs[0];
-            core.setOutput('found', 'true');
-            core.setOutput('pr_url', pr.html_url);
-            core.setOutput('pr_number', pr.number.toString());
-            core.setOutput('pr_state', pr.state);
+
 
       - name: Create check run for submodule PR status
         id: antman
