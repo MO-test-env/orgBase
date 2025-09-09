@@ -1,0 +1,49 @@
+name: Merge Submodules
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches:
+      - main
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base repository
+        uses: actions/checkout@v3
+        with:
+          repository: 'your-base-repo-name'
+          path: 'base'
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Checkout submodules
+        run: |
+          git submodule update --init --recursive
+
+      - name: Extract PR comment
+        run: |
+          comment=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" -X GET https://api.github.com/repos/your-base-repo-name/pulls/${GITHUB_EVENT_NUMBER}/comments | jq '.[] | .body' | grep '/merge')
+          if [[ -n $comment ]]; then
+            echo "Found /merge comment"
+            # Find linked submodule PRs and merge them
+            curl -s -H "Authorization: Bearer $GITHUB_TOKEN" -X GET https://api.github.com/repos/your-base-repo-name/pulls/${GITHUB_EVENT_NUMBER}/commits | jq '.[] | .files[] | .filename' | grep '.gitmodules' > submodule-pr-list.txt
+            while IFS= read -r line; do
+              submodule_name=$(echo $line | cut -d '/' -f 1)
+              submodule_path=$(echo $line | cut -d '/' -f 2-)
+              echo "Processing submodule $submodule_name in path $submodule_path"
+              # Use the submodule workflow to merge and squash the submodule PR
+              curl -s -H "Authorization: Bearer $GITHUB_TOKEN" -X POST https://api.github.com/repos/your-username/$submodule_name/actions/workflows/merge.yml/dispatches -d '{"ref":"main","inputs":{"pr-number":"'"$GITHUB_EVENT_NUMBER"'"}}'
+            done < submodule-pr-list.txt
+            # Update submodules and commit changes in the base repository
+            git config --global user.name 'github-actor'
+            git config --global user.email 'github-actor@github.com'
+            git submodule update --recursive
+            git add .
+            git commit -m "Update submodules"
+            git push origin HEAD:main --force
+            # Merge the PR
+            curl -s -H "Authorization: Bearer $GITHUB_TOKEN" -X POST https://api.github.com/repos/your-base-repo-name/pulls/${GITHUB_EVENT_NUMBER}/merge -d '{"commit_title":"Merge PR #${GITHUB_EVENT_NUMBER}","commit_message":"Merge PR #${GITHUB_EVENT_NUMBER}","merge_method":"squash"}'
+          else
+            echo "No /merge comment found"
+          fi
