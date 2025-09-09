@@ -62,15 +62,14 @@ jobs:
         id: check_pr
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.WORKFLOWS }}
           script: |
-            const octokit = github.getOctokit(process.env.GITHUB_TOKEN);
             const [owner, repo] = '${{ steps.submodule.outputs.submodule_repo }}'.split('/');
             const branchName = '${{ steps.extract.outputs.ticket_num }}';
 
             try {
               // Search for PR with matching branch
-              const { data: prs } = await octokit.rest.pulls.list({
+              const { data: prs } = await github.rest.pulls.list({
                 owner: owner,
                 repo: repo,
                 state: 'open',
@@ -102,7 +101,7 @@ jobs:
         id: antman
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.WORKFLOWS }}
           script: |
             const found = '${{ steps.check_pr.outputs.found }}' === 'true';
             const prUrl = '${{ steps.check_pr.outputs.pr_url }}';
@@ -261,7 +260,15 @@ jobs:
               checkRun.conclusion = conclusion;
             }
             
-            await github.rest.checks.create(checkRun);
+            
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: context.payload.pull_request.head.sha,
+              state: conclusion === 'success' ? 'success' : 'failure',
+              description: title,
+              context: 'Submodule PR Status'
+            });
       
       - name: Add PR label
         uses: actions/github-script@v7
