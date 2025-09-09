@@ -15,7 +15,7 @@ jobs:
           repository: 'MOvenshire/base'
           path: 'base'
           token: ${{ secrets.GITHUB_TOKEN }}
-          submoules: true
+          submodules: true
           fetch-depth: 0
 
       - name: Checkout submodules
