@@ -1,0 +1,90 @@
+name: Merge Command Handler
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  handle-merge-command:
+    if: github.event.issue.pull_request != null
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for /merge command
+        id: check
+        run: |
+          echo "pr_merge_status=false" >> $GITHUB_OUTPUT
+          comment_body="${{ github.event.comment.body }}"
+          if [[ "$comment_body" == "/merge" ]]; then
+            echo "found_merge=true" >> $GITHUB_OUTPUT
+          else
+            echo "found_merge=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Delete comment and Add Merge Status Comment
+        if: steps.check.outputs.found_merge == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.issues.deleteComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id
+            })
+            await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: "Attempting to Merge PR ⏳"
+              });
+      
+      - name: Verify No Conflicts on Base PR and Submodule PR Before Trying Merge
+        if: steps.check.outputs.found_merge == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "placeholder to verify no conflicts on base and submodule PRs"
+      - name: Merge Pull Request
+        if: steps.check.outputs.found_merge == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Merging pull request"
+          # Add your bash commands here
+      - name: Close Pull Requests
+        if: steps.check.outputs.found_merge == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            console.log('Pull Request Merge Status: ${steps.check.outputs.pr_merge_status}');
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            const botComment = comments.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('Attempting to Merge PR')
+            );
+            if ('${{ steps.check.outputs.pr_merge_status }}' === 'true') {
+              await github.rest.pulls.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: context.issue.number,
+                state: 'closed'
+              })   
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: "Pull Request Merged ✅" 
+              });          
+            } else {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: "Pull Request Not Merged ❌\nError message: ???"
+              });    
+            }
