@@ -33,7 +33,7 @@ jobs:
         id: extract
         run: |
           BRANCH_NAME="${{ github.head_ref }}"
-          TICKET_NUM=$(echo "$BRANCH_NAME" | sed 's/users\///')
+          TICKET_NUM="$BRANCH_NAME"
           echo "ticket_num=$TICKET_NUM" >> $GITHUB_OUTPUT
           echo "Branch: $BRANCH_NAME, Ticket: $TICKET_NUM"
       
@@ -147,7 +147,7 @@ jobs:
                 status = 'completed';
                 conclusion = 'failure';
                 title = 'Submodule PR Not Found';
-                summary = `Submodule was updated but no open PR found in submodule repository for branch users/${{ steps.extract.outputs.ticket_num }}`;
+                summary = `Submodule was updated but no open PR found in submodule repository for branch ${{ steps.extract.outputs.ticket_num }}`;
               } else {
                 // No submodule updated, skip this check entirely
                 status = 'completed';
