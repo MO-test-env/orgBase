@@ -23,17 +23,18 @@ jobs:
 
       - name: Extract PR comment
         run: |
-          comment=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" -X GET https://api.github.com/repos/your-base-repo-name/pulls/${GITHUB_EVENT_NUMBER}/comments | jq '.[] | .body' | grep '/merge')
+          comments=$(curl -s -H "Authorization: Bearer ${{ secrets.WORKFLOWS }}" -X GET https://api.github.com/repos/MOvenshire/base/pulls/${GITHUB_EVENT_NUMBER}/comments)
+          comment=$(echo "$comments" | jq -r '.[] | select(.body != null) | .body' | grep '/merge')
           if [[ -n $comment ]]; then
             echo "Found /merge comment"
             # Find linked submodule PRs and merge them
-            curl -s -H "Authorization: Bearer $GITHUB_TOKEN" -X GET https://api.github.com/repos/your-base-repo-name/pulls/${GITHUB_EVENT_NUMBER}/commits | jq '.[] | .files[] | .filename' | grep '.gitmodules' > submodule-pr-list.txt
+            curl -s -H "Authorization: Bearer ${{ secrets.WORKFLOWS }}" -X GET https://api.github.com/repos/MOvenshire/base/pulls/${GITHUB_EVENT_NUMBER}/commits | jq -r '.[] | .files[] | .filename' | grep '.gitmodules' > submodule-pr-list.txt
             while IFS= read -r line; do
               submodule_name=$(echo $line | cut -d '/' -f 1)
               submodule_path=$(echo $line | cut -d '/' -f 2-)
               echo "Processing submodule $submodule_name in path $submodule_path"
               # Use the submodule workflow to merge and squash the submodule PR
-              curl -s -H "Authorization: Bearer $GITHUB_TOKEN" -X POST https://api.github.com/repos/your-username/$submodule_name/actions/workflows/merge.yml/dispatches -d '{"ref":"main","inputs":{"pr-number":"'"$GITHUB_EVENT_NUMBER"'"}}'
+              curl -s -H "Authorization: Bearer ${{ secrets.WORKFLOWS }}" -X POST https://api.github.com/repos/MOvenshire/$submodule_name/actions/workflows/merge.yml/dispatches -d '{"ref":"main","inputs":{"pr-number":"'"$GITHUB_EVENT_NUMBER"'"}}'
             done < submodule-pr-list.txt
             # Update submodules and commit changes in the base repository
             git config --global user.name 'github-actor'
@@ -43,7 +44,7 @@ jobs:
             git commit -m "Update submodules"
             git push origin HEAD:main --force
             # Merge the PR
-            curl -s -H "Authorization: Bearer $GITHUB_TOKEN" -X POST https://api.github.com/repos/your-base-repo-name/pulls/${GITHUB_EVENT_NUMBER}/merge -d '{"commit_title":"Merge PR #${GITHUB_EVENT_NUMBER}","commit_message":"Merge PR #${GITHUB_EVENT_NUMBER}","merge_method":"squash"}'
+            curl -s -H "Authorization: Bearer ${{ secrets.WORKFLOWS }}" -X POST https://api.github.com/repos/MOvenshire/base/pulls/${GITHUB_EVENT_NUMBER}/merge -d '{"commit_title":"Merge PR #${GITHUB_EVENT_NUMBER}","commit_message":"Merge PR #${GITHUB_EVENT_NUMBER}","merge_method":"squash"}'
           else
             echo "No /merge comment found"
           fi
