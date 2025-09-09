@@ -23,10 +23,21 @@ jobs:
 
       - name: Extract PR comment
         run: |
-          comments=$(curl -s -H "Authorization: Bearer ${{ secrets.WORKFLOWS }}" -X GET https://api.github.com/repos/MOvenshire/base/pulls/${GITHUB_EVENT_NUMBER}/comments)
-          comment=$(echo "$comments" | jq -r '.[] | select(.body != null) | .body' | grep '/merge')
-          if [[ -n $comment ]]; then
-            echo "Found /merge comment"
+          (
+            comments=$(curl -s -H "Authorization: Bearer ${{ secrets.WORKFLOWS }}" -X GET https://api.github.com/repos/MOvenshire/base/pulls/${GITHUB_EVENT_NUMBER}/comments)
+            comment=$(echo "$comments" | jq -r '.[] | select(type == "object" and has("body")) | .body' | grep '/merge')
+          ) || {
+           echo "1 didnt work"
+          }
+          (
+            comments=$(curl -s -H "Authorization: Bearer ${{ secrets.WORKFLOWS }}" -X GET https://api.github.com/repos/MOvenshire/base/pulls/${GITHUB_EVENT_NUMBER}/comments)
+            comment=$(echo "$comments" | jq -r '.[] | if type == "object" and has("body") then .body else empty end' | grep '/merge')
+          ) || {
+            echo "2 didnt work"
+          }
+            
+            if [[ -n $comment ]]; then
+              echo "Found /merge comment"
             # Find linked submodule PRs and merge them
             curl -s -H "Authorization: Bearer ${{ secrets.WORKFLOWS }}" -X GET https://api.github.com/repos/MOvenshire/base/pulls/${GITHUB_EVENT_NUMBER}/commits | jq -r '.[] | .files[] | .filename' | grep '.gitmodules' > submodule-pr-list.txt
             while IFS= read -r line; do
