@@ -12,7 +12,7 @@ on:
 jobs:
   link-and-validate:
     runs-on: ubuntu-latest
-    if: startsWith(github.head_ref, 'users/')
+    if: startsWith(github.head_ref, 'mo/')
     
     permissions:
       contents: write
