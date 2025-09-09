@@ -6,7 +6,7 @@ on:
       - main
 
 jobs:
-  merge:
+  merge-from-base:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout base repository
@@ -15,6 +15,7 @@ jobs:
           repository: 'MOvenshire/base'
           path: 'base'
           token: ${{ secrets.GITHUB_TOKEN }}
+          submoules: true
           fetch-depth: 0
 
       - name: Checkout submodules
