@@ -27,7 +27,7 @@ jobs:
         with:
           submodules: true
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.WORKFLOWS }}
       
       - name: Extract ticket number
         id: extract
@@ -62,7 +62,7 @@ jobs:
         id: check_pr
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.WORKFLOWS }}
           script: |
             const [owner, repo] = '${{ steps.submodule.outputs.submodule_repo }}'.split('/');
             const branchName = 'users/${{ steps.extract.outputs.ticket_num }}';
@@ -92,7 +92,7 @@ jobs:
         id: antman
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.WORKFLOWS }}
           script: |
             const found = '${{ steps.check_pr.outputs.found }}' === 'true';
             const prUrl = '${{ steps.check_pr.outputs.pr_url }}';
@@ -255,7 +255,7 @@ jobs:
       - name: Add PR label
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.WORKFLOWS }}
           script: |
             const found = '${{ steps.check_pr.outputs.found }}' === 'true';
             const label = found ? 'submodule-linked' : 'submodule-pending';
@@ -283,7 +283,7 @@ jobs:
         if: steps.check_pr.outputs.found == 'true'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.WORKFLOWS }}
           script: |
             const prNumber = context.issue.number;
             const submodulePrUrl = '${{ steps.check_pr.outputs.pr_url }}';

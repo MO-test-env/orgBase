@@ -24,7 +24,7 @@ jobs:
         if: steps.check.outputs.found_merge == 'true'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.WORKFLOWS }}
           script: |
             await github.rest.issues.deleteComment({
               owner: context.repo.owner,
@@ -41,14 +41,14 @@ jobs:
       - name: Verify No Conflicts on Base PR and Submodule PR Before Trying Merge
         if: steps.check.outputs.found_merge == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.WORKFLOWS }}
         run: |
           echo "placeholder to verify no conflicts on base and submodule PRs"
 
       - name: Merge Pull Request
         if: steps.check.outputs.found_merge == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.WORKFLOWS }}
         run: |
           echo "Merging pull request"
           # Add your bash commands here
@@ -56,7 +56,7 @@ jobs:
       - name: Update Submodule
         if: steps.check.outputs.found_merge == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.WORKFLOWS }}
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -73,7 +73,7 @@ jobs:
         if: steps.check.outputs.found_merge == 'true'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.WORKFLOWS }}
           script: |
             console.log('Pull Request Merge Status: ${steps.check.outputs.pr_merge_status}');
             const { data: comments } = await github.rest.issues.listComments({
