@@ -65,7 +65,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const [owner, repo] = '${{ steps.submodule.outputs.submodule_repo }}'.split('/');
-            const branchName = 'users/${{ steps.extract.outputs.ticket_num }}';
+            const branchName = '${{ steps.extract.outputs.ticket_num }}';
             
             // Search for PR with matching branch
             const { data: prs } = await github.rest.pulls.list({
