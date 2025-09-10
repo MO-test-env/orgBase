@@ -166,7 +166,7 @@ jobs:
         if: steps.check.outputs.found_merge == 'true'
         id: verify_submodule
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.WORKFLOWS }}
         run: |
           # Path to the submodule as it appears in this repo
           SUBMODULE_PATH="submod"
