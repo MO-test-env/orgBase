@@ -114,7 +114,7 @@ jobs:
               source_repo: context.repo.repo
             };
 
-            await github.actions.createWorkflowDispatch({
+            await github.rest.actions.createWorkflowDispatch({
               owner,
               repo,
               workflow_id,
