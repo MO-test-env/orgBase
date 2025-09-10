@@ -4,9 +4,6 @@ name: Link and Validate Submodule PR
 on:
   pull_request:
     types: [opened, synchronize]
-    branches:
-      - main
-      - master # Add your delivery target branches here we can also read this in from the pr eventually I think 
 
 jobs:
   link-and-validate:
