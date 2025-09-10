@@ -14,35 +14,72 @@ jobs:
     if: github.event.issue.pull_request != null
     runs-on: ubuntu-latest
     steps:
+
+      # -----------------------------
+      # Step 1: Check for /merge command from a human
+      # -----------------------------
       - name: Check for /merge command
         id: check
         run: |
-          echo "pr_merge_status=false" >> $GITHUB_OUTPUT
           comment_body="${{ github.event.comment.body }}"
-          if [[ "$comment_body" == "/merge" ]]; then
+          comment_author_type="${{ github.event.comment.user.type }}"
+
+          if [[ "$comment_author_type" == "Bot" ]]; then
+            echo "found_merge=false" >> $GITHUB_OUTPUT
+          elif [[ "$comment_body" == "/merge" ]]; then
             echo "found_merge=true" >> $GITHUB_OUTPUT
           else
             echo "found_merge=false" >> $GITHUB_OUTPUT
           fi
+          echo "pr_merge_status=false" >> $GITHUB_OUTPUT
 
-      - name: Delete comment and Add Merge Status Comment
+      # -----------------------------
+      # Step 2: Add or update merge status bot comment
+      # -----------------------------
+      - name: Add or update merge status comment
         if: steps.check.outputs.found_merge == 'true'
         uses: actions/github-script@v7
+        id: merge_comment
         with:
           github-token: ${{ secrets.WORKFLOWS }}
           script: |
-            await github.rest.issues.deleteComment({
+            const issue_number = context.issue.number;
+
+            // Look for an existing bot comment with merge status
+            const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              comment_id: context.payload.comment.id
-            })
-            await github.rest.issues.createComment({
+              issue_number
+            });
+
+            let mergeComment = comments.find(c => 
+              c.user.type === 'Bot' && 
+              c.body.includes('Attempting to Merge PR')
+            );
+
+            if (!mergeComment) {
+              // Create a new bot comment if none exists
+              mergeComment = await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: context.issue.number,
+                issue_number,
                 body: "Attempting to Merge PR ⏳"
               });
-      
+            } else {
+              // Update existing bot comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: mergeComment.id,
+                body: "Attempting to Merge PR ⏳"
+              });
+            }
+
+            core.setOutput("merge_comment_id", mergeComment.id);
+
+      # -----------------------------
+      # Step 3: Check PR for conflicts
+      # -----------------------------
       - name: Check PR for conflicts
         id: check_conflicts
         uses: actions/github-script@v7
@@ -80,7 +117,9 @@ jobs:
               console.log("No merge conflicts detected.");
             }
 
-
+      # -----------------------------
+      # Step 4: Trigger submodule workflow
+      # -----------------------------
       - name: Trigger submodule workflow
         if: steps.check.outputs.found_merge == 'true'
         uses: actions/github-script@v7
@@ -107,52 +146,35 @@ jobs:
 
             console.log(`Dispatched workflow '${workflow_id}' on ${owner}/${repo}`);
 
-
-
+      # -----------------------------
+      # Step 5: Merge Base Pull Request
+      # -----------------------------
       - name: Merge Base Pull Request
         if: steps.check.outputs.found_merge == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Merging pull request"
-          # Add your bash commands to merge here
-          # Example: gh pr merge ${{ github.event.issue.number }} --merge
+          # Example merge using GitHub CLI:
+          # gh pr merge ${{ github.event.issue.number }} --merge
 
-
-      - name: Close Pull Requests
+      # -----------------------------
+      # Step 6: Update merge status bot comment
+      # -----------------------------
+      - name: Update merge status comment
         if: steps.check.outputs.found_merge == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const { data: comments } = await github.rest.issues.listComments({
+            const mergeCommentId = '${{ steps.merge_comment.outputs.merge_comment_id }}';
+            const prMergeSucceeded = '${{ steps.check.outputs.pr_merge_status }}' === 'true';
+
+            await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number
+              comment_id: mergeCommentId,
+              body: prMergeSucceeded 
+                ? "Pull Request Merged ✅" 
+                : "Pull Request Not Merged ❌\nError message: ???"
             });
-            const botComment = comments.find(comment => 
-              comment.user.type === 'Bot' && 
-              comment.body.includes('Attempting to Merge PR')
-            );
-            if ('${{ steps.check.outputs.pr_merge_status }}' === 'true') {
-              await github.rest.pulls.update({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.issue.number,
-                state: 'closed'
-              });
-
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: botComment.id,
-                body: "Pull Request Merged ✅" 
-              });          
-            } else {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: botComment.id,
-                body: "Pull Request Not Merged ❌\nError message: ???"
-              });    
-            }
