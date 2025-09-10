@@ -159,6 +159,12 @@ jobs:
           submodules: true
           fetch-depth: 0
           token: ${{ secrets.WORKFLOWS }}
+
+      - name: Set git config for bot user
+        if: steps.check.outputs.found_merge == 'true'
+        run: |
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
       # -----------------------------------------------------------------
       # Step 5‑6: Verify submodule SHA, update it if necessary, and merge PR
       # -----------------------------------------------------------------
