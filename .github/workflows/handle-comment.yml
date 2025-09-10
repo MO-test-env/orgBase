@@ -158,7 +158,7 @@ jobs:
         id: update_and_merge
         if: steps.check.outputs.found_merge == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.WORKFLOWS }}
           SUBMODULE_PATH: submod               # <-- change if you rename the folder
         run: |
           set -euo pipefail
