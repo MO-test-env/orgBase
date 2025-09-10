@@ -36,51 +36,29 @@ jobs:
       # -----------------------------
       # Step 2: Add or update merge status bot comment
       # -----------------------------
-      - name: Add or update merge status comment
+      - name: Delete comment and Add Merge Status Comment
         if: steps.check.outputs.found_merge == 'true'
         uses: actions/github-script@v7
-        id: merge_comment
         with:
-          github-token: ${{ secrets.WORKFLOWS }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const issue_number = context.issue.number;
-
-            // Look for an existing bot comment with merge status
-            const { data: comments } = await github.rest.issues.listComments({
+            await github.rest.issues.deleteComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number
-            });
-
-            let mergeComment = comments.find(c => 
-              c.user.type === 'Bot' && 
-              c.body.includes('Attempting to Merge PR')
-            );
-
-            if (!mergeComment) {
-              // Create a new bot comment if none exists
-              mergeComment = await github.rest.issues.createComment({
+              comment_id: context.payload.comment.id
+            })
+            await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number,
+                issue_number: context.issue.number,
                 body: "Attempting to Merge PR ⏳"
               });
-            } else {
-              // Update existing bot comment
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: mergeComment.id,
-                body: "Attempting to Merge PR ⏳"
-              });
-            }
-
-            core.setOutput("merge_comment_id", mergeComment.id);
-
+      
       # -----------------------------
       # Step 3: Check PR for conflicts
       # -----------------------------
       - name: Check PR for conflicts
+        if: steps.check.outputs.found_merge == 'true'
         id: check_conflicts
         uses: actions/github-script@v7
         with:
