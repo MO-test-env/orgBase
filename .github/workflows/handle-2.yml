@@ -4,59 +4,57 @@ on:
   issue_comment:
     types: [created]
 
-permissions:
-  issues: write
-  pull-requests: write
-  actions: write
-  contents: write   # needed for checkout & submodule inspection
-
 jobs:
   handle-merge-command:
     if: github.event.issue.pull_request != null
     runs-on: ubuntu-latest
     steps:
-
-      # -----------------------------
-      # Step 1: Check for /merge command from a human
-      # -----------------------------
       - name: Check for /merge command
         id: check
         run: |
+          echo "pr_merge_status=false" >> $GITHUB_OUTPUT
           comment_body="${{ github.event.comment.body }}"
-          comment_author_type="${{ github.event.comment.user.type }}"
-
-          if [[ "$comment_author_type" == "Bot" ]]; then
-            echo "found_merge=false" >> $GITHUB_OUTPUT
-          elif [[ "$comment_body" == "/merge" ]]; then
+          if [[ "$comment_body" == "/merge" ]]; then
             echo "found_merge=true" >> $GITHUB_OUTPUT
           else
             echo "found_merge=false" >> $GITHUB_OUTPUT
           fi
-          echo "pr_merge_status=false" >> $GITHUB_OUTPUT
 
-      # -----------------------------------------------------------------
-      # Step 2: Edit the original /merge comment to show we are working
-      # -----------------------------------------------------------------
-      - name: Edit /merge comment (status update)
+      - name: Delete comment and Add Merge Status Comment
         if: steps.check.outputs.found_merge == 'true'
-        id: edit_comment
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const commentId = context.payload.comment.id;
-            await github.rest.issues.updateComment({
+            await github.rest.issues.deleteComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              comment_id: commentId,
-              body: "Attempting to Merge PR ⏳"
-            });
-            core.setOutput('comment_id', commentId);
+              comment_id: context.payload.comment.id
+            })
+            await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: "Attempting to Merge PR ⏳"
+              });
+      
+      - name: Verify No Conflicts on Base PR and Submodule PR Before Trying Merge
+        if: steps.check.outputs.found_merge == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "placeholder to verify no conflicts on base and submodule PRs"
 
-      # -----------------------------
-      # Step 3: Check PR for conflicts
-      # -----------------------------
-      - name: Check PR for conflicts
+      - name: Merge Pull Request
+        if: steps.check.outputs.found_merge == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Merging pull request"
+          # Add your bash commands here
+
+
+          - name: Check PR for conflicts
         if: steps.check.outputs.found_merge == 'true'
         id: check_conflicts
         uses: actions/github-script@v7
