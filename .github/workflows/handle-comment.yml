@@ -98,7 +98,7 @@ jobs:
       # -----------------------------
       # Step 4: Trigger submodule workflow
       # -----------------------------
-      - name: Trigger submodule workflow
+      - name: Trigger Submodule Workflow
         if: steps.check.outputs.found_merge == 'true'
         uses: actions/github-script@v7
         with:
@@ -106,12 +106,12 @@ jobs:
           script: |
             const owner = 'MOvenshire';
             const repo = 'submod';
-            const workflow_id = 'merge.yml';
-            const ref = 'mo/automerge1';
+            const workflow_id = 'merge-submodule-pr.yml'; // submodule workflow file
+            const ref = 'main'; // branch in submodule repo
 
             const inputs = {
-              pr_number: context.issue.number.toString(),
-              source_repo: context.repo.repo
+              base_pr_number: context.issue.number.toString(),
+              base_branch: context.payload.pull_request.head.ref
             };
 
             await github.rest.actions.createWorkflowDispatch({
@@ -122,7 +122,25 @@ jobs:
               inputs
             });
 
-            console.log(`Dispatched workflow '${workflow_id}' on ${owner}/${repo}`);
+            console.log(`Dispatched submodule workflow for PR #${inputs.base_pr_number}`);
+
+
+  # -----------------------------
+  # Separate Job Merge Base Repo PR (triggered after submodule workflow completes)
+  # -----------------------------
+  merge-base-pr:
+    needs: handle-merge-command
+    runs-on: ubuntu-latest
+    if: ${{ needs.handle-merge-command.result == 'success' }}
+    steps:
+      - name: Merge Base Repo PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr merge ${{ github.event.issue.number }} --merge --admin
+          gh pr close ${{ github.event.issue.number }}
+
+
 
       # -----------------------------
       # Step 5: Merge Base Pull Request
