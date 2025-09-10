@@ -132,23 +132,6 @@ jobs:
 
             console.log(`Dispatched submodule workflow for PR #${inputs.base_pr_number} on branch ${inputs.base_branch}`);
 
-  # -----------------------------
-  # Separate Job Merge Base Repo PR (triggered after submodule workflow completes)
-  # -----------------------------
-  merge-base-pr:
-    needs: handle-merge-command
-    runs-on: ubuntu-latest
-    if: ${{ needs.handle-merge-command.result == 'success' }}
-    steps:
-      - name: Merge Base Repo PR
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr merge ${{ github.event.issue.number }} --merge --admin
-          gh pr close ${{ github.event.issue.number }}
-
-
-
       # -----------------------------
       # Step 5: Merge Base Pull Request
       # -----------------------------
