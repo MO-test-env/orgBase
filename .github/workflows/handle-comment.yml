@@ -17,7 +17,7 @@ jobs:
     steps:
 
       # -----------------------------------------------------------------
-      # Step 1: Check for /merge command from a human
+      # Step 1‑2: (unchanged) – detect /merge and edit the comment
       # -----------------------------------------------------------------
       - name: Check for /merge command
         id: check
@@ -34,9 +34,6 @@ jobs:
           fi
           echo "pr_merge_status=false" >> $GITHUB_OUTPUT
 
-      # -----------------------------------------------------------------
-      # Step 2: Edit the original /merge comment to show we are working
-      # -----------------------------------------------------------------
       - name: Edit /merge comment (status update)
         if: steps.check.outputs.found_merge == 'true'
         id: edit_comment
@@ -54,6 +51,37 @@ jobs:
             core.setOutput('comment_id', commentId);
 
       # -----------------------------------------------------------------
+      # NEW: Checkout the repository (needed for any git command)
+      # -----------------------------------------------------------------
+      - name: Checkout repository (with submodules disabled for now)
+        if: steps.check.outputs.found_merge == 'true'
+        uses: actions/checkout@v4
+        with:
+          # We need the full history so that the PR base can be fetched
+          fetch-depth: 0
+          submodules: false   # we only need the *parent* repo here
+
+      # -----------------------------------------------------------------
+      # NEW: Resolve the PR’s base branch via the REST API
+      # -----------------------------------------------------------------
+      - name: Resolve base branch of the PR
+        if: steps.check.outputs.found_merge == 'true'
+        id: base_info
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.issue.number;   // the PR that the comment belongs to
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+            // Export as step output – later steps can read ${{ steps.base_info.outputs.base_ref }}
+            core.setOutput('base_ref', pr.base.ref);
+            core.setOutput('base_sha', pr.base.sha);
+
+      # -----------------------------------------------------------------
       # Step 3: Check PR for conflicts (dry‑run merge) – ignore submodule
       # -----------------------------------------------------------------
       - name: Check PR for conflicts (dry‑run merge)
@@ -62,33 +90,28 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SUBMODULE_PATH: submod            # <-- change if you rename the folder
+          BASE_REF: ${{ steps.base_info.outputs.base_ref }}
         run: |
           set -euo pipefail
 
-          # 1️⃣ Determine the base branch (the branch the PR targets)
-          BASE_REF="${{ github.event.issue.pull_request.base.ref }}"
           echo "Base branch ref: $BASE_REF"
 
-          # 2️⃣ Fetch the base branch so we can attempt a merge
+          # 1️⃣ Fetch the base branch (we already have the full history from checkout)
           git fetch origin "$BASE_REF"
 
-          # 3️⃣ Try a dry‑run merge.  Exit code 0 → no conflicts.
+          # 2️⃣ Attempt a dry‑run merge
           if git merge --no-commit --no-ff "origin/$BASE_REF"; then
             echo "✅ No merge conflicts at all."
             echo "conflict=none" >> $GITHUB_OUTPUT
           else
             echo "⚠️ Merge conflicts detected – analysing which files..."
-            # List conflicted paths (status code 'U' means unmerged)
             CONFLICTED=$(git status --porcelain | awk '/^UU|^AA|^DD/ {print $2}')
-            
-            # Filter out any path that lives under the submodule directory
             NON_SUBMODULE_CONFLICTS=$(echo "$CONFLICTED" | grep -v "^${SUBMODULE_PATH}/" || true)
 
             if [[ -n "$NON_SUBMODULE_CONFLICTS" ]]; then
               echo "❌ Non‑submodule conflicts found:"
               echo "$NON_SUBMODULE_CONFLICTS"
               echo "conflict=non_submodule" >> $GITHUB_OUTPUT
-              # Fail the job – later steps will be skipped
               exit 1
             else
               echo "✅ Conflicts exist **only** in submodule path – OK to continue."
@@ -109,20 +132,16 @@ jobs:
             const repo = 'submod';
             const workflow_id = 'merge-submodule-pr.yml';
             const ref = 'mo/automerge2';
-
-            // Get PR info using the issue number
             const prNumber = context.issue.number;
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber
             });
-
             const inputs = {
               base_pr_number: pr.number.toString(),
               base_branch: pr.head.ref
             };
-
             await github.rest.actions.createWorkflowDispatch({
               owner,
               repo,
@@ -130,7 +149,6 @@ jobs:
               ref,
               inputs
             });
-
             console.log(`Dispatched submodule workflow for PR #${inputs.base_pr_number} on branch ${inputs.base_branch}`);
 
       # -----------------------------------------------------------------
