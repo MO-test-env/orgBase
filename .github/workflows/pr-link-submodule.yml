@@ -220,7 +220,7 @@ jobs:
             console.log(`Submodule PR Status: ${isApproved}`);
             var comment = "";
             if(isApproved) {
-              comment = `## 🔗 Linked Submodule PR\n\nThis PR is linked to a submodule PR:\n- **Submodule Repository:** \`${submoduleRepo}\`\n- **Submodule PR:** ${submodulePrUrl}\n- **Status:** ✅ Closed - Ready to merge!\n\n✅ **The linked submodule PR has been closed. This PR can now be merged.**\n\n---\n*This comment was automatically updated by the status check workflow.*`;                  
+              comment = `## 🔗 Linked Submodule PR\n\nThis PR is linked to a submodule PR:\n- **Submodule Repository:** \`${submoduleRepo}\`\n- **Submodule PR:** ${submodulePrUrl}\n- **Status:** ✅ Ready to merge!\n\n✅ **The linked submodule PR has no remaining issues.\nCreate a new comment with /merge to continue delivering.\n This PR can now be merged.**\n\n---\n*This comment was automatically updated by the status check workflow.*`;                  
             } else {
               comment = `## 🔗 Linked Submodule PR
               
