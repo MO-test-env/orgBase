@@ -8,6 +8,7 @@ permissions:
   issues: write
   pull-requests: write
   actions: write
+  contents: write   # needed for checkout & submodule inspection
 
 jobs:
   handle-merge-command:
@@ -33,27 +34,25 @@ jobs:
           fi
           echo "pr_merge_status=false" >> $GITHUB_OUTPUT
 
-      # -----------------------------
-      # Step 2: Add or update merge status bot comment
-      # -----------------------------
-      - name: Delete comment and Add Merge Status Comment
+      # -----------------------------------------------------------------
+      # Step 2: Edit the original /merge comment to show we are working
+      # -----------------------------------------------------------------
+      - name: Edit /merge comment (status update)
         if: steps.check.outputs.found_merge == 'true'
+        id: edit_comment
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            await github.rest.issues.deleteComment({
+            const commentId = context.payload.comment.id;
+            await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              comment_id: context.payload.comment.id
-            })
-            await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: "Attempting to Merge PR ⏳"
-              });
-      
+              comment_id: commentId,
+              body: "Attempting to Merge PR ⏳"
+            });
+            core.setOutput('comment_id', commentId);
+
       # -----------------------------
       # Step 3: Check PR for conflicts
       # -----------------------------
@@ -80,7 +79,7 @@ jobs:
               });
 
               const nonSubmoduleConflicts = files.filter(f => {
-                return !f.filename.endsWith('.git') && !f.filename.includes('submod'); 
+                return !f.filename.endsWith('.git') && !f.filename.includes('submod');
               });
 
               if (nonSubmoduleConflicts.length > 0) {
@@ -106,8 +105,8 @@ jobs:
           script: |
             const owner = 'MOvenshire';
             const repo = 'submod';
-            const workflow_id = 'merge-submodule-pr.yml'; // submodule workflow file
-            const ref = 'mo/automerge1'; // branch in submodule repo
+            const workflow_id = 'merge-submodule-pr.yml';
+            const ref = 'mo/automerge2';
 
             // Get PR info using the issue number
             const prNumber = context.issue.number;
@@ -132,35 +131,75 @@ jobs:
 
             console.log(`Dispatched submodule workflow for PR #${inputs.base_pr_number} on branch ${inputs.base_branch}`);
 
-      # -----------------------------
-      # Step 5: Merge Base Pull Request
-      # -----------------------------
-      - name: Merge Base Pull Request
+      # -----------------------------------------------------------------
+      # Step 5: Verify submodule SHA points to its main branch
+      # -----------------------------------------------------------------
+      - name: Checkout PR branch (with submodules)
         if: steps.check.outputs.found_merge == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.issue.pull_request.head.sha }}
+          submodules: true
+          fetch-depth: 0   # needed for accurate SHA comparison
+
+      - name: Ensure submodule SHA matches its `main` branch
+        if: steps.check.outputs.found_merge == 'true'
+        id: verify_submodule
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Merging pull request"
-          # Example merge using GitHub CLI:
-          # gh pr merge ${{ github.event.issue.number }} --merge
+          # Path to the submodule as it appears in this repo
+          SUBMODULE_PATH="submod"
 
-      # -----------------------------
-      # Step 6: Update merge status bot comment
-      # -----------------------------
+          # SHA recorded in the PR (gitlink entry)
+          PR_SUB_SHA=$(git ls-tree HEAD "$SUBMODULE_PATH" | awk '{print $3}')
+          echo "PR submodule SHA: $PR_SUB_SHA"
+
+          # Owner and repo of the submodule (assumes same org)
+          SUB_OWNER="${{ github.repository_owner }}"
+          SUB_REPO="submod"
+
+          # SHA of the submodule's default branch (main)
+          MAIN_SUB_SHA=$(git ls-remote "https://github.com/$SUB_OWNER/$SUB_REPO.git" refs/heads/main | awk '{print $1}')
+          echo "Submodule main SHA: $MAIN_SUB_SHA"
+
+          if [ "$PR_SUB_SHA" != "$MAIN_SUB_SHA" ]; then
+            echo "❌ Submodule SHA does not point to the latest main commit."
+            exit 1
+          fi
+          echo "✅ Submodule points to main – safe to merge."
+
+      # -----------------------------------------------------------------
+      # Step 6: Merge Base Pull Request (only after SHA verification)
+      # -----------------------------------------------------------------
+      - name: Merge Base Pull Request
+        if: |
+          steps.check.outputs.found_merge == 'true' &&
+          steps.verify_submodule.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Merging base pull request #${{ github.event.issue.number }} ..."
+          # Use the GitHub CLI; the token is automatically authenticated
+          gh pr merge ${{ github.event.issue.number }} --merge --admin
+
+      # -----------------------------------------------------------------
+      # Step 7: Update the original comment with final status
+      # -----------------------------------------------------------------
       - name: Update merge status comment
         if: steps.check.outputs.found_merge == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const mergeCommentId = '${{ steps.merge_comment.outputs.merge_comment_id }}';
-            const prMergeSucceeded = '${{ steps.check.outputs.pr_merge_status }}' === 'true';
-
+            const commentId = '${{ steps.edit_comment.outputs.comment_id }}';
+            const mergeSucceeded = ${{ steps.verify_submodule.outcome == 'success' && steps.merge_base_pr.outcome == 'success' }};
+            const body = mergeSucceeded
+              ? "Pull Request Merged ✅"
+              : "Pull Request Not Merged ❌\nCheck the workflow logs for details.";
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              comment_id: mergeCommentId,
-              body: prMergeSucceeded 
-                ? "Pull Request Merged ✅" 
-                : "Pull Request Not Merged ❌\nError message: ???"
+              comment_id: commentId,
+              body: body
             });
