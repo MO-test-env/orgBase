@@ -80,7 +80,7 @@ jobs:
               });
 
               const nonSubmoduleConflicts = files.filter(f => {
-                return !f.filename.endsWith('.git') && !f.filename.includes('submodule'); 
+                return !f.filename.endsWith('.git') && !f.filename.includes('submod'); 
               });
 
               if (nonSubmoduleConflicts.length > 0) {
