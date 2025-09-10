@@ -95,8 +95,7 @@ jobs:
               core.setOutput('pr_state', '');
             }
 
-
-      - name: Create check run for submodule PR status
+      - name: Create commit status for submodule PR
         id: antman
         uses: actions/github-script@v7
         with:
@@ -106,116 +105,81 @@ jobs:
             const prUrl = '${{ steps.check_pr.outputs.pr_url }}';
             core.setOutput('is_approved', 'false');
 
-            // Default values
-            let state = 'success';
-            let description = 'No submodules updated';
-            let targetUrl = prUrl || '';
-
-            // Simulate the submodule checks (simplified from your version)
+            let state = 'success';      // default GitHub commit status state
+            let description = 'No submodule PR linked';
+            
             if (!found) {
-              state = 'success';
               description = 'No linked submodule PR found, skipping';
             } else {
               const urlParts = prUrl.match(/github\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/);
               if (!urlParts) {
-                status = 'completed';
-                conclusion = 'failure';
-                title = 'Invalid PR URL';
-                summary = `Could not parse submodule PR URL: ${prUrl}`;
+                state = 'failure';
+                description = `Invalid submodule PR URL: ${prUrl}`;
               } else {
                 const [, submoduleOwner, submoduleRepo, prNumber] = urlParts;
-                
+
                 try {
-                  // Get PR details
+                  // Fetch PR
                   const { data: pr } = await github.rest.pulls.get({
                     owner: submoduleOwner,
                     repo: submoduleRepo,
                     pull_number: parseInt(prNumber)
                   });
-                  
+
                   console.log(`PR State: ${pr.state}`);
-                  console.log(`PR Mergeable State: ${pr.mergeable_state}`);
-                  
-                  // Check if PR is open
+
                   if (pr.state !== 'open') {
-                    status = 'completed';
-                    conclusion = 'failure';
-                    title = 'Submodule PR Closed';
-                    summary = `Linked submodule PR is ${pr.state}: ${prUrl}`;
+                    state = 'failure';
+                    description = `Submodule PR is ${pr.state}`;
                   } else {
-                    // PR is open, now check approval status
+                    // Fetch reviews
                     const { data: reviews } = await github.rest.pulls.listReviews({
                       owner: submoduleOwner,
                       repo: submoduleRepo,
                       pull_number: parseInt(prNumber)
                     });
-                    
-                    // Get latest review from each reviewer
+
                     const latestReviews = {};
-                    reviews.forEach(review => {
-                      if (review.state !== 'COMMENTED') { // Only consider APPROVED, CHANGES_REQUESTED, DISMISSED
-                        latestReviews[review.user.login] = review;
+                    reviews.forEach(r => {
+                      if (r.state !== 'COMMENTED') {
+                        latestReviews[r.user.login] = r;
                       }
                     });
-                    
-                    // Check if there are any approvals and no blocking change requests
-                    const approvals = Object.values(latestReviews).filter(review => review.state === 'APPROVED');
-                    const changeRequests = Object.values(latestReviews).filter(review => review.state === 'CHANGES_REQUESTED');
-                    
+
+                    const approvals = Object.values(latestReviews).filter(r => r.state === 'APPROVED');
+                    const changeRequests = Object.values(latestReviews).filter(r => r.state === 'CHANGES_REQUESTED');
+
                     console.log(`Approvals: ${approvals.length}, Change Requests: ${changeRequests.length}`);
-                    
-                    // Check if PR is ready to merge
-                    const isApproved = approvals.length >= 0 && changeRequests.length === 0;
-                    
-                    if (isApproved) {
+
+                    if (approvals.length > 0 && changeRequests.length === 0) {
                       core.setOutput('is_approved', 'true');
-                      status = 'completed';
-                      conclusion = 'success';
-                      title = 'Submodule PR Approved';
-                      summary = `Submodule PR is open and approved: ${prUrl}\n\nRepository: ${submoduleRepo}\n\nApprovals: ${approvals.length}\nReady for coordinated merge.`;
+                      state = 'success';
+                      description = `PR approved: ${approvals.length} approval(s)`;
                     } else {
-                      status = 'in_progress';
-                      conclusion = undefined;
-                      title = 'Submodule PR Awaiting Approval';
-                      summary = `Linked to submodule PR: ${prUrl}\n\nRepository: ${submoduleRepo}\n\nStatus: Open but not yet approved\nApprovals: ${approvals.length}\nChange Requests: ${changeRequests.length}\n\nWaiting for approval before allowing merge.`;
+                      state = 'pending';
+                      description = `Awaiting approval: ${approvals.length} approvals, ${changeRequests.length} change requests`;
                     }
                   }
                 } catch (error) {
                   console.error('Error checking PR status:', error);
-                  status = 'completed';
-                  conclusion = 'failure';
-                  title = 'Error Checking Submodule PR';
-                  summary = `Failed to check status of submodule PR: ${prUrl}\nError: ${error.message}`;
+                  state = 'failure';
+                  description = `Error checking submodule PR: ${error.message}`;
                 }
               }
             }
-            
-            const checkRun = {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'Submodule PR Status',
-              head_sha: context.payload.pull_request.head.sha,
-              status: status,
-              output: {
-                title: title,
-                summary: summary
-              }
-            };
-            
-            if (conclusion) {
-              checkRun.conclusion = conclusion;
-            }
-            
-            
+
+            // Apply status to this PR’s commit
             await github.rest.repos.createCommitStatus({
               owner: context.repo.owner,
               repo: context.repo.repo,
               sha: context.payload.pull_request.head.sha,
-              state: conclusion === 'success' ? 'success' : 'failure',
-              description: title,
+              state,
+              description,
               context: 'Submodule PR Status'
             });
-      
+
+
+
       - name: Add PR label
         uses: actions/github-script@v7
         with:
