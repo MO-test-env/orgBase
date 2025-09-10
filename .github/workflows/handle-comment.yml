@@ -24,7 +24,7 @@ jobs:
         if: steps.check.outputs.found_merge == 'true'
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN}}
+          github-token: ${{ secrets.WORKFLOWS }}
           script: |
             await github.rest.issues.deleteComment({
               owner: context.repo.owner,
