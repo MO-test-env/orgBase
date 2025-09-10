@@ -158,15 +158,15 @@ jobs:
         if: steps.check.outputs.found_merge == 'true'
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.issue.pull_request.head.sha }}
           submodules: true
-          fetch-depth: 0   # needed for accurate SHA comparison
+          fetch-depth: 0
+          token: ${{ secrets.WORKFLOWS }}
 
       - name: Ensure submodule SHA matches its `main` branch
         if: steps.check.outputs.found_merge == 'true'
         id: verify_submodule
         env:
-          GITHUB_TOKEN: ${{ secrets.WORKFLOWS }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Path to the submodule as it appears in this repo
           SUBMODULE_PATH="submod"
