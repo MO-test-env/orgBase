@@ -109,9 +109,17 @@ jobs:
             const workflow_id = 'merge-submodule-pr.yml'; // submodule workflow file
             const ref = 'mo/automerge1'; // branch in submodule repo
 
+            // Get PR info using the issue number
+            const prNumber = context.issue.number;
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
+
             const inputs = {
-              base_pr_number: context.issue.number.toString(),
-              base_branch: context.payload.pull_request.head.ref
+              base_pr_number: pr.number.toString(),
+              base_branch: pr.head.ref
             };
 
             await github.rest.actions.createWorkflowDispatch({
@@ -122,8 +130,7 @@ jobs:
               inputs
             });
 
-            console.log(`Dispatched submodule workflow for PR #${inputs.base_pr_number}`);
-
+            console.log(`Dispatched submodule workflow for PR #${inputs.base_pr_number} on branch ${inputs.base_branch}`);
 
   # -----------------------------
   # Separate Job Merge Base Repo PR (triggered after submodule workflow completes)
