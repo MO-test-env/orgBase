@@ -151,7 +151,7 @@ jobs:
 
                     console.log(`Approvals: ${approvals.length}, Change Requests: ${changeRequests.length}`);
 
-                    if (approvals.length > 0 && changeRequests.length === 0) {
+                    if (approvals.length >0 0 && changeRequests.length === 0) {
                       core.setOutput('is_approved', 'true');
                       state = 'success';
                       description = `PR approved: ${approvals.length} approval(s)`;
