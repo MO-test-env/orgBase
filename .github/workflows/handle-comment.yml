@@ -65,33 +65,38 @@ jobs:
           script: |
             const prNumber = context.issue.number;
 
+            // Get PR details
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber
             });
 
-            if (!pr.mergeable) {
+            // `mergeable_state` can be: 'clean', 'dirty', 'unstable', 'unknown', etc.
+            // 'dirty' indicates that the PR has merge conflicts.
+            if (pr.mergeable_state === 'dirty') {
+              // List changed files to see where the conflicts are
               const { data: files } = await github.rest.pulls.listFiles({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 pull_number: prNumber
               });
 
+              // Filter out submodule‑related files (including the .gitlink)
               const nonSubmoduleConflicts = files.filter(f => {
                 return !f.filename.endsWith('.git') && !f.filename.includes('submod');
               });
 
               if (nonSubmoduleConflicts.length > 0) {
                 core.setFailed(
-                  `PR #${prNumber} has conflicts in non-submodule files: ` +
+                  `PR #${prNumber} has merge conflicts in non‑submodule files: ` +
                   nonSubmoduleConflicts.map(f => f.filename).join(', ')
                 );
               } else {
-                console.log("Conflicts exist but only in submodule SHAs — OK to proceed.");
+                console.log("Conflicts exist only in submodule files – proceeding.");
               }
             } else {
-              console.log("No merge conflicts detected.");
+              console.log(`PR mergeable_state is '${pr.mergeable_state}'. No non‑submodule conflicts detected.`);
             }
 
       # -----------------------------
