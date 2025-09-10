@@ -4,6 +4,11 @@ on:
   issue_comment:
     types: [created]
 
+permissions:
+  issues: write
+  pull-requests: write
+  actions: write
+
 jobs:
   handle-merge-command:
     if: github.event.issue.pull_request != null
@@ -44,24 +49,21 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const prNumber = context.payload.pull_request.number;
-            const { data: pr } = await github.pulls.get({
+            const prNumber = context.issue.number;
+
+            const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: prNumber
             });
 
             if (!pr.mergeable) {
-              // If PR has conflicts
-              // Get the list of files in the PR
-              const { data: files } = await github.pulls.listFiles({
+              const { data: files } = await github.rest.pulls.listFiles({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 pull_number: prNumber
               });
 
-              // Check if all conflicting files are submodule SHAs (usually paths ending with a folder of submodule)
-              // Adjust the logic if your submodules are in specific directories
               const nonSubmoduleConflicts = files.filter(f => {
                 return !f.filename.endsWith('.git') && !f.filename.includes('submodule'); 
               });
@@ -80,18 +82,18 @@ jobs:
 
 
       - name: Trigger submodule workflow
+        if: steps.check.outputs.found_merge == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.WORKFLOWS }}
           script: |
-            const owner = 'MOvenshire';        // Submodule repo owner
-            const repo = 'submod';         // Submodule repo name
-            const workflow_id = 'merge.yml'; // File name of workflow in submodule
-            const ref = 'mo/automerge1';                          // Branch to run the workflow on
+            const owner = 'MOvenshire';
+            const repo = 'submod';
+            const workflow_id = 'merge.yml';
+            const ref = 'mo/automerge1';
 
-            // Optional: pass inputs to the workflow
             const inputs = {
-              pr_number: context.payload.pull_request.number.toString(),
+              pr_number: context.issue.number.toString(),
               source_repo: context.repo.repo
             };
 
@@ -113,7 +115,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Merging pull request"
-          # Add your bash commands here
+          # Add your bash commands to merge here
+          # Example: gh pr merge ${{ github.event.issue.number }} --merge
 
 
       - name: Close Pull Requests
@@ -122,7 +125,6 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            console.log('Pull Request Merge Status: ${steps.check.outputs.pr_merge_status}');
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -138,7 +140,8 @@ jobs:
                 repo: context.repo.repo,
                 pull_number: context.issue.number,
                 state: 'closed'
-              })   
+              });
+
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
