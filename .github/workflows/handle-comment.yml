@@ -16,9 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
 
-      # -----------------------------
+      # -----------------------------------------------------------------
       # Step 1: Check for /merge command from a human
-      # -----------------------------
+      # -----------------------------------------------------------------
       - name: Check for /merge command
         id: check
         run: |
@@ -53,74 +53,52 @@ jobs:
             });
             core.setOutput('comment_id', commentId);
 
-      # -----------------------------
-      # Step 3: Check PR for conflicts
-      # -----------------------------
-      - name: Check PR for conflicts
+      # -----------------------------------------------------------------
+      # Step 3: Check PR for conflicts (dry‑run merge) – ignore submodule
+      # -----------------------------------------------------------------
+      - name: Check PR for conflicts (dry‑run merge)
         if: steps.check.outputs.found_merge == 'true'
         id: check_conflicts
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const prNumber = context.issue.number;
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUBMODULE_PATH: submod            # <-- change if you rename the folder
+        run: |
+          set -euo pipefail
 
-            // -----------------------------------------------------------------
-            // Helper: wait until GitHub has resolved the `mergeable` field.
-            // -----------------------------------------------------------------
-            async function getMergeableState() {
-              // GitHub may return `mergeable: null` while it is still computing.
-              // Poll a few times before giving up.
-              for (let i = 0; i < 6; i++) {
-                const { data: pr } = await github.rest.pulls.get({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  pull_number: prNumber
-                });
+          # 1️⃣ Determine the base branch (the branch the PR targets)
+          BASE_REF="${{ github.event.issue.pull_request.base.ref }}"
+          echo "Base branch ref: $BASE_REF"
 
-                if (pr.mergeable !== null) {
-                  return { mergeable: pr.mergeable, mergeable_state: pr.mergeable_state };
-                }
-                // Wait a bit before the next try
-                await new Promise(r => setTimeout(r, 3000));
-              }
-              // If we never got a definitive answer, treat it as not merge‑able.
-              return { mergeable: false, mergeable_state: 'unknown' };
-            }
+          # 2️⃣ Fetch the base branch so we can attempt a merge
+          git fetch origin "$BASE_REF"
 
-            const { mergeable, mergeable_state } = await getMergeableState();
+          # 3️⃣ Try a dry‑run merge.  Exit code 0 → no conflicts.
+          if git merge --no-commit --no-ff "origin/$BASE_REF"; then
+            echo "✅ No merge conflicts at all."
+            echo "conflict=none" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ Merge conflicts detected – analysing which files..."
+            # List conflicted paths (status code 'U' means unmerged)
+            CONFLICTED=$(git status --porcelain | awk '/^UU|^AA|^DD/ {print $2}')
+            
+            # Filter out any path that lives under the submodule directory
+            NON_SUBMODULE_CONFLICTS=$(echo "$CONFLICTED" | grep -v "^${SUBMODULE_PATH}/" || true)
 
-            if (mergeable) {
-              console.log(`PR #${prNumber} is mergeable (state: '${mergeable_state}').`);
-            } else {
-              console.log(`PR #${prNumber} is NOT mergeable (state: '${mergeable_state}'). Checking changed files…`);
+            if [[ -n "$NON_SUBMODULE_CONFLICTS" ]]; then
+              echo "❌ Non‑submodule conflicts found:"
+              echo "$NON_SUBMODULE_CONFLICTS"
+              echo "conflict=non_submodule" >> $GITHUB_OUTPUT
+              # Fail the job – later steps will be skipped
+              exit 1
+            else
+              echo "✅ Conflicts exist **only** in submodule path – OK to continue."
+              echo "conflict=submodule_only" >> $GITHUB_OUTPUT
+            fi
+          fi
 
-              // Get the list of files changed in the PR
-              const { data: files } = await github.rest.pulls.listFiles({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: prNumber
-              });
-
-              // Keep only files that are **not** part of the submodule directory.
-              const nonSubmoduleChanges = files.filter(f => {
-                // Exclude the submodule gitlink itself and any path that contains the submodule folder.
-                return !(f.filename.endsWith('.git') || f.filename.includes('submod'));
-              });
-
-              if (nonSubmoduleChanges.length > 0) {
-                core.setFailed(
-                  `PR #${prNumber} has merge conflicts in non‑submodule files: ` +
-                  nonSubmoduleChanges.map(f => f.filename).join(', ')
-                );
-              } else {
-                console.log('Conflicts exist only in submodule files – proceeding.');
-              }
-            }
-
-      # -----------------------------
+      # -----------------------------------------------------------------
       # Step 4: Trigger submodule workflow
-      # -----------------------------
+      # -----------------------------------------------------------------
       - name: Trigger Submodule Workflow
         if: steps.check.outputs.found_merge == 'true'
         uses: actions/github-script@v7
@@ -197,6 +175,7 @@ jobs:
       # Step 6: Merge Base Pull Request (only after SHA verification)
       # -----------------------------------------------------------------
       - name: Merge Base Pull Request
+        id: merge_base_pr
         if: |
           steps.check.outputs.found_merge == 'true' &&
           steps.verify_submodule.outcome == 'success'
