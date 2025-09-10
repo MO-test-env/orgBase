@@ -107,7 +107,7 @@ jobs:
             const owner = 'MOvenshire';
             const repo = 'submod';
             const workflow_id = 'merge-submodule-pr.yml'; // submodule workflow file
-            const ref = 'main'; // branch in submodule repo
+            const ref = 'mo/automerge1'; // branch in submodule repo
 
             const inputs = {
               base_pr_number: context.issue.number.toString(),
