@@ -151,6 +151,14 @@ jobs:
             });
             console.log(`Dispatched submodule workflow for PR #${inputs.base_pr_number} on branch ${inputs.base_branch}`);
 
+      - name: Checkout PR branch (with submodules)
+        if: steps.check.outputs.found_merge == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.issue.pull_request.head.ref }}
+          submodules: true
+          fetch-depth: 0
+          token: ${{ secrets.WORKFLOWS }}
       # -----------------------------------------------------------------
       # Step 5‑6: Verify submodule SHA, update it if necessary, and merge PR
       # -----------------------------------------------------------------
