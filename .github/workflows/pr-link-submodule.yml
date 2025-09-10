@@ -57,35 +57,64 @@ jobs:
           echo "submodule_repo=$SUBMODULE_REPO" >> $GITHUB_OUTPUT
           echo "Submodule: $SUBMODULE_REPO at $SUBMODULE_PATH"
       
+
       - name: Check for submodule PR
         id: check_pr
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.WORKFLOWS }}
           script: |
+            // Helper: retry wrapper with backoff
+            async function withRetry(fn, retries = 3, delayMs = 2000) {
+              for (let i = 0; i < retries; i++) {
+                try {
+                  return await fn();
+                } catch (err) {
+                  console.warn(`Attempt ${i + 1} failed: ${err.message}`);
+                  if (i === retries - 1) throw err;
+                  await new Promise(r => setTimeout(r, delayMs));
+                }
+              }
+            }
+
             const [owner, repo] = '${{ steps.submodule.outputs.submodule_repo }}'.split('/');
             const branchName = 'users/${{ steps.extract.outputs.ticket_num }}';
-            
-            // Search for PR with matching branch
-            const { data: prs } = await github.rest.pulls.list({
-              owner: owner,
-              repo: repo,
-              state: 'open',
-              head: `${owner}:${branchName}`
-            });
-            
-            if (prs.length === 0) {
+
+            try {
+              // Search for PR with retries
+              const { data: prs } = await withRetry(() =>
+                github.rest.pulls.list({
+                  owner,
+                  repo,
+                  state: 'open',
+                  head: `${owner}:${branchName}`,
+                })
+              );
+
+              if (prs.length === 0) {
+                core.setOutput('found', 'false');
+                core.setOutput('pr_url', '');
+                core.setOutput('pr_number', '');
+                core.setOutput('pr_state', '');
+                console.log(`No open PR found in ${owner}/${repo} for branch ${branchName}`);
+                return;
+              }
+
+              const pr = prs[0];
+              core.setOutput('found', 'true');
+              core.setOutput('pr_url', pr.html_url);
+              core.setOutput('pr_number', String(pr.number));
+              core.setOutput('pr_state', pr.state);
+
+              console.log(`Found PR #${pr.number} in ${owner}/${repo}: ${pr.html_url}`);
+            } catch (error) {
+              console.error('Error searching for submodule PR after retries:', error.message);
               core.setOutput('found', 'false');
               core.setOutput('pr_url', '');
               core.setOutput('pr_number', '');
-              return;
+              core.setOutput('pr_state', '');
             }
-            
-            const pr = prs[0];
-            core.setOutput('found', 'true');
-            core.setOutput('pr_url', pr.html_url);
-            core.setOutput('pr_number', pr.number.toString());
-            core.setOutput('pr_state', pr.state);
+
 
       - name: Set commit status for submodule PR
         id: marissa
