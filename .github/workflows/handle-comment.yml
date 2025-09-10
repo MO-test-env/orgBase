@@ -61,42 +61,61 @@ jobs:
         id: check_conflicts
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.WORKFLOWS }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const prNumber = context.issue.number;
 
-            // Get PR details
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber
-            });
+            // -----------------------------------------------------------------
+            // Helper: wait until GitHub has resolved the `mergeable` field.
+            // -----------------------------------------------------------------
+            async function getMergeableState() {
+              // GitHub may return `mergeable: null` while it is still computing.
+              // Poll a few times before giving up.
+              for (let i = 0; i < 6; i++) {
+                const { data: pr } = await github.rest.pulls.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  pull_number: prNumber
+                });
 
-            // `mergeable_state` can be: 'clean', 'dirty', 'unstable', 'unknown', etc.
-            // 'dirty' indicates that the PR has merge conflicts.
-            if (pr.mergeable_state === 'dirty') {
-              // List changed files to see where the conflicts are
+                if (pr.mergeable !== null) {
+                  return { mergeable: pr.mergeable, mergeable_state: pr.mergeable_state };
+                }
+                // Wait a bit before the next try
+                await new Promise(r => setTimeout(r, 3000));
+              }
+              // If we never got a definitive answer, treat it as not merge‑able.
+              return { mergeable: false, mergeable_state: 'unknown' };
+            }
+
+            const { mergeable, mergeable_state } = await getMergeableState();
+
+            if (mergeable) {
+              console.log(`PR #${prNumber} is mergeable (state: '${mergeable_state}').`);
+            } else {
+              console.log(`PR #${prNumber} is NOT mergeable (state: '${mergeable_state}'). Checking changed files…`);
+
+              // Get the list of files changed in the PR
               const { data: files } = await github.rest.pulls.listFiles({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 pull_number: prNumber
               });
 
-              // Filter out submodule‑related files (including the .gitlink)
-              const nonSubmoduleConflicts = files.filter(f => {
-                return !f.filename.endsWith('.git') && !f.filename.includes('submod');
+              // Keep only files that are **not** part of the submodule directory.
+              const nonSubmoduleChanges = files.filter(f => {
+                // Exclude the submodule gitlink itself and any path that contains the submodule folder.
+                return !(f.filename.endsWith('.git') || f.filename.includes('submod'));
               });
 
-              if (nonSubmoduleConflicts.length > 0) {
+              if (nonSubmoduleChanges.length > 0) {
                 core.setFailed(
                   `PR #${prNumber} has merge conflicts in non‑submodule files: ` +
-                  nonSubmoduleConflicts.map(f => f.filename).join(', ')
+                  nonSubmoduleChanges.map(f => f.filename).join(', ')
                 );
               } else {
-                console.log("Conflicts exist only in submodule files – proceeding.");
+                console.log('Conflicts exist only in submodule files – proceeding.');
               }
-            } else {
-              console.log(`PR mergeable_state is '${pr.mergeable_state}'. No non‑submodule conflicts detected.`);
             }
 
       # -----------------------------
