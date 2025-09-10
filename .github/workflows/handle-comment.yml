@@ -152,56 +152,51 @@ jobs:
             console.log(`Dispatched submodule workflow for PR #${inputs.base_pr_number} on branch ${inputs.base_branch}`);
 
       # -----------------------------------------------------------------
-      # Step 5: Verify submodule SHA points to its main branch
+      # Step 5‑6: Verify submodule SHA, update it if necessary, and merge PR
       # -----------------------------------------------------------------
-      - name: Checkout PR branch (with submodules)
+      - name: Verify submodule SHA, update if outdated & merge PR
+        id: update_and_merge
         if: steps.check.outputs.found_merge == 'true'
-        uses: actions/checkout@v4
-        with:
-          submodules: true
-          fetch-depth: 0
-          token: ${{ secrets.WORKFLOWS }}
-
-      - name: Ensure submodule SHA matches its `main` branch
-        if: steps.check.outputs.found_merge == 'true'
-        id: verify_submodule
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SUBMODULE_PATH: submod               # <-- change if you rename the folder
         run: |
-          # Path to the submodule as it appears in this repo
-          SUBMODULE_PATH="submod"
+          set -euo pipefail
 
-          # SHA recorded in the PR (gitlink entry)
-          PR_SUB_SHA=$(git ls-tree HEAD "$SUBMODULE_PATH" | awk '{print $3}')
-          echo "PR submodule SHA: $PR_SUB_SHA"
-
-          # Owner and repo of the submodule (assumes same org)
+          # ----- 1️⃣  Resolve the latest SHA on the submodule’s default branch -----
           SUB_OWNER="${{ github.repository_owner }}"
           SUB_REPO="submod"
+          # Get the default branch of the submodule (fallback to `main`)
+          DEFAULT_BRANCH=$(git ls-remote --symref "https://github.com/$SUB_OWNER/$SUB_REPO.git" HEAD \
+                            | awk '/^ref:/ {sub("refs/heads/","",$2); print $2}')
+          DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
+          echo "Submodule default branch: $DEFAULT_BRANCH"
 
-          # SHA of the submodule's default branch (main)
-          MAIN_SUB_SHA=$(git ls-remote "https://github.com/$SUB_OWNER/$SUB_REPO.git" refs/heads/main | awk '{print $1}')
-          echo "Submodule main SHA: $MAIN_SUB_SHA"
+          LATEST_SUB_SHA=$(git ls-remote "https://github.com/$SUB_OWNER/$SUB_REPO.git" refs/heads/$DEFAULT_BRANCH \
+                           | awk '{print $1}')
+          echo "Latest submodule SHA on $DEFAULT_BRANCH: $LATEST_SUB_SHA"
 
-          if [ "$PR_SUB_SHA" != "$MAIN_SUB_SHA" ]; then
-            echo "❌ Submodule SHA does not point to the latest main commit."
-            exit 1
+          # ----- 2️⃣  SHA currently recorded in the PR (gitlink entry) -----
+          CURRENT_SUB_SHA=$(git ls-tree HEAD "$SUBMODULE_PATH" | awk '{print $3}')
+          echo "Current submodule SHA in PR: $CURRENT_SUB_SHA"
+
+          # ----- 3️⃣  If they differ, update the submodule reference -----
+          if [ "$CURRENT_SUB_SHA" != "$LATEST_SUB_SHA" ]; then
+            echo "🔄 Updating submodule reference to latest SHA..."
+
+            # Update the submodule to the latest commit
+            git submodule update --remote "$SUBMODULE_PATH"
+            # Ensure the working tree reflects the new SHA
+            git add "$SUBMODULE_PATH"
+            git commit -m "chore(submod): bump submodule to $LATEST_SUB_SHA"
+            # Push the change back to the PR branch
+            git push origin HEAD:${{ github.event.issue.pull_request.head.ref }}
+          else
+            echo "✅ Submodule already points to the latest $DEFAULT_BRANCH commit."
           fi
-          echo "✅ Submodule points to main – safe to merge."
 
-      # -----------------------------------------------------------------
-      # Step 6: Merge Base Pull Request (only after SHA verification)
-      # -----------------------------------------------------------------
-      - name: Merge Base Pull Request
-        id: merge_base_pr
-        if: |
-          steps.check.outputs.found_merge == 'true' &&
-          steps.verify_submodule.outcome == 'success'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "Merging base pull request #${{ github.event.issue.number }} ..."
-          # Use the GitHub CLI; the token is automatically authenticated
+          # ----- 4️⃣  Merge the base PR (admin merge) -----
+          echo "Merging base PR #${{ github.event.issue.number }} ..."
           gh pr merge ${{ github.event.issue.number }} --merge --admin
 
       # -----------------------------------------------------------------
