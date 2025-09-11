@@ -11,13 +11,12 @@ permissions:
   actions: write
 
 env:
-  # Placeholder for local testing – the real value is filled by the “Get submodule info” step.
+  # Filled dynamically by “Get submodule info”. Kept as a placeholder for local testing.
   SUBMODULE_REPO: MOvenshire/submod
   CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
 
 jobs:
   bump-submodule:
-    # Run only for PR‑related comments that contain the trigger (adjust '/bump' if you wish)
     if: |
       github.event.issue.pull_request != null &&
       github.event.comment.body == '/bump' &&
@@ -135,7 +134,13 @@ jobs:
           git switch -c "$BUMP_BRANCH"
 
           # --------------------------------------------------------------
-          # 7️⃣ Push the bump branch onto the original PR head (force‑with‑lease)
+          # 7️⃣ Re‑fetch the PR head to avoid stale‑info errors
+          # --------------------------------------------------------------
+          git fetch origin "$PR_HEAD_REF":"$PR_HEAD_REF"
+
+          # --------------------------------------------------------------
+          # 8️⃣ Push the bump branch onto the original PR head (force‑with‑lease)
           # --------------------------------------------------------------
           git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
-            "$BUMP_BRANCH:${{ env.PR_HEAD_REF }}" --force-with-lease
+            "$BUMP_BRANCH:${PR_HEAD_REF}" \
+            --force-with-lease="refs/heads/${PR_HEAD_REF}"
