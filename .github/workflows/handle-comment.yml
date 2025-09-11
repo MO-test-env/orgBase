@@ -175,9 +175,16 @@ jobs:
         if: steps.check.outputs.found_merge == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.WORKFLOWS }}
-          SUBMODULE_PATH: submod   # adjust if needed
+          SUBMODULE_PATH: submod
         run: |
           set -euo pipefail
+
+          # 0️⃣ Get PR metadata (branch + repo) safely
+          PR_DATA=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }})
+          BRANCH=$(echo "$PR_DATA" | jq -r .head.ref)
+          REPO=$(echo "$PR_DATA" | jq -r .head.repo.full_name)
+          echo "Target branch: $BRANCH"
+          echo "Target repo: $REPO"
 
           # 1️⃣ Get submodule repo info
           SUB_OWNER="${{ github.repository_owner }}"
@@ -202,8 +209,6 @@ jobs:
             git add "$SUBMODULE_PATH"
             git commit -m "chore(submod): bump submodule to $LATEST_SUB_SHA"
 
-            BRANCH="${{ github.event.pull_request.head.ref }}"
-            REPO="${{ github.event.pull_request.head.repo.full_name }}"
             echo "Pushing bump to $REPO:$BRANCH"
             git push "https://${GITHUB_TOKEN}@github.com/$REPO.git" HEAD:"$BRANCH"
           else
@@ -211,8 +216,8 @@ jobs:
           fi
 
           # 4️⃣ Merge the base PR (admin merge)
-          echo "Merging base PR #${{ github.event.pull_request.number }} ..."
-          gh pr merge ${{ github.event.pull_request.number }} --merge --admin
+          echo "Merging base PR #${{ github.event.issue.number }} ..."
+          gh pr merge ${{ github.event.issue.number }} --merge --admin
 
       # -----------------------------------------------------------------
       # Step 7: Update the original comment with final status
