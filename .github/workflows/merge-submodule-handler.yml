@@ -41,8 +41,8 @@ jobs:
         id: submod_info
         run: |
           # Grab the first submodule entry – adapt if you have many
-          SUBMODULE_PATH=$(git config --file .gitmodules --get-regexp '^submodule\..*\.path | head -1 | awk '{print $2}')
-          SUBMODULE_URL=$(git config --file .gitmodules --get-regexp '^submodule\..*\.url | head -1 | awk '{print $2}')
+          SUBMODULE_PATH=$(git config --file .gitmodules --get-regexp '^submodule\..*\.path$' | head -1 | awk '{print $2}')
+          SUBMODULE_URL=$(git config --file .gitmodules --get-regexp '^submodule\..*\.url$' | head -1 | awk '{print $2}')
 
           # Convert URL → owner/repo (supports ssh & https)
           if [[ "$SUBMODULE_URL" == git@github.com:* ]]; then
