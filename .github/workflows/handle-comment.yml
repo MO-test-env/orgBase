@@ -201,7 +201,7 @@ jobs:
           CURRENT_SUB_SHA=$(git ls-tree HEAD "$SUBMODULE_PATH" | awk '{print $3}')
           echo "Current submodule SHA in PR: $CURRENT_SUB_SHA"
           git fetch origin "$BRANCH"
-          git rebase origin "$BRANCH"
+          git rebase origin/"$BRANCH"
           # 3️⃣ Update if needed
           if [ "$CURRENT_SUB_SHA" != "$LATEST_SUB_SHA" ]; then
             echo "🔄 Updating submodule reference..."
