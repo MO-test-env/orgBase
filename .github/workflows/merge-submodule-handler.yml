@@ -23,25 +23,6 @@ jobs:
       github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
-      # ------------------------------------------------------------------
-      # 0️⃣ Resolve dynamic values (submodule repo & path) from .gitmodules
-      # ------------------------------------------------------------------
-      - name: Detect submodule repo and path
-        id: detect_submodule
-        run: |
-          set -euo pipefail
-          # Look for the first entry in .gitmodules – assumes a single submodule
-          SUBMODULE_LINE=$(git config -f .gitmodules --list | grep '^submodule\.' | head -n1)
-          SUB_NAME=${SUBMODULE_LINE%%.*}
-          REPO=$(git config -f .gitmodules --get "$SUB_NAME.url")
-          PATH=$(git config -f .gitmodules --get "$SUB_NAME.path")
-          echo "repo=$REPO" >> $GITHUB_OUTPUT
-          echo "path=$PATH" >> $GITHUB_OUTPUT
-
-      - name: Export detected values
-        run: |
-          echo "SUBMODULE_REPO=${{ steps.detect_submodule.outputs.repo }}" >> $GITHUB_ENV
-          echo "SUBMODULE_PATH=${{ steps.detect_submodule.outputs.path }}" >> $GITHUB_ENV
 
       # ------------------------------------------------------------------
       # 1️⃣ Checkout base repo (full history, **with** submodules)
