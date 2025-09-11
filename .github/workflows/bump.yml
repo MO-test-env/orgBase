@@ -128,19 +128,7 @@ jobs:
           git commit -m "chore(submod): bump $SUBMODULE_REPO to main $ORIGIN_SHA"
 
           # --------------------------------------------------------------
-          # 6️⃣ Create a *temporary* branch that we will push back to the PR head
-          # --------------------------------------------------------------
-          BUMP_BRANCH="bump-submod-$(date +%s)"
-          git switch -c "$BUMP_BRANCH"
-
-          # --------------------------------------------------------------
-          # 7️⃣ Re‑fetch the PR head to avoid stale‑info errors
-          # --------------------------------------------------------------
-          git fetch origin "$PR_HEAD_REF":"$PR_HEAD_REF"
-
-          # --------------------------------------------------------------
           # 8️⃣ Push the bump branch onto the original PR head (force‑with‑lease)
           # --------------------------------------------------------------
           git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
-            "$BUMP_BRANCH:${PR_HEAD_REF}" \
-            --force-with-lease="refs/heads/${PR_HEAD_REF}"
+            "${PR_HEAD_REF}" \ 
