@@ -57,36 +57,41 @@ jobs:
       # ------------------------------------------------------------------
       # 3️⃣ Merge matching PR in the submodule (if it exists)
       # ------------------------------------------------------------------
-      - name: Merge submodule PR (if any)
-        id: merge_submodule
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.CROSS_TOKEN }}
-          script: |
-            const sub = process.env.SUBMODULE_REPO;
-            const [owner, repo] = sub.split('/');
-            const branch = '${{ steps.pr_info.outputs.head_ref }}';
-            const { data: prs } = await github.rest.pulls.list({
-              owner,
-              repo,
-              state: 'open',
-              per_page: 100
-            });
-            const match = prs.find(p => p.head.ref === branch);
-            if (!match) {
-              core.info('No submodule PR matches head ref.');
-              core.setOutput('found', 'false');
-              return;
-            }
-            await github.rest.pulls.merge({
-              owner,
-              repo,
-              pull_number: match.number,
-              merge_method: 'merge'
-            });
-            core.info(`Merged submodule PR #${match.number}`);
-            core.setOutput('found', 'true');
-            core.setOutput('pr_number', match.number);
+      - name: Bump submodule pointer
+        if: steps.merge_base.outputs.merged == 'true'
+        env:
+          GITHUB_TOKEN_PUSH: ${{ env.CROSS_TOKEN }}
+          SUBMODULE_PATH: ${{ env.SUBMODULE_PATH }}
+          SUBMODULE_REPO: ${{ env.SUBMODULE_REPO }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Ensure we are on the latest main
+          git checkout main
+          git pull origin main
+
+          # Create a temporary branch (will be pushed as main later)
+          BUMP_BRANCH="bump-submod-$(date +%s)"
+          git switch -c "$BUMP_BRANCH"
+
+          # Update the submodule to the latest commit on its default branch
+          git submodule sync "${SUBMODULE_PATH}"
+          git submodule update --remote "${SUBMODULE_PATH}"
+
+          # Stage & commit only if there is a real change
+          if git diff --quiet --cached; then
+            echo "Submodule already up‑to‑date – nothing to push."
+            exit 0
+          fi
+
+          git add "${SUBMODULE_PATH}"
+          git commit -m "chore(submod): bump submodule to latest ${SUBMODULE_REPO}"
+
+          # Push fast‑forward only (force‑with‑lease guards against race conditions)
+          git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
+            "$BUMP_BRANCH:main" 
 
       # ------------------------------------------------------------------
       # 4️⃣ Merge the base PR (admin‑style)
