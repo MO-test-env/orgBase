@@ -155,7 +155,8 @@ jobs:
         if: steps.check.outputs.found_merge == 'true'
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.issue.pull_request.head.ref }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.ref }}
           submodules: true
           fetch-depth: 0
           token: ${{ secrets.WORKFLOWS }}
@@ -165,53 +166,53 @@ jobs:
         run: |
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-      # -----------------------------------------------------------------
-      # Step 5‑6: Verify submodule SHA, update it if necessary, and merge PR
-      # -----------------------------------------------------------------
+
+      - name: Authenticate GitHub CLI
+        if: steps.check.outputs.found_merge == 'true'
+        run: echo "${{ secrets.WORKFLOWS }}" | gh auth login --with-token
+
       - name: Verify submodule SHA, update if outdated & merge PR
-        id: update_and_merge
         if: steps.check.outputs.found_merge == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.WORKFLOWS }}
-          SUBMODULE_PATH: submod               # <-- change if you rename the folder
+          SUBMODULE_PATH: submod   # adjust if needed
         run: |
           set -euo pipefail
 
-          # ----- 1️⃣  Resolve the latest SHA on the submodule’s default branch -----
+          # 1️⃣ Get submodule repo info
           SUB_OWNER="${{ github.repository_owner }}"
           SUB_REPO="submod"
-          # Get the default branch of the submodule (fallback to `main`)
-          DEFAULT_BRANCH=$(git ls-remote --symref "https://github.com/$SUB_OWNER/$SUB_REPO.git" HEAD \
+          DEFAULT_BRANCH=$(git ls-remote --symref "https://${GITHUB_TOKEN}@github.com/$SUB_OWNER/$SUB_REPO.git" HEAD \
                             | awk '/^ref:/ {sub("refs/heads/","",$2); print $2}')
           DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
           echo "Submodule default branch: $DEFAULT_BRANCH"
 
-          LATEST_SUB_SHA=$(git ls-remote "https://github.com/$SUB_OWNER/$SUB_REPO.git" refs/heads/$DEFAULT_BRANCH \
-                           | awk '{print $1}')
+          # 2️⃣ Find latest and current SHAs
+          LATEST_SUB_SHA=$(git ls-remote "https://${GITHUB_TOKEN}@github.com/$SUB_OWNER/$SUB_REPO.git" "refs/heads/$DEFAULT_BRANCH" | awk '{print $1}')
           echo "Latest submodule SHA on $DEFAULT_BRANCH: $LATEST_SUB_SHA"
 
-          # ----- 2️⃣  SHA currently recorded in the PR (gitlink entry) -----
           CURRENT_SUB_SHA=$(git ls-tree HEAD "$SUBMODULE_PATH" | awk '{print $3}')
           echo "Current submodule SHA in PR: $CURRENT_SUB_SHA"
 
-          # ----- 3️⃣  If they differ, update the submodule reference -----
+          # 3️⃣ Update if needed
           if [ "$CURRENT_SUB_SHA" != "$LATEST_SUB_SHA" ]; then
-            echo "🔄 Updating submodule reference to latest SHA..."
-
-            # Update the submodule to the latest commit
-            git submodule update --remote "$SUBMODULE_PATH"
-            # Ensure the working tree reflects the new SHA
+            echo "🔄 Updating submodule reference..."
+            git -C "$SUBMODULE_PATH" fetch origin "$DEFAULT_BRANCH"
+            git -C "$SUBMODULE_PATH" checkout "$LATEST_SUB_SHA"
             git add "$SUBMODULE_PATH"
             git commit -m "chore(submod): bump submodule to $LATEST_SUB_SHA"
-            # Push the change back to the PR branch
-            git push origin HEAD:${{ github.event.issue.pull_request.head.ref }}
+
+            BRANCH="${{ github.event.pull_request.head.ref }}"
+            REPO="${{ github.event.pull_request.head.repo.full_name }}"
+            echo "Pushing bump to $REPO:$BRANCH"
+            git push "https://${GITHUB_TOKEN}@github.com/$REPO.git" HEAD:"$BRANCH"
           else
-            echo "✅ Submodule already points to the latest $DEFAULT_BRANCH commit."
+            echo "✅ Submodule already up-to-date."
           fi
 
-          # ----- 4️⃣  Merge the base PR (admin merge) -----
-          echo "Merging base PR #${{ github.event.issue.number }} ..."
-          gh pr merge ${{ github.event.issue.number }} --merge --admin
+          # 4️⃣ Merge the base PR (admin merge)
+          echo "Merging base PR #${{ github.event.pull_request.number }} ..."
+          gh pr merge ${{ github.event.pull_request.number }} --merge --admin
 
       # -----------------------------------------------------------------
       # Step 7: Update the original comment with final status
