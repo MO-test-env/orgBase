@@ -13,7 +13,7 @@ permissions:
 env:
   # Submodule repo in “owner/name” format – read from .gitmodules if possible
   SUBMODULE_REPO: MOvenshire/submod 
-  CROSS_TOKEN: ${{ secrets.CROSS_TOKEN }}
+  CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
 
 jobs:
   merge-flow:
@@ -31,7 +31,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: true          # <-- crucial: we need the submodule directory
+          submodules: true
           token: ${{ env.CROSS_TOKEN }}
 
       # ------------------------------------------------------------------
