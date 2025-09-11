@@ -167,40 +167,25 @@ jobs:
           set -euo pipefail
 
           # --------------------------------------------------------------
-          # Ensure we are on the latest **PR head** branch (not `main`)
+          # 0️⃣ Ensure we have the *latest* PR head branch locally
           # --------------------------------------------------------------
+          # This protects against “stale info” push rejections.
           git fetch origin "$PR_HEAD_REF"
-          git checkout "$PR_HEAD_REF"
-          git pull origin "$PR_HEAD_REF"
-          
+          # Reset our local ref to exactly what GitHub sees.
+          git checkout -B "$PR_HEAD_REF" "origin/$PR_HEAD_REF"
 
           # --------------------------------------------------------------
-          # Configure Git author/committer to the user who issued `/merge`
-          # --------------------------------------------------------------
-          # GitHub does not expose the commenter's email, so we use the
-          # conventional no‑reply address pattern.
-          GIT_AUTHOR="${{ github.event.comment.user.login }}"
-          git config user.name "$GIT_AUTHOR"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # --------------------------------------------------------------
-          # Create a temporary branch that we will push back to the PR branch
-          # --------------------------------------------------------------
-          BUMP_BRANCH="bump-submod-$(date +%s)"
-          git switch -c "$BUMP_BRANCH"
-
-          # --------------------------------------------------------------
-          # 1️⃣ Make sure the submodule is present locally (init if needed)
+          # 1️⃣ Make sure the submodule is present locally (init if needed)
           # --------------------------------------------------------------
           git submodule update --init --depth 1 "$SUBMODULE_PATH"
 
           # --------------------------------------------------------------
-          # 2️⃣ Fetch *origin/main* of the submodule
+          # 2️⃣ Fetch *origin/main* of the submodule
           # --------------------------------------------------------------
           git -C "$SUBMODULE_PATH" fetch origin main
 
           # --------------------------------------------------------------
-          # 3️⃣ Determine if the pointer already matches origin/main
+          # 3️⃣ Determine if the pointer already matches origin/main
           # --------------------------------------------------------------
           CURRENT_SHA=$(git -C "$SUBMODULE_PATH" rev-parse HEAD)
           ORIGIN_SHA=$(git -C "$SUBMODULE_PATH" rev-parse origin/main)
@@ -211,23 +196,27 @@ jobs:
           fi
 
           # --------------------------------------------------------------
-          # 4️⃣ Checkout the fetched commit (fast‑forward pointer)
+          # 4️⃣ Checkout the fetched commit (fast‑forward pointer)
           # --------------------------------------------------------------
           git -C "$SUBMODULE_PATH" checkout "$ORIGIN_SHA"
 
           # --------------------------------------------------------------
-          # 5️⃣ Stage & commit the updated pointer
+          # 5️⃣ Stage & commit the updated pointer
           # --------------------------------------------------------------
           git add "$SUBMODULE_PATH"
           git commit -m "chore(submod): bump $SUBMODULE_REPO to main $ORIGIN_SHA"
 
           # --------------------------------------------------------------
-          # 6️⃣ Push fast‑forward (force‑with‑lease protects against races)
+          # 6️⃣ Create a *temporary* branch that we will push back to the PR head
           # --------------------------------------------------------------
-          # Push the bump branch back onto the original PR head branch
+          BUMP_BRANCH="bump-submod-$(date +%s)"
+          git switch -c "$BUMP_BRANCH"
+
+          # --------------------------------------------------------------
+          # 7️⃣ Push the bump branch onto the original PR head (force‑with‑lease)
+          # --------------------------------------------------------------
           git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
             "$BUMP_BRANCH:${{ env.PR_HEAD_REF }}" --force-with-lease
-
       # ------------------------------------------------------------------
       # 6️⃣ Merge the base PR (admin‑style)
       # ------------------------------------------------------------------
