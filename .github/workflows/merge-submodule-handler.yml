@@ -34,13 +34,15 @@ jobs:
           submodules: true
           token: ${{ env.CROSS_TOKEN }}
 
-
+      # ------------------------------------------------------------------
+      # 2️⃣ Detect submodule path / repo
+      # ------------------------------------------------------------------
       - name: Get submodule info
         id: submod_info
         run: |
           # Grab the first submodule entry – adapt if you have many
-          SUBMODULE_PATH=$(git config --file .gitmodules --get-regexp '^submodule\..*\.path$' | head -1 | awk '{print $2}')
-          SUBMODULE_URL=$(git config --file .gitmodules --get-regexp '^submodule\..*\.url$' | head -1 | awk '{print $2}')
+          SUBMODULE_PATH=$(git config --file .gitmodules --get-regexp '^submodule\..*\.path | head -1 | awk '{print $2}')
+          SUBMODULE_URL=$(git config --file .gitmodules --get-regexp '^submodule\..*\.url | head -1 | awk '{print $2}')
 
           # Convert URL → owner/repo (supports ssh & https)
           if [[ "$SUBMODULE_URL" == git@github.com:* ]]; then
@@ -58,7 +60,7 @@ jobs:
           echo "✅ Submodule detected: $SUBMODULE_REPO @ $SUBMODULE_PATH"
 
       # ------------------------------------------------------------------
-      # 2️⃣ Gather PR metadata (head ref, head repo, base branch)
+      # 3️⃣ Gather PR metadata (head ref, head repo, base branch)
       # ------------------------------------------------------------------
       - name: Get base PR metadata
         id: pr_info
@@ -78,7 +80,53 @@ jobs:
             core.setOutput('base_ref', pr.base.ref);
 
       # ------------------------------------------------------------------
-      # 4️⃣ Merge the base PR (admin‑style)
+      # 4️⃣ **Find & merge the matching submodule PR** (must happen first)
+      # ------------------------------------------------------------------
+      - name: Find submodule PR
+        id: find_submod_pr
+        uses: actions/github-script@v7
+        env:
+          SUBMODULE_REPO: ${{ steps.submod_info.outputs.submodule_repo }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const [owner, repo] = process.env.SUBMODULE_REPO.split('/');
+            const headSha = '${{ steps.pr_info.outputs.head_ref }}'; // PR head ref from base repo
+            // List open PRs in the submodule repo
+            const { data: prs } = await github.rest.pulls.list({
+              owner,
+              repo,
+              state: 'open'
+            });
+            const match = prs.find(p => p.head.sha.startsWith(headSha));
+            if (match) {
+              core.setOutput('found', 'true');
+              core.setOutput('pr_number', match.number);
+            } else {
+              core.setOutput('found', 'false');
+            }
+
+      - name: Merge submodule PR (if found)
+        if: steps.find_submod_pr.outputs.found == 'true'
+        id: merge_submodule
+        uses: actions/github-script@v7
+        env:
+          SUBMODULE_REPO: ${{ steps.submod_info.outputs.submodule_repo }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const [owner, repo] = process.env.SUBMODULE_REPO.split('/');
+            const number = parseInt('${{ steps.find_submod_pr.outputs.pr_number }}', 10);
+            await github.rest.pulls.merge({
+              owner,
+              repo,
+              pull_number: number,
+              merge_method: 'merge'
+            });
+            core.info(`Merged submodule PR #${number}`);
+
+      # ------------------------------------------------------------------
+      # 5️⃣ Merge the base PR (admin‑style)
       # ------------------------------------------------------------------
       - name: Merge base PR
         id: merge_base
@@ -96,6 +144,9 @@ jobs:
             core.info(`Merged base PR #${number}`);
             core.setOutput('merged', 'true');
 
+      # ------------------------------------------------------------------
+      # 6️⃣ Bump submodule pointer – compare against *origin/main*
+      # ------------------------------------------------------------------
       - name: Bump submodule pointer
         if: steps.merge_base.outputs.merged == 'true'   # runs after the base PR merge
         env:
@@ -125,32 +176,40 @@ jobs:
           git submodule update --init --depth 1 "$SUBMODULE_PATH"
 
           # --------------------------------------------------------------
-          # 2️⃣ Force the submodule to checkout the *remote* `main` branch
+          # 2️⃣ Fetch *origin/main* of the submodule
           # --------------------------------------------------------------
           git -C "$SUBMODULE_PATH" fetch origin main
-          git -C "$SUBMODULE_PATH" checkout main
-          git -C "$SUBMODULE_PATH" pull origin main
 
           # --------------------------------------------------------------
-          # 3️⃣ Stage & commit only if the pointer actually changed
+          # 3️⃣ Determine if the pointer already matches origin/main
           # --------------------------------------------------------------
-          if git diff --quiet --cached "$SUBMODULE_PATH"; then
-            echo "Submodule already points to latest main – nothing to push."
+          CURRENT_SHA=$(git -C "$SUBMODULE_PATH" rev-parse HEAD)
+          ORIGIN_SHA=$(git -C "$SUBMODULE_PATH" rev-parse origin/main)
+
+          if [[ "$CURRENT_SHA" == "$ORIGIN_SHA" ]]; then
+            echo "Submodule already points to origin/main ($CURRENT_SHA) – nothing to push."
             exit 0
           fi
 
-          git add "$SUBMODULE_PATH"
-          LATEST_SHA=$(git -C "$SUBMODULE_PATH" rev-parse HEAD)
-          git commit -m "chore(submod): bump $SUBMODULE_REPO to main $LATEST_SHA"
+          # --------------------------------------------------------------
+          # 4️⃣ Checkout the fetched commit (fast‑forward pointer)
+          # --------------------------------------------------------------
+          git -C "$SUBMODULE_PATH" checkout "$ORIGIN_SHA"
 
           # --------------------------------------------------------------
-          # 4️⃣ Push fast‑forward (force‑with‑lease protects against races)
+          # 5️⃣ Stage & commit the updated pointer
+          # --------------------------------------------------------------
+          git add "$SUBMODULE_PATH"
+          git commit -m "chore(submod): bump $SUBMODULE_REPO to main $ORIGIN_SHA"
+
+          # --------------------------------------------------------------
+          # 6️⃣ Push fast‑forward (force‑with‑lease protects against races)
           # --------------------------------------------------------------
           git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
             "$BUMP_BRANCH:main" --force-with-lease
 
       # ------------------------------------------------------------------
-      # 6️⃣ Final comment – success / failure
+      # 7️⃣ Final comment – success / failure (now also reports submodule PR)
       # ------------------------------------------------------------------
       - name: Comment success
         if: steps.merge_base.outcome == 'success'
@@ -159,10 +218,10 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const commentId = context.payload.comment.id;
-            const subFound = '${{ steps.merge_submodule.outputs.found }}' === 'true';
+            const subFound = '${{ steps.find_submod_pr.outputs.found }}' === 'true';
             let body = "Pull Request Merged ✅\n\n";
             if (subFound) {
-              body += `• Submodule PR #${{ steps.merge_submodule.outputs.pr_number }} merged.\n`;
+              body += `• Submodule PR #${{ steps.find_submod_pr.outputs.pr_number }} merged.\n`;
             } else {
               body += "• No matching submodule PR found.\n";
             }
