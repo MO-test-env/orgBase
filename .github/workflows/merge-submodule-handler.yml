@@ -34,6 +34,29 @@ jobs:
           submodules: true
           token: ${{ env.CROSS_TOKEN }}
 
+
+      - name: Get submodule info
+        id: submod_info
+        run: |
+          # Grab the first submodule entry – adapt if you have many
+          SUBMODULE_PATH=$(git config --file .gitmodules --get-regexp '^submodule\..*\.path$' | head -1 | awk '{print $2}')
+          SUBMODULE_URL=$(git config --file .gitmodules --get-regexp '^submodule\..*\.url$' | head -1 | awk '{print $2}')
+
+          # Convert URL → owner/repo (supports ssh & https)
+          if [[ "$SUBMODULE_URL" == git@github.com:* ]]; then
+            SUBMODULE_REPO=${SUBMODULE_URL#git@github.com:}
+          elif [[ "$SUBMODULE_URL" == https://github.com/* ]]; then
+            SUBMODULE_REPO=${SUBMODULE_URL#https://github.com/}
+          else
+            echo "❌ Unsupported submodule URL: $SUBMODULE_URL"
+            exit 1
+          fi
+          SUBMODULE_REPO=${SUBMODULE_REPO%.git}
+
+          echo "submodule_path=$SUBMODULE_PATH" >> $GITHUB_OUTPUT
+          echo "submodule_repo=$SUBMODULE_REPO"   >> $GITHUB_OUTPUT
+          echo "✅ Submodule detected: $SUBMODULE_REPO @ $SUBMODULE_PATH"
+
       # ------------------------------------------------------------------
       # 2️⃣ Gather PR metadata (head ref, head repo, base branch)
       # ------------------------------------------------------------------
@@ -55,45 +78,6 @@ jobs:
             core.setOutput('base_ref', pr.base.ref);
 
       # ------------------------------------------------------------------
-      # 3️⃣ Merge matching PR in the submodule (if it exists)
-      # ------------------------------------------------------------------
-      - name: Bump submodule pointer
-        if: steps.merge_base.outputs.merged == 'true'
-        env:
-          GITHUB_TOKEN_PUSH: ${{ env.CROSS_TOKEN }}
-          SUBMODULE_PATH: ${{ env.SUBMODULE_PATH }}
-          SUBMODULE_REPO: ${{ env.SUBMODULE_REPO }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Ensure we are on the latest main
-          git checkout main
-          git pull origin main
-
-          # Create a temporary branch (will be pushed as main later)
-          BUMP_BRANCH="bump-submod-$(date +%s)"
-          git switch -c "$BUMP_BRANCH"
-
-          # Update the submodule to the latest commit on its default branch
-          git submodule sync "${SUBMODULE_PATH}"
-          git submodule update --remote "${SUBMODULE_PATH}"
-
-          # Stage & commit only if there is a real change
-          if git diff --quiet --cached; then
-            echo "Submodule already up‑to‑date – nothing to push."
-            exit 0
-          fi
-
-          git add "${SUBMODULE_PATH}"
-          git commit -m "chore(submod): bump submodule to latest ${SUBMODULE_REPO}"
-
-          # Push fast‑forward only (force‑with‑lease guards against race conditions)
-          git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
-            "$BUMP_BRANCH:main" 
-
-      # ------------------------------------------------------------------
       # 4️⃣ Merge the base PR (admin‑style)
       # ------------------------------------------------------------------
       - name: Merge base PR
@@ -112,41 +96,56 @@ jobs:
             core.info(`Merged base PR #${number}`);
             core.setOutput('merged', 'true');
 
-      # ------------------------------------------------------------------
-      # 5️⃣ Bump submodule pointer on main and push
-      # ------------------------------------------------------------------
       - name: Bump submodule pointer
-        if: steps.merge_base.outputs.merged == 'true'
+        if: steps.merge_base.outputs.merged == 'true'   # runs after the base PR merge
         env:
           GITHUB_TOKEN_PUSH: ${{ env.CROSS_TOKEN }}
-          SUBMODULE_PATH: ${{ env.SUBMODULE_PATH }}
+          SUBMODULE_PATH: ${{ steps.submod_info.outputs.submodule_path }}
+          SUBMODULE_REPO: ${{ steps.submod_info.outputs.submodule_repo }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Ensure we are on the latest main
+          # --------------------------------------------------------------
+          # Ensure we are on the latest `main` of the *parent* repo
+          # --------------------------------------------------------------
           git checkout main
           git pull origin main
 
-          # Create a temporary branch (will be pushed as main later)
+          # --------------------------------------------------------------
+          # Create a temporary branch that we will push back to `main`
+          # --------------------------------------------------------------
           BUMP_BRANCH="bump-submod-$(date +%s)"
           git switch -c "$BUMP_BRANCH"
 
-          # Update the submodule to the latest commit on its default branch
-          git submodule sync "${SUBMODULE_PATH}"
-          git submodule update --remote "${SUBMODULE_PATH}"
+          # --------------------------------------------------------------
+          # 1️⃣ Make sure the submodule is present locally (init if needed)
+          # --------------------------------------------------------------
+          git submodule update --init --depth 1 "$SUBMODULE_PATH"
 
-          # Stage & commit only if there is a real change
-          if git diff --quiet --cached; then
-            echo "Submodule already up‑to‑date – nothing to push."
+          # --------------------------------------------------------------
+          # 2️⃣ Force the submodule to checkout the *remote* `main` branch
+          # --------------------------------------------------------------
+          git -C "$SUBMODULE_PATH" fetch origin main
+          git -C "$SUBMODULE_PATH" checkout main
+          git -C "$SUBMODULE_PATH" pull origin main
+
+          # --------------------------------------------------------------
+          # 3️⃣ Stage & commit only if the pointer actually changed
+          # --------------------------------------------------------------
+          if git diff --quiet --cached "$SUBMODULE_PATH"; then
+            echo "Submodule already points to latest main – nothing to push."
             exit 0
           fi
 
-          git add "${SUBMODULE_PATH}"
-          git commit -m "chore(submod): bump submodule to latest ${SUBMODULE_REPO}"
-          
-          # Push fast‑forward only (force‑with‑lease guards against race conditions)
+          git add "$SUBMODULE_PATH"
+          LATEST_SHA=$(git -C "$SUBMODULE_PATH" rev-parse HEAD)
+          git commit -m "chore(submod): bump $SUBMODULE_REPO to main $LATEST_SHA"
+
+          # --------------------------------------------------------------
+          # 4️⃣ Push fast‑forward (force‑with‑lease protects against races)
+          # --------------------------------------------------------------
           git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
             "$BUMP_BRANCH:main" --force-with-lease
 
