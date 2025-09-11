@@ -11,8 +11,8 @@ permissions:
   actions: write
 
 env:
-  # Submodule repo in “owner/name” format – read from .gitmodules if possible
-  SUBMODULE_REPO: MOvenshire/submod 
+  # Filled in by the “Get submodule info” step – keep the placeholder for local testing.
+  SUBMODULE_REPO: MOvenshire/submod
   CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
 
 jobs:
@@ -86,26 +86,52 @@ jobs:
         id: find_submod_pr
         uses: actions/github-script@v7
         env:
+          # The repo string comes from the previous step – we trim it just in case.
           SUBMODULE_REPO: ${{ steps.submod_info.outputs.submodule_repo }}
+          GITHUB_TOKEN: ${{ env.CROSS_TOKEN }}   # <-- critical – use cross‑repo token
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ env.CROSS_TOKEN }}
           script: |
-            const [owner, repo] = process.env.SUBMODULE_REPO.split('/');
-            const headSha = '${{ steps.pr_info.outputs.head_ref }}'; // PR head ref from base repo
-            // List open PRs in the submodule repo
+            // --------------------------------------------------------------
+            // 1️⃣ Split “owner/repo”. Trim whitespace that could have sneaked in.
+            // --------------------------------------------------------------
+            const rawRepo = process.env.SUBMODULE_REPO.trim();
+            const [owner, repo] = rawRepo.split('/');
+            core.info(`Looking for PRs in ${owner}/${repo}`);
+
+            // --------------------------------------------------------------
+            // 2️⃣ Branch name from the base PR (passed from the previous step)
+            // --------------------------------------------------------------
+            const headBranch = '${{ steps.pr_info.outputs.head_ref }}';
+            core.info(`Base PR branch is ${headBranch}`);
+
+            // --------------------------------------------------------------
+            // 3️⃣ List **open** PRs in the submodule repository
+            // --------------------------------------------------------------
             const { data: prs } = await github.rest.pulls.list({
               owner,
               repo,
-              state: 'open'
+              state: 'open',
+              per_page: 100          // avoid pagination for most setups
             });
-            const match = prs.find(p => p.head.sha.startsWith(headSha));
+
+            // --------------------------------------------------------------
+            // 4️⃣ Find a PR whose head **branch** matches the base PR branch
+            // --------------------------------------------------------------
+            const match = prs.find(p => p.head.ref === headBranch);
+
             if (match) {
               core.setOutput('found', 'true');
-              core.setOutput('pr_number', match.number);
+              core.setOutput('pr_number', String(match.number));
+              core.info(`✅ Matching submodule PR #${match.number} (branch ${headBranch})`);
             } else {
               core.setOutput('found', 'false');
+              core.info('ℹ️ No matching submodule PR found for this branch');
             }
 
+      # ------------------------------------------------------------------
+      # 5️⃣ Merge submodule PR (if found)
+      # ------------------------------------------------------------------
       - name: Merge submodule PR (if found)
         if: steps.find_submod_pr.outputs.found == 'true'
         id: merge_submodule
@@ -113,9 +139,10 @@ jobs:
         env:
           SUBMODULE_REPO: ${{ steps.submod_info.outputs.submodule_repo }}
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ env.CROSS_TOKEN }}   # must also use the cross‑repo token
           script: |
-            const [owner, repo] = process.env.SUBMODULE_REPO.split('/');
+            const rawRepo = process.env.SUBMODULE_REPO.trim();
+            const [owner, repo] = rawRepo.split('/');
             const number = parseInt('${{ steps.find_submod_pr.outputs.pr_number }}', 10);
             await github.rest.pulls.merge({
               owner,
@@ -126,7 +153,7 @@ jobs:
             core.info(`Merged submodule PR #${number}`);
 
       # ------------------------------------------------------------------
-      # 5️⃣ Merge the base PR (admin‑style)
+      # 6️⃣ Merge the base PR (admin‑style)
       # ------------------------------------------------------------------
       - name: Merge base PR
         id: merge_base
