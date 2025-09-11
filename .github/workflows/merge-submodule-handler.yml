@@ -11,60 +11,51 @@ permissions:
   actions: write
 
 env:
-  # Change this if your submodule repo is somewhere else
-  SUBMODULE_REPO: 'MOvenshire/submod'
-  # token used to access both base and submodule repos (needs repo access to both)
+  # The token that can read/write both the base and submodule repositories
   CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
 
 jobs:
-  handle-merge-command-2:
-    if: github.event.issue.pull_request != null
+  merge-flow:
+    if: |
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/merge' &&
+      github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
-
-      - name: Check comment is "/merge" and not from a bot
-        id: check
+      # ------------------------------------------------------------------
+      # 0️⃣ Resolve dynamic values (submodule repo & path) from .gitmodules
+      # ------------------------------------------------------------------
+      - name: Detect submodule repo and path
+        id: detect_submodule
         run: |
-          set -eo pipefail
-          comment_body="${{ github.event.comment.body }}"
-          comment_author_type="${{ github.event.comment.user.type }}"
-          echo "comment_body<<EOF" >> $GITHUB_OUTPUT
-          echo "${comment_body}" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-          if [[ "$comment_author_type" == "Bot" ]]; then
-            echo "found_merge=false" >> $GITHUB_OUTPUT
-          elif [[ "$comment_body" == "/merge" ]]; then
-            echo "found_merge=true" >> $GITHUB_OUTPUT
-          else
-            echo "found_merge=false" >> $GITHUB_OUTPUT
-          fi
+          set -euo pipefail
+          # Look for the first entry in .gitmodules – assumes a single submodule
+          SUBMODULE_LINE=$(git config -f .gitmodules --list | grep '^submodule\.' | head -n1)
+          SUB_NAME=${SUBMODULE_LINE%%.*}
+          REPO=$(git config -f .gitmodules --get "$SUB_NAME.url")
+          PATH=$(git config -f .gitmodules --get "$SUB_NAME.path")
+          echo "repo=$REPO" >> $GITHUB_OUTPUT
+          echo "path=$PATH" >> $GITHUB_OUTPUT
 
-      - name: Edit original comment -> "Attempting to Merge PR ⏳"
-        if: steps.check.outputs.found_merge == 'true'
-        id: edit_comment
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const commentId = context.payload.comment.id;
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-              body: "Attempting to Merge PR ⏳"
-            });
-            core.setOutput('comment_id', commentId);
+      - name: Export detected values
+        run: |
+          echo "SUBMODULE_REPO=${{ steps.detect_submodule.outputs.repo }}" >> $GITHUB_ENV
+          echo "SUBMODULE_PATH=${{ steps.detect_submodule.outputs.path }}" >> $GITHUB_ENV
 
-      - name: Checkout base repo (full history)
-        if: steps.check.outputs.found_merge == 'true'
+      # ------------------------------------------------------------------
+      # 1️⃣ Checkout base repo (full history, **with** submodules)
+      # ------------------------------------------------------------------
+      - name: Checkout base repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: false
-          token: ${{ secrets.WORKFLOWS }}
+          submodules: true          # <-- crucial: we need the submodule directory
+          token: ${{ env.CROSS_TOKEN }}
 
+      # ------------------------------------------------------------------
+      # 2️⃣ Gather PR metadata (head ref, head repo, base branch)
+      # ------------------------------------------------------------------
       - name: Get base PR metadata
-        if: steps.check.outputs.found_merge == 'true'
         id: pr_info
         uses: actions/github-script@v7
         with:
@@ -76,156 +67,120 @@ jobs:
               repo: context.repo.repo,
               pull_number: prNumber
             });
-            core.setOutput('pr_number', pr.number.toString());
+            core.setOutput('pr_number', pr.number);
             core.setOutput('head_ref', pr.head.ref);
-            core.setOutput('head_repo_full_name', pr.head.repo.full_name);
+            core.setOutput('head_repo', pr.head.repo.full_name);
             core.setOutput('base_ref', pr.base.ref);
 
-      - name: Merge matching PR in submodule repo (if one exists)
-        if: steps.check.outputs.found_merge == 'true'
-        id: merge_submodule_pr
+      # ------------------------------------------------------------------
+      # 3️⃣ Merge matching PR in the submodule (if it exists)
+      # ------------------------------------------------------------------
+      - name: Merge submodule PR (if any)
+        id: merge_submodule
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.CROSS_TOKEN }}
           script: |
-            // Find an open PR in the submodule repo whose branch name matches the base PR head ref.
-            const submodule = process.env.SUBMODULE_REPO;
-            const branchName = '${{ steps.pr_info.outputs.head_ref }}';
-            const [subOwner, subRepo] = submodule.split('/');
-            core.info(`Looking for PR in ${submodule} with head branch ${branchName}`);
-
-            // List open PRs and try to find one whose head.ref matches branchName
+            const sub = process.env.SUBMODULE_REPO;
+            const [owner, repo] = sub.split('/');
+            const branch = '${{ steps.pr_info.outputs.head_ref }}';
             const { data: prs } = await github.rest.pulls.list({
-              owner: subOwner,
-              repo: subRepo,
+              owner,
+              repo,
               state: 'open',
               per_page: 100
             });
-
-            const found = prs.find(p => p.head.ref === branchName || p.head.ref === `users/${branchName}` || p.head.ref.endsWith(`/${branchName}`));
-            if (!found) {
-              core.info(`No open submodule PR found for branch "${branchName}" in ${submodule}.`);
+            const match = prs.find(p => p.head.ref === branch);
+            if (!match) {
+              core.info('No submodule PR matches head ref.');
               core.setOutput('found', 'false');
               return;
             }
-
-            core.info(`Found submodule PR #${found.number}: ${found.title}`);
-            // Merge it
             await github.rest.pulls.merge({
-              owner: subOwner,
-              repo: subRepo,
-              pull_number: found.number,
+              owner,
+              repo,
+              pull_number: match.number,
               merge_method: 'merge'
             });
-            core.info(`Merged submodule PR #${found.number}`);
+            core.info(`Merged submodule PR #${match.number}`);
             core.setOutput('found', 'true');
-            core.setOutput('submodule_pr_number', found.number.toString());
+            core.setOutput('pr_number', match.number);
 
-      - name: Merge base PR (admin-style merge)
-        if: steps.check.outputs.found_merge == 'true'
-        id: merge_base_pr
+      # ------------------------------------------------------------------
+      # 4️⃣ Merge the base PR (admin‑style)
+      # ------------------------------------------------------------------
+      - name: Merge base PR
+        id: merge_base
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const prNumber = parseInt('${{ steps.pr_info.outputs.pr_number }}', 10);
-            core.info(`Merging base PR #${prNumber} in ${context.repo.owner}/${context.repo.repo}`);
-            // Merge - fall back to merge method if fast-forward not possible
+            const number = parseInt('${{ steps.pr_info.outputs.pr_number }}', 10);
             await github.rest.pulls.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: prNumber,
+              pull_number: number,
               merge_method: 'merge'
             });
-            core.info(`Merged base PR #${prNumber}`);
+            core.info(`Merged base PR #${number}`);
             core.setOutput('merged', 'true');
 
-      - name: Bump submodule pointer on main and push
-        if: steps.check.outputs.found_merge == 'true' && steps.merge_base_pr.outputs.merged == 'true'
-        id: bump_submodule
+      # ------------------------------------------------------------------
+      # 5️⃣ Bump submodule pointer on main and push
+      # ------------------------------------------------------------------
+      - name: Bump submodule pointer
+        if: steps.merge_base.outputs.merged == 'true'
         env:
           GITHUB_TOKEN_PUSH: ${{ env.CROSS_TOKEN }}
-          SUBMODULE_REPO: ${{ env.SUBMODULE_REPO }}
-          SUBMODULE_PATH: submod   # change if your submodule path is different in the base repo
+          SUBMODULE_PATH: ${{ env.SUBMODULE_PATH }}
         run: |
           set -euo pipefail
-          echo "Preparing to bump submodule pointer on main..."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # ensure we have the latest main
-          git fetch origin main:refs/remotes/origin/main
-          git checkout origin/main
-          git switch -c merge-submod-bump || git switch merge-submod-bump
+          # Ensure we are on the latest main
+          git checkout main
+          git pull origin main
 
-          # ensure .gitmodules exists and submodule path exists
-          if [ ! -f .gitmodules ]; then
-            echo ".gitmodules not found in repository root. Exiting with no-op."
+          # Create a temporary branch (will be pushed as main later)
+          BUMP_BRANCH="bump-submod-$(date +%s)"
+          git switch -c "$BUMP_BRANCH"
+
+          # Update the submodule to the latest commit on its default branch
+          git submodule sync "${SUBMODULE_PATH}"
+          git submodule update --remote "${SUBMODULE_PATH}"
+
+          # Stage & commit only if there is a real change
+          if git diff --quiet --cached; then
+            echo "Submodule already up‑to‑date – nothing to push."
             exit 0
           fi
 
-          # Derive submodule path from .gitmodules if SUBMODULE_PATH doesn't exist
-          if [ ! -d "${SUBMODULE_PATH}" ]; then
-            echo "Submodule path ${SUBMODULE_PATH} not present in checkout. Attempting to init submodule."
-            git submodule update --init --recursive || true
-          fi
-
-          # Identify submodule default branch and latest SHA
-          SUB_OWNER=$(echo "$SUBMODULE_REPO" | cut -d'/' -f1)
-          SUB_REPO=$(echo "$SUBMODULE_REPO" | cut -d'/' -f2)
-
-          # Detect default branch of submodule repo
-          DEFAULT_BRANCH=$(git ls-remote --symref "https://${GITHUB_TOKEN_PUSH}@github.com/${SUB_OWNER}/${SUB_REPO}.git" HEAD | awk '/^ref:/ {gsub("refs/heads/","",$2); print $2; exit}')
-          DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
-          echo "Detected submodule default branch: ${DEFAULT_BRANCH}"
-
-          LATEST_SUB_SHA=$(git ls-remote "https://${GITHUB_TOKEN_PUSH}@github.com/${SUB_OWNER}/${SUB_REPO}.git" "refs/heads/${DEFAULT_BRANCH}" | awk '{print $1}')
-          if [ -z "${LATEST_SUB_SHA}" ]; then
-            echo "Failed to determine latest submodule SHA. Aborting bump."
-            exit 1
-          fi
-          echo "Latest submodule SHA on ${DEFAULT_BRANCH}: ${LATEST_SUB_SHA}"
-
-          # If submodule dir exists, update its git dir; otherwise create an empty folder and link
-          if [ -d "${SUBMODULE_PATH}" ]; then
-            git -C "${SUBMODULE_PATH}" fetch "https://${GITHUB_TOKEN_PUSH}@github.com/${SUB_OWNER}/${SUB_REPO}.git" "${DEFAULT_BRANCH}"
-            git -C "${SUBMODULE_PATH}" checkout "${LATEST_SUB_SHA}" || git -C "${SUBMODULE_PATH}" rev-parse --verify "${LATEST_SUB_SHA}"
-          else
-            # clone the specific commit into the path (shallow)
-            git clone --no-checkout "https://${GITHUB_TOKEN_PUSH}@github.com/${SUB_OWNER}/${SUB_REPO}.git" "${SUBMODULE_PATH}"
-            pushd "${SUBMODULE_PATH}"
-            git fetch --depth=1 origin "${DEFAULT_BRANCH}"
-            git checkout "${LATEST_SUB_SHA}"
-            popd
-          fi
-
-          # Stage the submodule change
           git add "${SUBMODULE_PATH}"
-          if git diff --cached --quiet; then
-            echo "No submodule pointer change detected (already up-to-date). Nothing to push."
-            exit 0
-          fi
+          git commit -m "chore(submod): bump submodule to latest ${SUBMODULE_REPO}"
+          
+          # Push fast‑forward only (force‑with‑lease guards against race conditions)
+          git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
+            "$BUMP_BRANCH:main"
 
-          # Commit and push bump to main
-          git commit -m "chore(submod): bump submodule ${SUBMODULE_REPO} to ${LATEST_SUB_SHA}" || true
-          echo "Pushing bump branch to origin/main (as a direct push to main)."
-          # Use tokened URL to push
-          git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" HEAD:main
-
-      - name: Final comment update (success)
-        if: steps.check.outputs.found_merge == 'true' && (steps.merge_submodule_pr.outputs.found == 'true' || steps.merge_submodule_pr.outputs.found == 'false') && steps.merge_base_pr.outcome == 'success'
+      # ------------------------------------------------------------------
+      # 6️⃣ Final comment – success / failure
+      # ------------------------------------------------------------------
+      - name: Comment success
+        if: steps.merge_base.outcome == 'success'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const commentId = '${{ steps.edit_comment.outputs.comment_id }}';
+            const commentId = context.payload.comment.id;
+            const subFound = '${{ steps.merge_submodule.outputs.found }}' === 'true';
             let body = "Pull Request Merged ✅\n\n";
-            const subFound = '${{ steps.merge_submodule_pr.outputs.found }}';
-            if (subFound === 'true') {
-              body += "• Submodule PR was found and merged.\n";
-              body += `• Submodule PR number: #${{ steps.merge_submodule_pr.outputs.submodule_pr_number }}\n`;
+            if (subFound) {
+              body += `• Submodule PR #${{ steps.merge_submodule.outputs.pr_number }} merged.\n`;
             } else {
-              body += "• No matching submodule PR found — proceeding with base PR merge.\n";
+              body += "• No matching submodule PR found.\n";
             }
-            body += "• Base PR merged. Submodule pointer bumped on `main` (if necessary).\n";
+            body += "• Base PR merged and submodule pointer bumped (if needed).\n";
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -233,16 +188,16 @@ jobs:
               body
             });
 
-      - name: Final comment update (failure)
-        if: steps.check.outputs.found_merge == 'true' && steps.merge_base_pr.outcome != 'success'
+      - name: Comment failure
+        if: steps.merge_base.outcome != 'success'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const commentId = '${{ steps.edit_comment.outputs.comment_id }}';
+            const commentId = context.payload.comment.id;
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               comment_id: commentId,
-              body: "Pull Request Not Merged ❌\nCheck the workflow logs for details."
+              body: "Pull Request Not Merged ❌ – see workflow logs for details."
             });
