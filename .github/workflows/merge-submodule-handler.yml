@@ -151,12 +151,13 @@ jobs:
               merge_method: 'merge'
             });
             core.info(`Merged submodule PR #${number}`);
+            core.setOutput('merged', 'true');
 
       # ------------------------------------------------------------------
       # 6️⃣ Bump submodule pointer – compare against *origin/main*
       # ------------------------------------------------------------------
       - name: Bump submodule pointer
-        if: steps.merge_base.outputs.merged == 'true'   # runs after the base PR merge
+        if: steps.merge_submodule.outputs.merged == 'true'   # runs after the base PR merge
         env:
           GITHUB_TOKEN_PUSH: ${{ env.CROSS_TOKEN }}
           SUBMODULE_PATH: ${{ steps.submod_info.outputs.submodule_path }}
