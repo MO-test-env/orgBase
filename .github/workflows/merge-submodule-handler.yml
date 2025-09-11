@@ -11,8 +11,9 @@ permissions:
   actions: write
 
 env:
-  # The token that can read/write both the base and submodule repositories
-  CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
+  # Submodule repo in “owner/name” format – read from .gitmodules if possible
+  SUBMODULE_REPO: MOvenshire/submod 
+  CROSS_TOKEN: ${{ secrets.CROSS_TOKEN }}
 
 jobs:
   merge-flow:
@@ -161,7 +162,7 @@ jobs:
           
           # Push fast‑forward only (force‑with‑lease guards against race conditions)
           git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
-            "$BUMP_BRANCH:main"
+            "$BUMP_BRANCH:main" --force-with-lease
 
       # ------------------------------------------------------------------
       # 6️⃣ Final comment – success / failure
