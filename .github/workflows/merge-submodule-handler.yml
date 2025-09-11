@@ -153,25 +153,6 @@ jobs:
             core.info(`Merged submodule PR #${number}`);
 
       # ------------------------------------------------------------------
-      # 6️⃣ Merge the base PR (admin‑style)
-      # ------------------------------------------------------------------
-      - name: Merge base PR
-        id: merge_base
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const number = parseInt('${{ steps.pr_info.outputs.pr_number }}', 10);
-            await github.rest.pulls.merge({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: number,
-              merge_method: 'merge'
-            });
-            core.info(`Merged base PR #${number}`);
-            core.setOutput('merged', 'true');
-
-      # ------------------------------------------------------------------
       # 6️⃣ Bump submodule pointer – compare against *origin/main*
       # ------------------------------------------------------------------
       - name: Bump submodule pointer
@@ -180,19 +161,19 @@ jobs:
           GITHUB_TOKEN_PUSH: ${{ env.CROSS_TOKEN }}
           SUBMODULE_PATH: ${{ steps.submod_info.outputs.submodule_path }}
           SUBMODULE_REPO: ${{ steps.submod_info.outputs.submodule_repo }}
+          PR_HEAD_REF: ${{ steps.pr_info.outputs.head_ref }}   # ← PR source branch
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
 
           # --------------------------------------------------------------
-          # Ensure we are on the latest `main` of the *parent* repo
+          # Ensure we are on the latest **PR head** branch (not `main`)
           # --------------------------------------------------------------
-          git checkout main
-          git pull origin main
+          git fetch origin "$PR_HEAD_REF"
+          git checkout "$PR_HEAD_REF"
+          git pull origin "$PR_HEAD_REF"
 
           # --------------------------------------------------------------
-          # Create a temporary branch that we will push back to `main`
+          # Create a temporary branch that we will push back to the PR branch
           # --------------------------------------------------------------
           BUMP_BRANCH="bump-submod-$(date +%s)"
           git switch -c "$BUMP_BRANCH"
@@ -232,8 +213,28 @@ jobs:
           # --------------------------------------------------------------
           # 6️⃣ Push fast‑forward (force‑with‑lease protects against races)
           # --------------------------------------------------------------
+          # Push the bump branch back onto the original PR head branch
           git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
-            "$BUMP_BRANCH:main" --force-with-lease
+            "$BUMP_BRANCH:${{ env.PR_HEAD_REF }}" --force-with-lease
+
+      # ------------------------------------------------------------------
+      # 6️⃣ Merge the base PR (admin‑style)
+      # ------------------------------------------------------------------
+      - name: Merge base PR
+        id: merge_base
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const number = parseInt('${{ steps.pr_info.outputs.pr_number }}', 10);
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: number,
+              merge_method: 'merge'
+            });
+            core.info(`Merged base PR #${number}`);
+            core.setOutput('merged', 'true');
 
       # ------------------------------------------------------------------
       # 7️⃣ Final comment – success / failure (now also reports submodule PR)
