@@ -157,7 +157,7 @@ jobs:
       # 6️⃣ Bump submodule pointer – compare against *origin/main*
       # ------------------------------------------------------------------
       - name: Bump submodule pointer
-        if: steps.merge_submodule.outputs.merged == 'true'   # runs after the base PR merge
+        if: steps.merge_submodule.outputs.merged == 'true'
         env:
           GITHUB_TOKEN_PUSH: ${{ env.CROSS_TOKEN }}
           SUBMODULE_PATH: ${{ steps.submod_info.outputs.submodule_path }}
@@ -172,6 +172,16 @@ jobs:
           git fetch origin "$PR_HEAD_REF"
           git checkout "$PR_HEAD_REF"
           git pull origin "$PR_HEAD_REF"
+          
+
+          # --------------------------------------------------------------
+          # Configure Git author/committer to the user who issued `/merge`
+          # --------------------------------------------------------------
+          # GitHub does not expose the commenter's email, so we use the
+          # conventional no‑reply address pattern.
+          GIT_AUTHOR="${{ github.event.comment.user.login }}"
+          git config user.name "$GIT_AUTHOR"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
           # --------------------------------------------------------------
           # Create a temporary branch that we will push back to the PR branch
