@@ -119,6 +119,10 @@ jobs:
           # --------------------------------------------------------------
           git -C "$SUBMODULE_PATH" checkout "$ORIGIN_SHA"
 
+          GIT_AUTHOR="${{ github.event.comment.user.login }}"
+          git config user.name "$GIT_AUTHOR"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
           # --------------------------------------------------------------
           # 5️⃣ Stage & commit the updated pointer
           # --------------------------------------------------------------
