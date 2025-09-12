@@ -225,7 +225,7 @@ jobs:
           git checkout "$PR_HEAD_REF"
           # Update the local base ref to match origin
           git update-ref refs/remotes/origin/"$BASE_REF" "origin/$BASE_REF"
-          core.setOutput('bumped', 'true');
+          echo "bumped=true" >> $GITHUB_OUTPUT
 
       # ------------------------------------------------------------------
       # 6️⃣ Merge the base PR 
