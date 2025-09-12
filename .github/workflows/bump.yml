@@ -4,19 +4,23 @@ on:
   issue_comment:
     types: [created]
 
+# The workflow needs to read/write PRs, issues and repository contents.
 permissions:
   issues: write
   pull-requests: write
   contents: write
   actions: write
 
+# Environment variables that will be overridden at runtime.
 env:
-  # Filled dynamically by “Get submodule info”. Kept as a placeholder for local testing.
+  # Placeholder for local testing – will be replaced by the “Get submodule info” step.
   SUBMODULE_REPO: MOvenshire/submod
+  # Token that has write access to **both** parent and submodule repos.
   CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
 
 jobs:
   bump-submodule:
+    # Only run when the comment is on a PR, equals “/bump”, and isn’t from a bot.
     if: |
       github.event.issue.pull_request != null &&
       github.event.comment.body == '/bump' &&
@@ -25,24 +29,30 @@ jobs:
     steps:
 
       # ------------------------------------------------------------------
-      # 1️⃣ Checkout base repo (full history, **with** submodules)
+      # 1️⃣ Checkout the base repository (full history, **with** submodules)
       # ------------------------------------------------------------------
       - name: Checkout base repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0          # needed for rebasing submodule updates
           submodules: true
           token: ${{ env.CROSS_TOKEN }}
 
       # ------------------------------------------------------------------
-      # 2️⃣ Detect submodule path / repo
+      # 2️⃣ Discover submodule path and repository name from .gitmodules
       # ------------------------------------------------------------------
       - name: Get submodule info
         id: submod_info
         run: |
-          SUBMODULE_PATH=$(git config --file .gitmodules --get-regexp '^submodule\..*\.path$' | head -1 | awk '{print $2}')
-          SUBMODULE_URL=$(git config --file .gitmodules --get-regexp '^submodule\..*\.url$' | head -1 | awk '{print $2}')
+          SUBMODULE_PATH=$(git config --file .gitmodules --get-regexp '^submodule\..*\.path | head -1 | awk '{print $2}')
+          SUBMODULE_URL=$(git config --file .gitmodules --get-regexp '^submodule\..*\.url | head -1 | awk '{print $2}')
 
+          if [[ -z "$SUBMODULE_PATH" || -z "$SUBMODULE_URL" ]]; then
+            echo "❌ No submodule entry found in .gitmodules"
+            exit 1
+          fi
+
+          # Convert SSH/HTTPS URLs to owner/repo format
           if [[ "$SUBMODULE_URL" == git@github.com:* ]]; then
             SUBMODULE_REPO=${SUBMODULE_URL#git@github.com:}
           elif [[ "$SUBMODULE_URL" == https://github.com/* ]]; then
@@ -55,12 +65,12 @@ jobs:
 
           echo "submodule_path=$SUBMODULE_PATH" >> $GITHUB_OUTPUT
           echo "submodule_repo=$SUBMODULE_REPO"   >> $GITHUB_OUTPUT
-          echo "✅ Submodule detected: $SUBMODULE_REPO @ $SUBMODULE_PATH"
+          echo "✅ Detected submodule $SUBMODULE_REPO at $SUBMODULE_PATH"
 
       # ------------------------------------------------------------------
-      # 3️⃣ Gather PR metadata (head ref)
+      # 3️⃣ Get PR metadata (head ref) – needed to push back to the PR branch
       # ------------------------------------------------------------------
-      - name: Get base PR metadata
+      - name: Get PR metadata
         id: pr_info
         uses: actions/github-script@v7
         with:
@@ -73,9 +83,10 @@ jobs:
               pull_number: prNumber
             });
             core.setOutput('head_ref', pr.head.ref);
+            core.setOutput('head_sha', pr.head.sha);
 
       # ------------------------------------------------------------------
-      # 4️⃣ Bump submodule pointer – compare against submod *origin/main*
+      # 4️⃣ Bump the submodule pointer to the latest `origin/main` of the submodule
       # ------------------------------------------------------------------
       - name: Bump submodule pointer
         env:
@@ -87,48 +98,60 @@ jobs:
           set -euo pipefail
 
           # --------------------------------------------------------------
-          # 0️⃣ Ensure we have the *latest* PR head branch locally
+          # Ensure we have the latest PR head locally
           # --------------------------------------------------------------
           git fetch origin "$PR_HEAD_REF"
           git checkout -B "$PR_HEAD_REF" "origin/$PR_HEAD_REF"
 
           # --------------------------------------------------------------
-          # 1️⃣ Make sure the submodule is present locally (init if needed)
+          # Initialise (or update) the submodule and fetch its main branch
           # --------------------------------------------------------------
           git submodule update --init --depth 1 "$SUBMODULE_PATH"
-
-          # --------------------------------------------------------------
-          # 2️⃣ Fetch *origin/main* of the submodule
-          # --------------------------------------------------------------
           git -C "$SUBMODULE_PATH" fetch origin main
 
           # --------------------------------------------------------------
-          # 3️⃣ Determine if the pointer already matches origin/main
+          # Compare current pointer with submodule's origin/main
           # --------------------------------------------------------------
           CURRENT_SHA=$(git -C "$SUBMODULE_PATH" rev-parse HEAD)
           ORIGIN_SHA=$(git -C "$SUBMODULE_PATH" rev-parse origin/main)
 
           if [[ "$CURRENT_SHA" == "$ORIGIN_SHA" ]]; then
-            echo "Submodule already points to origin/main ($CURRENT_SHA) – nothing to push."
+            echo "✅ Submodule already points to origin/main ($CURRENT_SHA). No action needed."
             exit 0
           fi
 
           # --------------------------------------------------------------
-          # 4️⃣ Checkout the fetched commit (fast‑forward pointer)
+          # Fast‑forward the submodule to the latest main commit
           # --------------------------------------------------------------
           git -C "$SUBMODULE_PATH" checkout "$ORIGIN_SHA"
 
+          # --------------------------------------------------------------
+          # Commit the updated pointer in the parent repo
+          # --------------------------------------------------------------
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # --------------------------------------------------------------
-          # 5️⃣ Stage & commit the updated pointer
-          # --------------------------------------------------------------
           git add "$SUBMODULE_PATH"
           git commit -m "chore(submod): bump $SUBMODULE_REPO to main $ORIGIN_SHA"
 
           # --------------------------------------------------------------
-          # 8️⃣ Push the bump branch onto the original PR head (force‑with‑lease)
+          # Push the updated branch back to the PR (force‑with‑lease)
           # --------------------------------------------------------------
           git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
-            "${PR_HEAD_REF}" \ 
+            "$PR_HEAD_REF" --force-with-lease
+
+      # ------------------------------------------------------------------
+      # 5️⃣ Optional: Leave a comment on the PR confirming the bump
+      # ------------------------------------------------------------------
+      - name: Comment on PR
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const comment = `✅ Submodule \`${process.env.SUBMODULE_REPO}\` has been bumped to \`${process.env.ORIGIN_SHA || 'latest'}\`.`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });
