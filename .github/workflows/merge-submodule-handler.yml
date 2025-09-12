@@ -223,7 +223,7 @@ jobs:
       # 6️⃣ Merge the base PR 
       # ------------------------------------------------------------------
       - name: Merge base PR
-        if: steps.find_submod_pr.outputs.found == 'false' || (steps.merge_submodule.outcome == 'success' && steps.bump_submod.outcome == 'success')
+        if: steps.merge_submodule.outcome == 'success' && steps.bump_submod.outcome == 'success'
         id: merge_base
         uses: actions/github-script@v7
         with:
