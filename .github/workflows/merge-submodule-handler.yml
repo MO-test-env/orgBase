@@ -248,7 +248,7 @@ jobs:
               merge_method: 'squash',
               commit_title: `chore(submod): squash merge #${number}`,
               commit_message: `Squash‑merged submodule PR #${number}`,
-              sha:steps.bump_submod.outputs.bump_commit_sha,
+              sha: steps.bump_submod.outputs.bump_commit_sha,
             });
             core.info(`Merged base PR #${number}`);
 
