@@ -148,7 +148,9 @@ jobs:
               owner,
               repo,
               pull_number: number,
-              merge_method: 'merge'
+              merge_method: 'squash'
+              commit_title: `chore(submod): squash merge #${number}`,
+              commit_message: `Squash‑merged submodule PR #${number}`
             });
             core.info(`Merged submodule PR #${number}`);
             core.setOutput('merged', 'true');
@@ -224,7 +226,7 @@ jobs:
           git update-ref refs/remotes/origin/"$BASE_REF" "origin/$BASE_REF"
 
       # ------------------------------------------------------------------
-      # 6️⃣ Merge the base PR (admin‑style)
+      # 6️⃣ Merge the base PR 
       # ------------------------------------------------------------------
       - name: Merge base PR
         id: merge_base
@@ -237,7 +239,9 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: number,
-              merge_method: 'merge'
+              merge_method: 'squash'
+              commit_title: `chore(submod): squash merge #${number}`,
+              commit_message: `Squash‑merged submodule PR #${number}`
             });
             core.info(`Merged base PR #${number}`);
             core.setOutput('merged', 'true');
