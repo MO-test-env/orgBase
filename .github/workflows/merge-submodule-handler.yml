@@ -163,6 +163,8 @@ jobs:
           SUBMODULE_PATH: ${{ steps.submod_info.outputs.submodule_path }}
           SUBMODULE_REPO: ${{ steps.submod_info.outputs.submodule_repo }}
           PR_HEAD_REF: ${{ steps.pr_info.outputs.head_ref }}   # ← PR source branch
+          BASE_REF: ${{ steps.pr_info.outputs.base_ref }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           echo "🔧 Environment:"
