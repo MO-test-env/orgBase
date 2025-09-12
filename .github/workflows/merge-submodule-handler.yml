@@ -224,12 +224,15 @@ jobs:
           git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
             "$PR_HEAD_REF" --force
 
+<<<<<<< Updated upstream
           git fetch origin "$PR_HEAD_REF" "$BASE_REF"
           # Ensure we are on the PR branch (the checkout step earlier left us there)
           git checkout "$PR_HEAD_REF"
           # Update the local base ref to match origin
           git update-ref refs/remotes/origin/"$BASE_REF" "origin/$BASE_REF"
           git update-ref refs/remotes/origin/"$PR_HEAD_REF" "origin/$PR_HEAD_REF"
+=======
+>>>>>>> Stashed changes
 
       # ------------------------------------------------------------------
       # 6️⃣ Merge the base PR 
@@ -242,7 +245,16 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const number = parseInt('${{ steps.pr_info.outputs.pr_number }}', 10);
+<<<<<<< Updated upstream
             const sha = '${{ steps.bump_submod.outputs.bump_commit_sha }}';
+=======
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: number,
+            });
+            const number = parseInt('${{ steps.pr_info.outputs.pr_number }}', 10);
+>>>>>>> Stashed changes
             await github.rest.pulls.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
