@@ -165,58 +165,56 @@ jobs:
           PR_HEAD_REF: ${{ steps.pr_info.outputs.head_ref }}   # ← PR source branch
         run: |
           set -euo pipefail
+          echo "🔧 Environment:"
+          echo "  PR_HEAD_REF=$PR_HEAD_REF"
 
           # --------------------------------------------------------------
-          # 0️⃣ Ensure we have the *latest* PR head branch locally
+          # Ensure we have the latest PR head locally
           # --------------------------------------------------------------
-          # This protects against “stale info” push rejections.
           git fetch origin "$PR_HEAD_REF"
-          # Reset our local ref to exactly what GitHub sees.
           git checkout -B "$PR_HEAD_REF" "origin/$PR_HEAD_REF"
 
           # --------------------------------------------------------------
-          # 1️⃣ Make sure the submodule is present locally (init if needed)
+          # Initialise (or update) the submodule and fetch its main branch
           # --------------------------------------------------------------
           git submodule update --init --depth 1 "$SUBMODULE_PATH"
-
-          # --------------------------------------------------------------
-          # 2️⃣ Fetch *origin/main* of the submodule
-          # --------------------------------------------------------------
           git -C "$SUBMODULE_PATH" fetch origin main
 
           # --------------------------------------------------------------
-          # 3️⃣ Determine if the pointer already matches origin/main
+          # Compare current pointer with submodule's origin/main
           # --------------------------------------------------------------
           CURRENT_SHA=$(git -C "$SUBMODULE_PATH" rev-parse HEAD)
           ORIGIN_SHA=$(git -C "$SUBMODULE_PATH" rev-parse origin/main)
+          echo "🔎 Current submodule SHA: $CURRENT_SHA"
+          echo "🔎 Origin/main SHA:       $ORIGIN_SHA"
 
           if [[ "$CURRENT_SHA" == "$ORIGIN_SHA" ]]; then
-            echo "Submodule already points to origin/main ($CURRENT_SHA) – nothing to push."
+            echo "✅ Submodule already points to origin/main ($CURRENT_SHA). No action needed."
             exit 0
           fi
 
           # --------------------------------------------------------------
-          # 4️⃣ Checkout the fetched commit (fast‑forward pointer)
+          # Fast‑forward the submodule to the latest main commit
           # --------------------------------------------------------------
+          echo "🚀 Fast‑forwarding submodule to $ORIGIN_SHA..."
           git -C "$SUBMODULE_PATH" checkout "$ORIGIN_SHA"
 
           # --------------------------------------------------------------
-          # 5️⃣ Stage & commit the updated pointer
+          # Commit the updated pointer in the parent repo
           # --------------------------------------------------------------
+          echo "📝 Configuring git user..."
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "📂 Staging submodule changes..."
           git add "$SUBMODULE_PATH"
+          echo "💾 Creating commit..."
           git commit -m "chore(submod): bump $SUBMODULE_REPO to main $ORIGIN_SHA"
 
-          # --------------------------------------------------------------
-          # 6️⃣ Create a *temporary* branch that we will push back to the PR head
-          # --------------------------------------------------------------
-          BUMP_BRANCH="bump-submod-$(date +%s)"
-          git switch -c "$BUMP_BRANCH"
-
-          # --------------------------------------------------------------
-          # 7️⃣ Push the bump branch onto the original PR head (force‑with‑lease)
-          # --------------------------------------------------------------
+          
+          echo "📤 Pushing changes back to PR branch..."
           git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
-            "$BUMP_BRANCH:${{ env.PR_HEAD_REF }}" --force-with-lease
+            "$PR_HEAD_REF" --force
+
       # ------------------------------------------------------------------
       # 6️⃣ Merge the base PR (admin‑style)
       # ------------------------------------------------------------------
