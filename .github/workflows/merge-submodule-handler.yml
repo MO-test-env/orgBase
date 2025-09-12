@@ -160,6 +160,7 @@ jobs:
       # ------------------------------------------------------------------
       - name: Bump submodule pointer
         if: steps.merge_submodule.outputs.merged == 'true'
+        id: bump_submod
         env:
           GITHUB_TOKEN_PUSH: ${{ env.CROSS_TOKEN }}
           SUBMODULE_PATH: ${{ steps.submod_info.outputs.submodule_path }}
@@ -224,11 +225,13 @@ jobs:
           git checkout "$PR_HEAD_REF"
           # Update the local base ref to match origin
           git update-ref refs/remotes/origin/"$BASE_REF" "origin/$BASE_REF"
+          core.setOutput('bumped', 'true');
 
       # ------------------------------------------------------------------
       # 6️⃣ Merge the base PR 
       # ------------------------------------------------------------------
       - name: Merge base PR
+        if: steps.merge_submodule.outputs.merged == 'true' && steps.bump_submod.outputs.bumped == 'true'
         id: merge_base
         uses: actions/github-script@v7
         with:
