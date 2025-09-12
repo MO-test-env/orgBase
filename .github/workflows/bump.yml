@@ -170,7 +170,7 @@ jobs:
           # --------------------------------------------------------------
           echo "📤 Pushing changes back to PR branch..."
           git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
-            "$PR_HEAD_REF" --force-with-lease
+            "$PR_HEAD_REF" --force
           echo "✅ Push completed."
 
           echo "=== END STEP: Bump submodule pointer ==="
