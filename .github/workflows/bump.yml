@@ -37,15 +37,6 @@ jobs:
           fetch-depth: 0          # needed for rebasing submodule updates
           submodules: true
           token: ${{ env.CROSS_TOKEN }}
-        # ---- added logging ----
-        env:
-          STEP_NAME: "Checkout base repository"
-        run: |
-          echo "=== START STEP: $STEP_NAME ==="
-          echo "Using token: ${{ env.CROSS_TOKEN != '' && 'REDACTED' || 'none' }}"
-          # actions/checkout does the work; just confirm after it runs
-          echo "✅ Repository checked out with submodules (depth=${{ inputs.fetch-depth }})"
-          echo "=== END STEP: $STEP_NAME ==="
 
       # ------------------------------------------------------------------
       # 2️⃣ Discover submodule path and repository name from .gitmodules
