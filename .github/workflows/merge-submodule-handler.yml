@@ -214,6 +214,12 @@ jobs:
           echo "📤 Pushing changes back to PR branch..."
           git push "https://${GITHUB_TOKEN_PUSH}@github.com/${{ github.repository }}.git" \
             "$PR_HEAD_REF" --force
+            
+          git fetch origin "$PR_HEAD_REF" "$BASE_REF"
+          # Ensure we are on the PR branch (the checkout step earlier left us there)
+          git checkout "$PR_HEAD_REF"
+          # Update the local base ref to match origin
+          git update-ref refs/remotes/origin/"$BASE_REF" "origin/$BASE_REF"
 
       # ------------------------------------------------------------------
       # 6️⃣ Merge the base PR (admin‑style)
