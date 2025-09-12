@@ -229,6 +229,7 @@ jobs:
           git checkout "$PR_HEAD_REF"
           # Update the local base ref to match origin
           git update-ref refs/remotes/origin/"$BASE_REF" "origin/$BASE_REF"
+          git update-ref refs/remotes/origin/"$PR_HEAD_REF" "origin/$PR_HEAD_REF"
 
       # ------------------------------------------------------------------
       # 6️⃣ Merge the base PR 
@@ -241,6 +242,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const number = parseInt('${{ steps.pr_info.outputs.pr_number }}', 10);
+            const sha = '${{ steps.bump_submod.outputs.bump_commit_sha }}';
             await github.rest.pulls.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -248,7 +250,7 @@ jobs:
               merge_method: 'squash',
               commit_title: `chore(submod): squash merge #${number}`,
               commit_message: `Squash‑merged submodule PR #${number}`,
-              sha: steps.bump_submod.outputs.bump_commit_sha,
+              sha: sha
             });
             core.info(`Merged base PR #${number}`);
 
