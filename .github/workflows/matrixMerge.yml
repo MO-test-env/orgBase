@@ -160,7 +160,7 @@ jobs:
             --arg path "$SUB_PATH" \
             --arg sha "$SUBMODULE_SHA" \
             '[{ "path": $path, "mode": "160000", "type": "commit", "sha": $sha }]')
-
+          echo "$SUB_TREE_PAYLOAD" | jq .
           BUMP_TREE=$(gh api -X POST \
             "repos/${REPO}/git/trees" \
             -f base_tree="$BASE_TREE_SHA" \
