@@ -109,63 +109,65 @@ jobs:
         run: |
           set -euo pipefail
           echo "🔎 Processing $SUB_REPO at $SUB_PATH"
-          RESULT=""
 
-          
-              # --------------------------------------------------------------
-              # 1️⃣ Find PR in submodule that matches the base PR HEAD ref
-              # --------------------------------------------------------------
-              PR_NUM=$(gh api repos/$SUB_REPO/pulls \
-                --jq ".[] | select(.head.ref==\"$HEAD_REF\") | .number" || true)
+          # --------------------------------------------------------------
+          # 1️⃣ Find a submodule PR whose head ref matches the base PR
+          # --------------------------------------------------------------
+          PR_NUM=$(gh api repos/$SUB_REPO/pulls \
+            --jq ".[] | select(.head.ref==\"$HEAD_REF\") | .number" || true)
 
-              if [[ -n "$PR_NUM" ]]; then
-                echo "✅ Found submodule PR #$PR_NUM"
+          if [[ -z "$PR_NUM" ]]; then
+            echo "⚠️ No matching submodule PR found for $SUB_REPO – skipping."
+            echo "result=• $SUB_REPO: no matching PR" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-                # --------------------------------------------------------------
-                # 2️⃣ Merge the submodule PR (squash) – let gh handle auth
-                # --------------------------------------------------------------
-                gh api -X PUT \
-                  -H "Accept: application/vnd.github+json" \
-                  repos/$SUB_REPO/pulls/$PR_NUM/merge \
-                  -f merge_method=squash \
-                  -f commit_title="chore(submod): merge $SUB_REPO #$PR_NUM" \
-                  -f commit_message="Squash‑merged submodule PR #$PR_NUM" \
-                  || { echo "❌ Merge failed for $SUB_REPO PR #$PR_NUM"; exit 1; }
+          echo "✅ Found submodule PR #$PR_NUM"
 
-                # --------------------------------------------------------------
-                # 3️⃣ Bump the submodule pointer in the base repo
-                # --------------------------------------------------------------
-                # 1️⃣ Get the latest submodule commit SHA (on its default branch)
-                SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse origin/main)
+          # --------------------------------------------------------------
+          # 2️⃣ Squash‑merge the submodule PR
+          # --------------------------------------------------------------
+          gh api -X PUT \
+            -H "Accept: application/vnd.github+json" \
+            repos/$SUB_REPO/pulls/$PR_NUM/merge \
+            -f merge_method=squash \
+            -f commit_title="chore(submod): merge $SUB_REPO #$PR_NUM" \
+            -f commit_message="Squash‑merged submodule PR #$PR_NUM" \
+            || { echo "❌ Merge failed for $SUB_REPO PR #$PR_NUM"; exit 1; }
 
-                # 2️⃣ Get the current tree SHA of the base branch we will update
-                BASE_TREE_SHA=$(gh api \
-                  repos/${REPO}/git/trees/${HEAD_REF} \
-                  -q .sha)
+          # --------------------------------------------------------------
+          # 3️⃣ Bump the submodule pointer in the base repo
+          # --------------------------------------------------------------
+          # 1️⃣ Grab the latest commit SHA from the submodule (assumes default branch is main)
+          SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse origin/main)
 
-                # 3️⃣ Build a new tree that updates the submodule entry
-                #    mode 160000 is the gitlink for a submodule
-                BUMP_TREE=$(gh api -X POST \
-                  repos/${REPO}/git/trees \
-                  -f base_tree=$BASE_TREE_SHA \
-                  -f tree='[ {"path":"'"$SUB_PATH"'","mode":"160000","type":"commit","sha":"'"$SUBMODULE_SHA"'"} ]' \
-                  -q .sha)
+          # 2️⃣ Get the tree SHA for the current head of the base PR
+          BASE_TREE_SHA=$(gh api \
+            repos/${REPO}/git/trees/${HEAD_REF} \
+            -q .sha)
 
-                # 4️⃣ Create a commit that uses the new tree
-                BUMP_COMMIT=$(gh api -X POST \
-                  repos/${REPO}/git/commits \
-                  -f message="chore(submod): bump $SUB_REPO to $SUBMODULE_SHA" \
-                  -f tree=$BUMP_TREE \
-                  -f parents='["'"$(gh api repos/${REPO}/git/refs/heads/${HEAD_REF} -q .object.sha)"'"]' \
-                  -q .sha)
+          # 3️⃣ Build a new tree that updates the submodule entry (gitlink mode 160000)
+          BUMP_TREE=$(gh api -X POST \
+            repos/${REPO}/git/trees \
+            -f base_tree=$BASE_TREE_SHA \
+            -f tree='[ {"path":"'"$SUB_PATH"'","mode":"160000","type":"commit","sha":"'"$SUBMODULE_SHA"'"} ]' \
+            -q .sha)
 
-                # 5️⃣ Update the branch reference to the new commit (no force‑push)
-                gh api -X PATCH \
-                  repos/${REPO}/git/refs/heads/${HEAD_REF} \
-                  -f sha=$BUMP_COMMIT \
-                  -f force=false
+          # 4️⃣ Create a commit that points to the new tree
+          BUMP_COMMIT=$(gh api -X POST \
+            repos/${REPO}/git/commits \
+            -f message="chore(submod): bump $SUB_REPO to $SUBMODULE_SHA" \
+            -f tree=$BUMP_TREE \
+            -f parents='["'"$(gh api repos/${REPO}/git/refs/heads/${HEAD_REF} -q .object.sha)"'"]' \
+            -q .sha)
 
-                RESULT="• $SUB_REPO: merged #$PR_NUM + bumped ✅"
+          # 5️⃣ Move the branch tip to the new commit (no force‑push)
+          gh api -X PATCH \
+            repos/${REPO}/git/refs/heads/${HEAD_REF} \
+            -f sha=$BUMP_COMMIT \
+            -f force=false
+
+          echo "result=• $SUB_REPO: merged #$PR_NUM + bumped ✅" >> "$GITHUB_OUTPUT"
 
   # ------------------------------------------------------------------
   # 3️⃣ Merge base PR after all submodules succeed
