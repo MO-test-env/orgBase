@@ -137,26 +137,49 @@ jobs:
           echo "🏷️ THIS WOULD GET MERGED IM JUST TIRED OF OPENING NEW PRS 🏷️"
 
           # --------------------------------------------------------------
-          # 3️⃣ Bump the submodule pointer via GitHub API (no trees/force push)
+          # 3️⃣ Bump submodule pointer safely (API-only, no force push)
           # --------------------------------------------------------------
 
           # 1️⃣ Refresh submodule and get its latest commit SHA
           SUBMODULE_DEFAULT_BRANCH="${BASE_REF:-main}"
-          git -C "$SUB_PATH" fetch origin
+          git -C "$SUB_PATH" fetch origin "$SUBMODULE_DEFAULT_BRANCH"
           SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse "origin/${SUBMODULE_DEFAULT_BRANCH}")
           echo "Latest submodule SHA: $SUBMODULE_SHA"
 
-          # 2️⃣ Get the current SHA of the file representing the submodule in the base repo
-          # This is required by the API to update the file
-          SUBMODULE_FILE_SHA=$(gh api repos/${REPO}/contents/${SUB_PATH} \
-            -q .sha)
+          # 2️⃣ Get current base branch commit SHA
+          BASE_COMMIT_SHA=$(gh api repos/${REPO}/git/ref/heads/${HEAD_REF} -q .object.sha)
+          echo "Current base branch SHA: $BASE_COMMIT_SHA"
 
-          # 3️⃣ Update the submodule pointer via the contents API
-          gh api -X PUT "repos/${REPO}/contents/${SUB_PATH}" \
+          # 3️⃣ Get base commit tree
+          BASE_TREE_SHA=$(gh api repos/${REPO}/git/commits/${BASE_COMMIT_SHA} -q .tree.sha)
+          echo "Base tree SHA: $BASE_TREE_SHA"
+
+          # 4️⃣ Build tree payload for submodule (mode 160000)
+          TREE_PAYLOAD=$(jq -c -n \
+            --arg path "$SUB_PATH" \
+            --arg sha "$SUBMODULE_SHA" \
+            '[{ "path": $path, "mode": "160000", "type": "commit", "sha": $sha }]')
+
+          # 5️⃣ Create new tree
+          NEW_TREE_SHA=$(gh api -X POST repos/${REPO}/git/trees \
+            -f base_tree="$BASE_TREE_SHA" \
+            --raw-field tree="$TREE_PAYLOAD" \
+            -q .sha)
+          echo "New tree SHA: $NEW_TREE_SHA"
+
+          # 6️⃣ Create commit
+          NEW_COMMIT_SHA=$(gh api -X POST repos/${REPO}/git/commits \
             -f message="chore(submod): bump $SUB_REPO to $SUBMODULE_SHA" \
-            -f sha="$SUBMODULE_FILE_SHA" \
-            -f content=$(echo -n "$SUBMODULE_SHA" | base64) \
-            -f branch="$HEAD_REF"
+            -f tree="$NEW_TREE_SHA" \
+            -f parents="[\"$BASE_COMMIT_SHA\"]" \
+            -q .sha)
+          echo "New commit SHA: $NEW_COMMIT_SHA"
+
+          # 7️⃣ Update branch ref (safe, no force push)
+          gh api -X PATCH repos/${REPO}/git/refs/heads/${HEAD_REF} \
+            -f sha="$NEW_COMMIT_SHA"
+
+          echo "result=• $SUB_REPO: merged #$PR_NUM + bumped ✅" >> "$GITHUB_OUTPUT"
 
           echo "result=• $SUB_REPO: merged #$PR_NUM + bumped ✅" >> "$GITHUB_OUTPUT"
 
