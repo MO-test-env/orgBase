@@ -1,4 +1,4 @@
-name: Merge Submodule + Base PR (on /merge comment)
+name: Merge Submodule Matrix + Base PR (on /mergeMat comment)
 
 on:
   issue_comment:
@@ -69,6 +69,8 @@ jobs:
     strategy:
       matrix:
         submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
+      env:
+        GH_TOKEN: ${{ secrets.WORKFLOWS }} 
       max-parallel: 4   # tune concurrency
     outputs:
       result: ${{ steps.subproc.outputs.result }}
@@ -78,7 +80,6 @@ jobs:
         with:
           fetch-depth: 0
           submodules: true
-          token: ${{ env.CROSS_TOKEN }}
 
       - name: Get base PR metadata
         id: pr_info
@@ -99,6 +100,7 @@ jobs:
         id: subproc
         env:
           CROSS_TOKEN: ${{ env.CROSS_TOKEN }}
+          GH_TOKEN: ${{ secrets.WORKFLOWS }} 
           SUB_PATH: ${{ matrix.submod.path }}
           SUB_REPO: ${{ matrix.submod.repo }}
           HEAD_REF: ${{ steps.pr_info.outputs.head_ref }}
