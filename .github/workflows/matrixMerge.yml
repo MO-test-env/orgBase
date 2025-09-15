@@ -139,35 +139,38 @@ jobs:
           # --------------------------------------------------------------
           # 3️⃣ Bump submodule pointer safely (API-only, no force push)
           # --------------------------------------------------------------
-
           # 1️⃣ Refresh submodule and get its latest commit SHA
           SUBMODULE_DEFAULT_BRANCH="${BASE_REF:-main}"
           git -C "$SUB_PATH" fetch origin "$SUBMODULE_DEFAULT_BRANCH"
           SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse "origin/${SUBMODULE_DEFAULT_BRANCH}")
           echo "Latest submodule SHA: $SUBMODULE_SHA"
 
-          # 2️⃣ Get current base branch commit SHA
+          # 2️⃣ Get the current base branch commit SHA
           BASE_COMMIT_SHA=$(gh api repos/${REPO}/git/ref/heads/${HEAD_REF} -q .object.sha)
           echo "Current base branch SHA: $BASE_COMMIT_SHA"
 
-          # 3️⃣ Get base commit tree
+          # 3️⃣ Get base commit tree SHA
           BASE_TREE_SHA=$(gh api repos/${REPO}/git/commits/${BASE_COMMIT_SHA} -q .tree.sha)
           echo "Base tree SHA: $BASE_TREE_SHA"
 
-          # 4️⃣ Build tree payload for submodule (mode 160000)
-          TREE_PAYLOAD=$(jq -c -n \
-            --arg path "$SUB_PATH" \
-            --arg sha "$SUBMODULE_SHA" \
+          # 4️⃣ Verify submodule path exists in base tree
+          EXISTS=$(gh api repos/${REPO}/git/trees/$BASE_TREE_SHA -q ".tree[] | select(.path==\"$SUB_PATH\" and .type==\"commit\") | .sha")
+          if [[ -z "$EXISTS" ]]; then
+            echo "❌ Submodule path '$SUB_PATH' not found in base tree; cannot update pointer"
+            exit 1
+          fi
+
+          # 5️⃣ Create new tree with only the submodule updated
+          TREE_PAYLOAD=$(jq -n --arg path "$SUB_PATH" --arg sha "$SUBMODULE_SHA" \
             '[{ "path": $path, "mode": "160000", "type": "commit", "sha": $sha }]')
 
-          # 5️⃣ Create new tree
           NEW_TREE_SHA=$(gh api -X POST repos/${REPO}/git/trees \
             -f base_tree="$BASE_TREE_SHA" \
             --raw-field tree="$TREE_PAYLOAD" \
             -q .sha)
           echo "New tree SHA: $NEW_TREE_SHA"
 
-          # 6️⃣ Create commit
+          # 6️⃣ Create commit pointing to new tree
           NEW_COMMIT_SHA=$(gh api -X POST repos/${REPO}/git/commits \
             -f message="chore(submod): bump $SUB_REPO to $SUBMODULE_SHA" \
             -f tree="$NEW_TREE_SHA" \
@@ -175,13 +178,10 @@ jobs:
             -q .sha)
           echo "New commit SHA: $NEW_COMMIT_SHA"
 
-          # 7️⃣ Update branch ref (safe, no force push)
-          gh api -X PATCH repos/${REPO}/git/refs/heads/${HEAD_REF} \
-            -f sha="$NEW_COMMIT_SHA"
+          # 7️⃣ Update branch ref safely
+          gh api -X PATCH repos/${REPO}/git/refs/heads/${HEAD_REF} -f sha="$NEW_COMMIT_SHA"
 
-          echo "result=• $SUB_REPO: merged #$PR_NUM + bumped ✅" >> "$GITHUB_OUTPUT"
-
-          echo "result=• $SUB_REPO: merged #$PR_NUM + bumped ✅" >> "$GITHUB_OUTPUT"
+          echo "✅ $SUB_REPO bumped to $SUBMODULE_SHA on $HEAD_REF"
 
   # ------------------------------------------------------------------
   # 3️⃣ Merge base PR after all submodules succeed
