@@ -24,7 +24,7 @@ jobs:
     steps:
       
       - name: Set up GitHub CLI
-        uses: actions/setup-gh-cli@v2
+        uses: cli/gh-action@v2
         with:
           version: latest   # keep it up‑to‑date automatically
 
