@@ -12,6 +12,7 @@ permissions:
 
 env:
   CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
+  GH_TOKEN: ${{ secrets.WORKFLOWS }}
 
 jobs:
   # ------------------------------------------------------------------
@@ -78,6 +79,7 @@ jobs:
         with:
           fetch-depth: 0
           submodules: true
+          token: ${{ env.CROSS_TOKEN }}
 
       - name: Get base PR metadata
         id: pr_info
