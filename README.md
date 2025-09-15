@@ -1,18 +1,12 @@
-cleanup 
-### PreReqs
-- GitHub token must be in secrets with read/write permissions in parent
-    <small>_I don’t think yall will need to do this again since I configured for repo but I think it could be helpful to be aware of in case you do want to fork my repo._</small>
-    - To create a token:
-        - Click your profile picture in upper right corner
-        - Go to settings
-        - Scroll down go to developer settings
-        - Click personal access tokens 
-        - Dell will likely use a fine-grained token, I just set up a classic with the permissions that seemed right. 
-        - Copy it somewhere safe you will never see it again
-    - To add token to secrets: 
-        § For Dell this would probably be added to the env for all the repos. I just added it to each repo individually. 
-        § Go to each repo settings
-        § Under the security section, click secrets and variables
-        § Click Actions, add repository secret. 
+## Useful resources:
+- **GitHub Actions Documentation** – <https://docs.github.com/en/actions>
+    - _Basically_ every job/ matrix strategy/ event trigger/ variable type can be found somewhere in these docs if you know what you're looking for. Even links to examples of workflow or yml syntax 
+- **GitHub CLI Manual** – <https://cli.github.com/manual/>
+- **GitHub REST API Quickstart** – <https://docs.github.com/en/rest/quickstart?apiVersion=2022-11-28>
+- **Published actions** - <https://github.com/actions>
+- **General yml ref** - <https://learnxinyminutes.com/yaml/>
+- **Example action** - <https://github.com/marketplace/actions/github-action-submodule-updates>
+- **Tutorials (from github.com)** - <https://docs.github.com/en/actions/tutorials/create-an-example-workflow>
+    - I didnt manually do any of these but I did briefly read over them. 
 
-confirmed this worked with both fine-grained and classic
+    
