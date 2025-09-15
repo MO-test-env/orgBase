@@ -135,23 +135,37 @@ jobs:
                 # --------------------------------------------------------------
                 # 3️⃣ Bump the submodule pointer in the base repo
                 # --------------------------------------------------------------
-                git fetch origin "$HEAD_REF"
-                git checkout -B "$HEAD_REF" "origin/$HEAD_REF"
-                git submodule update --init "$SUB_PATH"
-                git -C "$SUB_PATH" fetch origin main
-                git -C "$SUB_PATH" checkout origin/main
-                git add "$SUB_PATH"
-                git config user.name "github-actions[bot]"
-                git config user.email "github-actions[bot]@users.noreply.github.com"
-                git commit -m "chore(submod): bump $SUB_REPO to origin/main" || true
-                git push "https://${CROSS_TOKEN}@github.com/$REPO.git" "$HEAD_REF" --force
+                # 1️⃣ Get the latest submodule commit SHA (on its default branch)
+                SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse origin/main)
+
+                # 2️⃣ Get the current tree SHA of the base branch we will update
+                BASE_TREE_SHA=$(gh api \
+                  repos/${REPO}/git/trees/${HEAD_REF} \
+                  -q .sha)
+
+                # 3️⃣ Build a new tree that updates the submodule entry
+                #    mode 160000 is the gitlink for a submodule
+                BUMP_TREE=$(gh api -X POST \
+                  repos/${REPO}/git/trees \
+                  -f base_tree=$BASE_TREE_SHA \
+                  -f tree='[ {"path":"'"$SUB_PATH"'","mode":"160000","type":"commit","sha":"'"$SUBMODULE_SHA"'"} ]' \
+                  -q .sha)
+
+                # 4️⃣ Create a commit that uses the new tree
+                BUMP_COMMIT=$(gh api -X POST \
+                  repos/${REPO}/git/commits \
+                  -f message="chore(submod): bump $SUB_REPO to $SUBMODULE_SHA" \
+                  -f tree=$BUMP_TREE \
+                  -f parents='["'"$(gh api repos/${REPO}/git/refs/heads/${HEAD_REF} -q .object.sha)"'"]' \
+                  -q .sha)
+
+                # 5️⃣ Update the branch reference to the new commit (no force‑push)
+                gh api -X PATCH \
+                  repos/${REPO}/git/refs/heads/${HEAD_REF} \
+                  -f sha=$BUMP_COMMIT \
+                  -f force=false
 
                 RESULT="• $SUB_REPO: merged #$PR_NUM + bumped ✅"
-              else
-                RESULT="• $SUB_REPO: no matching PR found ℹ️"
-              fi
-
-              echo "result=$RESULT" >> $GITHUB_OUTPUT
 
   # ------------------------------------------------------------------
   # 3️⃣ Merge base PR after all submodules succeed
