@@ -14,3 +14,5 @@ cleanup
         § Go to each repo settings
         § Under the security section, click secrets and variables
         § Click Actions, add repository secret. 
+
+confirmed this worked with both fine-grained and classic
