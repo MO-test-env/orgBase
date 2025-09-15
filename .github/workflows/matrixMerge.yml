@@ -154,6 +154,22 @@ jobs:
 
             echo "2 completed"
 
+
+            echo "Checking base commit vs base tree..."
+          ACTUAL_TREE_SHA=$(gh api \
+            "repos/${REPO}/git/commits/${BASE_COMMIT_SHA}" \
+            -q .tree.sha)
+
+          echo "BASE_TREE_SHA:   $BASE_TREE_SHA"
+          echo "ACTUAL_TREE_SHA: $ACTUAL_TREE_SHA"
+
+          if [ "$BASE_TREE_SHA" != "$ACTUAL_TREE_SHA" ]; then
+            echo "❌ Mismatch! Using actual tree instead."
+            BASE_TREE_SHA="$ACTUAL_TREE_SHA"
+          else
+            echo "✅ Base tree matches commit."
+          fi
+
           # 3️⃣ Build a new tree that updates the submodule entry (gitlink mode 160000)
           #    Use --raw-field so the JSON array is sent un‑escaped.
           SUB_TREE_PAYLOAD=$(jq -c -n \
@@ -161,11 +177,11 @@ jobs:
             --arg sha "$SUBMODULE_SHA" \
             '[{ "path": $path, "mode": "160000", "type": "commit", "sha": $sha }]')
           echo "$SUB_TREE_PAYLOAD" | jq .
-          BUMP_TREE=$(gh api -X POST \
-            "repos/${REPO}/git/trees" \
+          echo "🔎 Calling GitHub API..."
+          gh api -X POST "repos/${REPO}/git/trees" \
             -f base_tree="$BASE_TREE_SHA" \
             --raw-field tree="$SUB_TREE_PAYLOAD" \
-            -q .sha)
+            || { echo "❌ API failed"; exit 1; }
 
           echo "3 i think its here"
 
