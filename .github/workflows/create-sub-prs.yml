@@ -49,8 +49,7 @@ jobs:
               --arg path "$SUB_PATH" \
               --arg repo "$SUB_REPO" \
               '. += [{"path": $path, "repo": $repo}]' <<< "$SUBMODULES_JSON")
-          done <(git config --file .gitmodules --get-regexp '^submodule\..*\.path)
-
+          done < <(git config --file .gitmodules --get-regexp '^submodule\..*\.path$')
           echo "submodules=$SUBMODULES_JSON" >> "$GITHUB_OUTPUT"
           echo "✅ Detected submodules: $SUBMODULES_JSON"
 
