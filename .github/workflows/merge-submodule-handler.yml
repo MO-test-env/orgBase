@@ -12,6 +12,7 @@ permissions:
 
 env:
   CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
+  GH_TOKEN: ${{ secrets.WORKFLOWS }}
 
 jobs:
   merge-flow:
@@ -21,6 +22,11 @@ jobs:
       github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
+      
+      - name: Set up GitHub CLI
+        uses: actions/setup-gh-cli@v2
+        with:
+          version: latest   # keep it up‑to‑date automatically
 
       # ------------------------------------------------------------------
       # 1️⃣ Checkout base repo (full history, **with** submodules)
