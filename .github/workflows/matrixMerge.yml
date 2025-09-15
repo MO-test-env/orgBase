@@ -69,8 +69,6 @@ jobs:
     strategy:
       matrix:
         submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
-      env:
-        GH_TOKEN: ${{ secrets.WORKFLOWS }} 
       max-parallel: 4   # tune concurrency
     outputs:
       result: ${{ steps.subproc.outputs.result }}
