@@ -1,19 +1,13 @@
 name: Create Submodule PRs (on PR open)
 
-# ----------------------------------------------------------------------
-# Trigger when a PR is created (or reopened) in the base repository
-# ----------------------------------------------------------------------
 on:
   pull_request:
     types: [opened, reopened]
 
-# ----------------------------------------------------------------------
-# Permissions required for creating PRs in submodule repos
-# ----------------------------------------------------------------------
 permissions:
-  contents: read       # checkout the base repo
-  issues: write        # comment on the original PR (optional)
-  pull-requests: write # create PRs in submodule repos
+  contents: read
+  issues: write          # needed to create / edit comments
+  pull-requests: write
   actions: read
 
 jobs:
@@ -55,10 +49,50 @@ jobs:
               --arg path "$SUB_PATH" \
               --arg repo "$SUB_REPO" \
               '. += [{"path": $path, "repo": $repo}]' <<< "$SUBMODULES_JSON")
-          done < <(git config --file .gitmodules --get-regexp '^submodule\..*\.path$')
+          done <(git config --file .gitmodules --get-regexp '^submodule\..*\.path)
 
           echo "submodules=$SUBMODULES_JSON" >> "$GITHUB_OUTPUT"
           echo "✅ Detected submodules: $SUBMODULES_JSON"
+
+      # --------------------------------------------------------------
+      # Store JSON in a PR comment (single source of truth, no artifacts)
+      # --------------------------------------------------------------
+      - name: Post submodule list as PR comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const json = `${{ steps.collect.outputs.submodules }}`;
+            const body = [
+              "🔎 **Detected submodules** (cached for downstream workflows):",
+              "<!-- SUBMODULES_JSON -->",
+              "```json",
+              json,
+              "```",
+              "<!-- /SUBMODULES_JSON -->"
+            ].join("\n");
+            // If a previous cache comment exists, edit it; otherwise create a new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            const cacheComment = comments.find(c => c.body.includes('<!-- SUBMODULES_JSON -->'));
+            if (cacheComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: cacheComment.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }
 
   # ------------------------------------------------------------------
   # 2️⃣ For each submodule, create a PR if a branch with the same name exists
@@ -71,7 +105,7 @@ jobs:
         submod: ${{ fromJson(needs.detect-submodules.outputs.matrix) }}
       max-parallel: 4
     env:
-      GH_TOKEN: ${{ secrets.WORKFLOWS }}   # token with write access to submodule repos
+      GH_TOKEN: ${{ secrets.WORKFLOWS }}
     steps:
       - name: Checkout base repo (only needed for PR metadata)
         uses: actions/checkout@v4
@@ -91,7 +125,6 @@ jobs:
           SUB_REPO: ${{ matrix.submod.repo }}
           MATCH_BRANCH: ${{ steps.pr_meta.outputs.head_ref }}
         run: |
-          # Use gh API to see if the branch exists; 404 means it does not.
           if gh api repos/${SUB_REPO}/branches/${MATCH_BRANCH} >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
@@ -111,8 +144,8 @@ jobs:
             -f title="${TITLE}" \
             -f head="${MATCH_BRANCH}" \
             -f base="${BASE_BRANCH}" \
-            -f body="${BODY}" \
-            
+            -f body="${BODY}"
+
       - name: Log when no matching branch is found
         if: steps.branch_check.outputs.exists != 'true'
         run: |
@@ -124,12 +157,11 @@ jobs:
   comment-summary:
     needs: create-submodule-prs
     runs-on: ubuntu-latest
-    if: always()   # run even if some submodule jobs fail
+    if: always()
     steps:
       - name: Summarize results
         id: summary
         run: |
-          # Gather the status of each submodule job from the previous step
           echo "summary=$(jq -n '[]')" >> "$GITHUB_OUTPUT"
 
       - name: Post comment on the base PR

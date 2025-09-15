@@ -34,32 +34,30 @@ jobs:
           submodules: true
           token: ${{ env.CROSS_TOKEN }}
 
-      - name: Collect submodules
-        id: collect
-        run: |
-          SUBMODULES_JSON="[]"
-          while IFS= read -r entry; do
-            SUB_PATH=$(echo "$entry" | awk '{print $2}')
-            SUB_URL=$(git config --file .gitmodules --get "submodule.${SUB_PATH}.url")
-
-            if [[ "$SUB_URL" == git@github.com:* ]]; then
-              SUB_REPO=${SUB_URL#git@github.com:}
-            elif [[ "$SUB_URL" == https://github.com/* ]]; then
-              SUB_REPO=${SUB_URL#https://github.com/}
-            else
-              echo "❌ Unsupported submodule URL: $SUB_URL"
-              exit 1
-            fi
-            SUB_REPO=${SUB_REPO%.git}
-
-            SUBMODULES_JSON=$(jq -c \
-              --arg path "$SUB_PATH" \
-              --arg repo "$SUB_REPO" \
-              '. += [{"path": $path, "repo": $repo}]' <<< "$SUBMODULES_JSON")
-          done < <(git config --file .gitmodules --get-regexp '^submodule\..*\.path$')
-
-          echo "submodules=$SUBMODULES_JSON" >> $GITHUB_OUTPUT
-          echo "✅ Found submodules: $SUBMODULES_JSON"
+      - name: Fetch PR comments and extract submodule JSON
+        id: extract
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.payload.workflow_run.pull_requests[0].number;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber
+            });
+            const cache = comments.find(c => c.body.includes('<!-- SUBMODULES_JSON -->'));
+            if (!cache) {
+              core.setFailed('No submodule cache comment found');
+              return;
+            }
+            const jsonMatch = cache.body.match(/<!-- SUBMODULES_JSON -->\s*```json\n([\s\S]*?)\n```/);
+            if (!jsonMatch) {
+              core.setFailed('Failed to parse submodule JSON from comment');
+              return;
+            }
+            const submodules = jsonMatch[1];
+            core.setOutput('submodules', submodules);
 
   # ------------------------------------------------------------------
   # 2️⃣ Process each submodule in parallel (matrix)
