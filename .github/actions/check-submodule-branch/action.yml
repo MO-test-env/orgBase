@@ -1,0 +1,35 @@
+name: Check submodule branch
+description: Checks whether a given branch exists in a submodule repository.
+author: Marissa Ovenshire
+
+inputs:
+  repo:
+    description: 'Owner/repo of the submodule (e.g. org/submodule)'
+    required: true
+  branch:
+    description: 'Branch name to look for'
+    required: true
+  token:
+    description: 'GitHub token (GH_TOKEN) with repo read permission'
+    required: true
+
+outputs:
+  exists:
+    description: "'true' if the branch exists, otherwise 'false'"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Verify branch existence
+      id: check
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        SUB_REPO: ${{ inputs.repo }}
+        MATCH_BRANCH: ${{ inputs.branch }}
+      shell: bash
+      run: |
+        if gh api repos/${SUB_REPO}/branches/${MATCH_BRANCH} >/dev/null 2>&1; then
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+        fi

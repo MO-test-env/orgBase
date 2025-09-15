@@ -1,0 +1,45 @@
+name: Comment results
+description: Updates the triggering comment with a formatted summary.
+author: Your Name
+
+inputs:
+  comment_id:
+    description: ID of the comment to update
+    required: true
+  results:
+    description: Multi‑line string with per‑submodule results
+    required: true
+  token:
+    description: PAT (or GITHUB_TOKEN) with write access to issues
+    required: true
+  owner:
+    description: Repo owner
+    required: true
+  repo:
+    description: Repo name
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Post comment (github-script)
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.token }}
+        script: |
+          const commentId = ${{ inputs.comment_id }};
+          const body = [
+            "Pull Request Merged ✅",
+            "",
+            "### Submodule Results",
+            `${{ inputs.results }}`,
+            "",
+            "### Base Repo",
+            "• Base PR merged successfully ✅"
+          ].join("\n");
+          await github.rest.issues.updateComment({
+            owner: "${{ inputs.owner }}",
+            repo: "${{ inputs.repo }}",
+            comment_id: commentId,
+            body
+          });

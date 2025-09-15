@@ -1,0 +1,54 @@
+name: Detect submodules
+description: Detects submodules in the current repository and outputs a JSON matrix.
+author: Marissa Ovenshire
+
+inputs:
+  token:
+    description: 'GitHub token used by actions/checkout'
+    required: true
+
+outputs:
+  submodules:
+    description: 'JSON array of objects {path,repo} for each submodule'
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository (with submodules)
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        submodules: true
+        token: ${{ inputs.token }}
+
+    - name: Build submodule matrix
+      id: collect
+      shell: bash
+      run: |
+        # Initialise empty JSON array
+        SUBMODULES_JSON="[]"
+
+        # Iterate over .gitmodules entries
+        while IFS= read -r entry; do
+          SUB_PATH=$(echo "$entry" | awk '{print $2}')
+          SUB_URL=$(git config --file .gitmodules --get "submodule.${SUB_PATH}.url")
+
+          # Convert SSH/HTTPS URLs to owner/repo format
+          if [[ "$SUB_URL" =~ ^git@github.com:(.+)\.git$ ]]; then
+            SUB_REPO="${BASH_REMATCH[1]}"
+          elif [[ "$SUB_URL" =~ ^https://github.com/(.+)\.git$ ]]; then
+            SUB_REPO="${BASH_REMATCH[1]}"
+          else
+            echo "❌ Unsupported submodule URL: $SUB_URL"
+            exit 1
+          fi
+
+          # Append to JSON array
+          SUBMODULES_JSON=$(jq -c \
+            --arg path "$SUB_PATH" \
+            --arg repo "$SUB_REPO" \
+            '. += [{"path": $path, "repo": $repo}]' <<< "$SUBMODULES_JSON")
+        done < <(git config --file .gitmodules --get-regexp '^submodule\..*\.path$')
+
+        echo "submodules=$SUBMODULES_JSON" >> "$GITHUB_OUTPUT"
+        echo "✅ Detected submodules: $SUBMODULES_JSON"

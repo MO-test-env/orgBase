@@ -1,67 +1,32 @@
 name: Create Submodule PRs (on PR open)
 
-# ----------------------------------------------------------------------
-# Trigger when a PR is created (or reopened) in the base repository
-# ----------------------------------------------------------------------
 on:
   pull_request:
     types: [opened, reopened]
 
-# ----------------------------------------------------------------------
-# Permissions required for creating PRs in submodule repos
-# ----------------------------------------------------------------------
 permissions:
-  contents: read       # checkout the base repo
-  issues: write        # comment on the original PR (optional)
-  pull-requests: write # create PRs in submodule repos
+  contents: read
+  issues: write
+  pull-requests: write
   actions: read
 
 jobs:
   # ------------------------------------------------------------------
-  # 1️⃣ Detect all submodules and expose a matrix for the next job
+  # 1️⃣ Detect submodules
   # ------------------------------------------------------------------
   detect-submodules:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.collect.outputs.submodules }}
+      matrix: ${{ steps.detect.outputs.submodules }}
     steps:
-      - name: Checkout base repo (including submodules)
-        uses: actions/checkout@v4
+      - name: Detect submodules (composite)
+        id: detect
+        uses: ./.github/actions/detect-submodules
         with:
-          fetch-depth: 0
-          submodules: true
           token: ${{ secrets.WORKFLOWS }}
 
-      - name: Collect submodule data
-        id: collect
-        run: |
-          # Build a JSON array like [{ "path":"submod", "repo":"owner/repo" }, …]
-          SUBMODULES_JSON="[]"
-          while IFS= read -r entry; do
-            SUB_PATH=$(echo "$entry" | awk '{print $2}')
-            SUB_URL=$(git config --file .gitmodules --get "submodule.${SUB_PATH}.url")
-
-            # Convert SSH/HTTPS URLs to the owner/repo format
-            if [[ "$SUB_URL" =~ ^git@github.com:(.+)\.git$ ]]; then
-              SUB_REPO="${BASH_REMATCH[1]}"
-            elif [[ "$SUB_URL" =~ ^https://github.com/(.+)\.git$ ]]; then
-              SUB_REPO="${BASH_REMATCH[1]}"
-            else
-              echo "❌ Unsupported submodule URL: $SUB_URL"
-              exit 1
-            fi
-
-            SUBMODULES_JSON=$(jq -c \
-              --arg path "$SUB_PATH" \
-              --arg repo "$SUB_REPO" \
-              '. += [{"path": $path, "repo": $repo}]' <<< "$SUBMODULES_JSON")
-          done < <(git config --file .gitmodules --get-regexp '^submodule\..*\.path$')
-
-          echo "submodules=$SUBMODULES_JSON" >> "$GITHUB_OUTPUT"
-          echo "✅ Detected submodules: $SUBMODULES_JSON"
-
   # ------------------------------------------------------------------
-  # 2️⃣ For each submodule, create a PR if a branch with the same name exists
+  # 2️⃣ Create PR in each submodule (if branch exists)
   # ------------------------------------------------------------------
   create-submodule-prs:
     needs: detect-submodules
@@ -73,46 +38,35 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.WORKFLOWS }}   # token with write access to submodule repos
     steps:
-      - name: Checkout base repo (only needed for PR metadata)
+      - name: Checkout base repo (metadata only)
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           token: ${{ secrets.WORKFLOWS }}
 
-      - name: Get base PR head & base branch names
+      - name: Get PR metadata
         id: pr_meta
         run: |
           echo "head_ref=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
           echo "base_ref=${{ github.event.pull_request.base.ref }}" >> "$GITHUB_OUTPUT"
 
-      - name: Check for matching branch in submodule
+      - name: Check branch existence (composite)
         id: branch_check
-        env:
-          SUB_REPO: ${{ matrix.submod.repo }}
-          MATCH_BRANCH: ${{ steps.pr_meta.outputs.head_ref }}
-        run: |
-          # Use gh API to see if the branch exists; 404 means it does not.
-          if gh api repos/${SUB_REPO}/branches/${MATCH_BRANCH} >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
+        uses: ./.github/actions/check-submodule-branch
+        with:
+          repo: ${{ matrix.submod.repo }}
+          branch: ${{ steps.pr_meta.outputs.head_ref }}
+          token: ${{ secrets.WORKFLOWS }}
 
-      - name: Create PR in submodule (if branch exists)
+      - name: Create PR in submodule (composite)
         if: steps.branch_check.outputs.exists == 'true'
-        env:
-          SUB_REPO: ${{ matrix.submod.repo }}
-          MATCH_BRANCH: ${{ steps.pr_meta.outputs.head_ref }}
-          BASE_BRANCH: ${{ steps.pr_meta.outputs.base_ref }}
-        run: |
-          TITLE="chore(submod): sync ${MATCH_BRANCH} → ${BASE_BRANCH}"
-          BODY="Auto‑generated PR to merge **${MATCH_BRANCH}** into **${BASE_BRANCH}** for submodule **${SUB_REPO}**.\n\nGenerated by the *Create Submodule PRs* workflow."
-          gh api -X POST repos/${SUB_REPO}/pulls \
-            -f title="${TITLE}" \
-            -f head="${MATCH_BRANCH}" \
-            -f base="${BASE_BRANCH}" \
-            -f body="${BODY}" \
-            
+        uses: ./.github/actions/create-submodule-pr
+        with:
+          repo: ${{ matrix.submod.repo }}
+          head: ${{ steps.pr_meta.outputs.head_ref }}
+          base: ${{ steps.pr_meta.outputs.base_ref }}
+          token: ${{ secrets.WORKFLOWS }}
+
       - name: Log when no matching branch is found
         if: steps.branch_check.outputs.exists != 'true'
         run: |
@@ -124,12 +78,11 @@ jobs:
   comment-summary:
     needs: create-submodule-prs
     runs-on: ubuntu-latest
-    if: always()   # run even if some submodule jobs fail
+    if: always()
     steps:
       - name: Summarize results
         id: summary
         run: |
-          # Gather the status of each submodule job from the previous step
           echo "summary=$(jq -n '[]')" >> "$GITHUB_OUTPUT"
 
       - name: Post comment on the base PR
