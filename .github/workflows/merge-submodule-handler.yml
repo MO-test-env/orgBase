@@ -22,12 +22,6 @@ jobs:
       github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
-      
-      - name: Set up GitHub CLI
-        uses: cli/gh-action@v2
-        with:
-          version: latest   # keep it up‑to‑date automatically
-
       # ------------------------------------------------------------------
       # 1️⃣ Checkout base repo (full history, **with** submodules)
       # ------------------------------------------------------------------
