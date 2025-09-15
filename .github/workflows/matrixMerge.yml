@@ -135,64 +135,52 @@ jobs:
           #   -f commit_message="Squash‑merged submodule PR #$PR_NUM" \
           #   || { echo "❌ Merge failed for $SUB_REPO PR #$PR_NUM"; exit 1; }
           echo "🏷️ THIS WOULD GET MERGED IM JUST TIRED OF OPENING NEW PRS 🏷️"
+          # --------------------------------------------------------------
+          # 3️⃣ Bump the submodule pointer in the base repo via GitHub API
+          # --------------------------------------------------------------
 
-          # --------------------------------------------------------------
-          # 3️⃣ Bump the submodule pointer in the base repo
-          # --------------------------------------------------------------
           # 1️⃣ Refresh submodule and get its latest commit SHA
-          #    (uses the same branch name as the base PR's base ref, fallback to 'main')
           SUBMODULE_DEFAULT_BRANCH="${BASE_REF:-main}"
           git -C "$SUB_PATH" fetch origin
           SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse "origin/${SUBMODULE_DEFAULT_BRANCH}")
+          echo "Latest submodule SHA: $SUBMODULE_SHA"
 
-
-          # 2️⃣ Get the commit SHA for the current head of the base PR branch
+          # 2️⃣ Get the current commit SHA of the base PR branch
           BASE_COMMIT_SHA=$(gh api \
             repos/${REPO}/git/ref/heads/${HEAD_REF} \
             -q .object.sha)
+          echo "Current base branch SHA: $BASE_COMMIT_SHA"
 
-          # 🔎 Get the tree SHA from that commit
-          ACTUAL_TREE_SHA=$(gh api \
+          # 3️⃣ Get the tree SHA of that commit
+          BASE_TREE_SHA=$(gh api \
             repos/${REPO}/git/commits/${BASE_COMMIT_SHA} \
             -q .tree.sha)
+          echo "Base tree SHA: $BASE_TREE_SHA"
 
-          echo "BASE_COMMIT_SHA:  $BASE_COMMIT_SHA"
-          echo "ACTUAL_TREE_SHA:  $ACTUAL_TREE_SHA"
-
-          # Use ACTUAL_TREE_SHA as BASE_TREE_SHA going forward
-          BASE_TREE_SHA="$ACTUAL_TREE_SHA"
-
-
-          # 3️⃣ Build a new tree that updates the submodule entry (gitlink mode 160000)
-          #    Use --raw-field so the JSON array is sent un‑escaped.
+          # 4️⃣ Create a new tree that updates the submodule (mode 160000)
           SUB_TREE_PAYLOAD=$(jq -c -n \
             --arg path "$SUB_PATH" \
             --arg sha "$SUBMODULE_SHA" \
             '[{ "path": $path, "mode": "160000", "type": "commit", "sha": $sha }]')
           echo "$SUB_TREE_PAYLOAD" | jq .
-          echo "🔎 Calling GitHub API..."
-          gh api -X POST "repos/${REPO}/git/trees" \
+
+          BUMP_TREE=$(gh api -X POST "repos/${REPO}/git/trees" \
             -f base_tree="$BASE_TREE_SHA" \
             --raw-field tree="$SUB_TREE_PAYLOAD" \
-            || { echo "❌ API failed"; exit 1; }
-
-          echo "3 i think its here"
-
-          # 4️⃣ Create a commit that points to the new tree
-          BUMP_COMMIT=$(gh api -X POST \
-            repos/${REPO}/git/commits \
-            -f message="chore(submod): bump $SUB_REPO to $SUBMODULE_SHA" \
-            -f tree=$BUMP_TREE \
-            -f parents='["'"$(gh api repos/${REPO}/git/refs/heads/${HEAD_REF} -q .object.sha)"'"]' \
             -q .sha)
+          echo "New tree SHA: $BUMP_TREE"
 
-          echo "4 completed"
+          # 5️⃣ Create a new commit pointing to that tree
+          BUMP_COMMIT=$(gh api -X POST "repos/${REPO}/git/commits" \
+            -f message="chore(submod): bump $SUB_REPO to $SUBMODULE_SHA" \
+            -f tree="$BUMP_TREE" \
+            -f parents='["'"$BASE_COMMIT_SHA"'"]' \
+            -q .sha)
+          echo "New commit SHA: $BUMP_COMMIT"
 
-          # 5️⃣ Move the branch tip to the new commit (no force‑push)
-          gh api -X PATCH \
-            repos/${REPO}/git/refs/heads/${HEAD_REF} \
-            -f sha=$BUMP_COMMIT \
-          echo "5"
+          # 6️⃣ Move the branch reference to point to the new commit (safe, no force push)
+          gh api -X PATCH "repos/${REPO}/git/refs/heads/${HEAD_REF}" \
+            -f sha="$BUMP_COMMIT"
 
           echo "result=• $SUB_REPO: merged #$PR_NUM + bumped ✅" >> "$GITHUB_OUTPUT"
 
