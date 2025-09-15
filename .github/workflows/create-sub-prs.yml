@@ -112,8 +112,7 @@ jobs:
             -f head="${MATCH_BRANCH}" \
             -f base="${BASE_BRANCH}" \
             -f body="${BODY}" \
-            -f maintainer_can_modify=true
-
+            
       - name: Log when no matching branch is found
         if: steps.branch_check.outputs.exists != 'true'
         run: |
