@@ -138,8 +138,11 @@ jobs:
           # --------------------------------------------------------------
           # 3️⃣ Bump the submodule pointer in the base repo
           # --------------------------------------------------------------
-          # 1️⃣ Grab the latest commit SHA from the submodule (assumes default branch is main)
-          SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse origin/main)
+          # 1️⃣ Refresh submodule and get its latest commit SHA
+          #    (uses the same branch name as the base PR's base ref, fallback to 'main')
+          SUBMODULE_DEFAULT_BRANCH="${BASE_REF:-main}"
+          git -C "$SUB_PATH" fetch origin
+          SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse "origin/${SUBMODULE_DEFAULT_BRANCH}")
 
           # 2️⃣ Get the tree SHA for the current head of the base PR
           BASE_TREE_SHA=$(gh api \
@@ -147,10 +150,11 @@ jobs:
             -q .sha)
 
           # 3️⃣ Build a new tree that updates the submodule entry (gitlink mode 160000)
+          #    Use --raw-field so the JSON array is sent un‑escaped.
           BUMP_TREE=$(gh api -X POST \
             repos/${REPO}/git/trees \
             -f base_tree=$BASE_TREE_SHA \
-            -f tree='[ {"path":"'"$SUB_PATH"'","mode":"160000","type":"commit","sha":"'"$SUBMODULE_SHA"'"} ]' \
+            -F tree='[{"path":"'"$SUB_PATH"'","mode":"160000","type":"commit","sha":"'"$SUBMODULE_SHA"'"}]' \
             -q .sha)
 
           # 4️⃣ Create a commit that points to the new tree
@@ -165,7 +169,6 @@ jobs:
           gh api -X PATCH \
             repos/${REPO}/git/refs/heads/${HEAD_REF} \
             -f sha=$BUMP_COMMIT \
-            -f force=false
 
           echo "result=• $SUB_REPO: merged #$PR_NUM + bumped ✅" >> "$GITHUB_OUTPUT"
 
