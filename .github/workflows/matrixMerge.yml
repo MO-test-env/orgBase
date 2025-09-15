@@ -135,8 +135,9 @@ jobs:
           #   -f commit_message="Squash‑merged submodule PR #$PR_NUM" \
           #   || { echo "❌ Merge failed for $SUB_REPO PR #$PR_NUM"; exit 1; }
           echo "🏷️ THIS WOULD GET MERGED IM JUST TIRED OF OPENING NEW PRS 🏷️"
+
           # --------------------------------------------------------------
-          # 3️⃣ Bump the submodule pointer in the base repo via GitHub API
+          # 3️⃣ Bump the submodule pointer via GitHub API (no trees/force push)
           # --------------------------------------------------------------
 
           # 1️⃣ Refresh submodule and get its latest commit SHA
@@ -156,8 +157,6 @@ jobs:
             -f sha="$SUBMODULE_FILE_SHA" \
             -f content=$(echo -n "$SUBMODULE_SHA" | base64) \
             -f branch="$HEAD_REF"
-
-          echo "result=• $SUB_REPO: merged #$PR_NUM + bumped ✅" >> "$GITHUB_OUTPUT"
 
           echo "result=• $SUB_REPO: merged #$PR_NUM + bumped ✅" >> "$GITHUB_OUTPUT"
 
