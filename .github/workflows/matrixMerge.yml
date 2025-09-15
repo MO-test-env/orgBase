@@ -154,9 +154,9 @@ jobs:
           BUMP_TREE=$(gh api -X POST \
             repos/${REPO}/git/trees \
             -f base_tree=$BASE_TREE_SHA \
-            -F tree='[{"path":"'"$SUB_PATH"'","mode":"160000","type":"commit","sha":"'"$SUBMODULE_SHA"'"}]' \
+            --raw-field tree='[{"path":"'"$SUB_PATH"'","mode":"160000","type":"commit","sha":"'"$SUBMODULE_SHA"'"}]' \
             -q .sha)
-
+            
           # 4️⃣ Create a commit that points to the new tree
           BUMP_COMMIT=$(gh api -X POST \
             repos/${REPO}/git/commits \
