@@ -199,14 +199,11 @@ jobs:
       - name: Collect results
         id: collect
         run: |
-          RESULTS=""
-          for job in ${{ toJson(needs.process-submodules) }}; do
-            :
-          done
-          # `needs.process-submodules.result` is an array of outputs
-          echo "results<<EOF" >> $GITHUB_OUTPUT
-          echo "${{ join(needs.process-submodules.*.outputs.result, '\n') }}" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          run: |
+          # Write the multi‑line output in a way the shell can parse safely
+          echo "results<<EOF" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "${{ join(needs.process-submodules.*.outputs.result, '\n') }}" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Comment results
         uses: actions/github-script@v7
