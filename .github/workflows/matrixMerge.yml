@@ -137,51 +137,34 @@ jobs:
           echo "🏷️ THIS WOULD GET MERGED IM JUST TIRED OF OPENING NEW PRS 🏷️"
 
           # --------------------------------------------------------------
-          # 3️⃣ Bump submodule pointer safely (API-only, no force push)
+          # 3️⃣ Bump the submodule pointer in the base repo safely
           # --------------------------------------------------------------
-          # 1️⃣ Refresh submodule and get its latest commit SHA
+          git fetch origin "$HEAD_REF"
+          git checkout -B "$HEAD_REF" "origin/$HEAD_REF"
+          git submodule update --init "$SUB_PATH"
+
+          # Fetch latest commit from the submodule's default branch
           SUBMODULE_DEFAULT_BRANCH="${BASE_REF:-main}"
           git -C "$SUB_PATH" fetch origin "$SUBMODULE_DEFAULT_BRANCH"
-          SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse "origin/${SUBMODULE_DEFAULT_BRANCH}")
+          SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse "origin/$SUBMODULE_DEFAULT_BRANCH")
           echo "Latest submodule SHA: $SUBMODULE_SHA"
 
-          # 2️⃣ Get the current base branch commit SHA
-          BASE_COMMIT_SHA=$(gh api repos/${REPO}/git/ref/heads/${HEAD_REF} -q .object.sha)
-          echo "Current base branch SHA: $BASE_COMMIT_SHA"
+          # Update the submodule pointer on the PR branch
+          git add "$SUB_PATH"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 3️⃣ Get base commit tree SHA
-          BASE_TREE_SHA=$(gh api repos/${REPO}/git/commits/${BASE_COMMIT_SHA} -q .tree.sha)
-          echo "Base tree SHA: $BASE_TREE_SHA"
-
-          # 4️⃣ Verify submodule path exists in base tree
-          EXISTS=$(gh api repos/${REPO}/git/trees/$BASE_TREE_SHA -q ".tree[] | select(.path==\"$SUB_PATH\" and .type==\"commit\") | .sha")
-          if [[ -z "$EXISTS" ]]; then
-            echo "❌ Submodule path '$SUB_PATH' not found in base tree; cannot update pointer"
-            exit 1
+          # Commit only if there are changes
+          if git diff --cached --quiet; then
+            echo "No changes in submodule pointer; skipping commit."
+          else
+            git commit -m "chore(submod): bump $SUB_REPO to $SUBMODULE_SHA"
+            # Push safely without force
+            git push "https://${CROSS_TOKEN}@github.com/$REPO.git" "$HEAD_REF"
           fi
 
-          # 5️⃣ Create new tree with only the submodule updated
-          TREE_PAYLOAD=$(jq -n --arg path "$SUB_PATH" --arg sha "$SUBMODULE_SHA" \
-            '[{ "path": $path, "mode": "160000", "type": "commit", "sha": $sha }]')
+          RESULT="• $SUB_REPO: merged #$PR_NUM + bumped ✅"
 
-          NEW_TREE_SHA=$(gh api -X POST repos/${REPO}/git/trees \
-            -f base_tree="$BASE_TREE_SHA" \
-            --raw-field tree="$TREE_PAYLOAD" \
-            -q .sha)
-          echo "New tree SHA: $NEW_TREE_SHA"
-
-          # 6️⃣ Create commit pointing to new tree
-          NEW_COMMIT_SHA=$(gh api -X POST repos/${REPO}/git/commits \
-            -f message="chore(submod): bump $SUB_REPO to $SUBMODULE_SHA" \
-            -f tree="$NEW_TREE_SHA" \
-            -f parents="[\"$BASE_COMMIT_SHA\"]" \
-            -q .sha)
-          echo "New commit SHA: $NEW_COMMIT_SHA"
-
-          # 7️⃣ Update branch ref safely
-          gh api -X PATCH repos/${REPO}/git/refs/heads/${HEAD_REF} -f sha="$NEW_COMMIT_SHA"
-
-          echo "✅ $SUB_REPO bumped to $SUBMODULE_SHA on $HEAD_REF"
 
   # ------------------------------------------------------------------
   # 3️⃣ Merge base PR after all submodules succeed
