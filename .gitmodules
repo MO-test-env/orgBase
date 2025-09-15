@@ -3,6 +3,6 @@
 	url = https://github.com/MOvenshire/submod.git
 	branch = main
 [submodule "submod2"]
-	path = submod
+	path = submod2
 	url = https://github.com/MOvenshire/submod2.git
 	branch = main
