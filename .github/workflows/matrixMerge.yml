@@ -200,14 +200,15 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const number = parseInt('${{ steps.pr_info.outputs.pr_number }}', 10);
-            await github.rest.pulls.merge({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: number,
-              merge_method: 'squash',
-              commit_title: `chore(submods): squash merge #${number}`,
-              commit_message: `Squash-merged base PR after submodule merges.`,
-            });
+            # await github.rest.pulls.merge({
+            #   owner: context.repo.owner,
+            #   repo: context.repo.repo,
+            #   pull_number: number,
+            #   merge_method: 'squash',
+            #   commit_title: `chore(submods): squash merge #${number}`,
+            #   commit_message: `Squash-merged base PR after submodule merges.`,
+            # });
+            echo "🏷️ THIS BASE WOULD GET MERGED IM JUST TIRED OF OPENING NEW PRS 🏷️"
 
   # ------------------------------------------------------------------
   # 4️⃣ Final comment (nicely formatted)
