@@ -156,10 +156,15 @@ jobs:
 
           # 3️⃣ Build a new tree that updates the submodule entry (gitlink mode 160000)
           #    Use --raw-field so the JSON array is sent un‑escaped.
+          SUB_TREE_PAYLOAD=$(jq -c -n \
+            --arg path "$SUB_PATH" \
+            --arg sha "$SUBMODULE_SHA" \
+            '[{ "path": $path, "mode": "160000", "type": "commit", "sha": $sha }]')
+
           BUMP_TREE=$(gh api -X POST \
-            repos/${REPO}/git/trees \
-            -f base_tree=$BASE_TREE_SHA \
-            --raw-field tree='[{"path":"'"$SUB_PATH"'","mode":"160000","type":"commit","sha":"'"$SUBMODULE_SHA"'"}]' \
+            "repos/${REPO}/git/trees" \
+            -f base_tree="$BASE_TREE_SHA" \
+            --raw-field tree="$SUB_TREE_PAYLOAD" \
             -q .sha)
 
           echo "3 i think its here"
