@@ -145,42 +145,19 @@ jobs:
           SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse "origin/${SUBMODULE_DEFAULT_BRANCH}")
           echo "Latest submodule SHA: $SUBMODULE_SHA"
 
-          # 2️⃣ Get the current commit SHA of the base PR branch
-          BASE_COMMIT_SHA=$(gh api \
-            repos/${REPO}/git/ref/heads/${HEAD_REF} \
-            -q .object.sha)
-          echo "Current base branch SHA: $BASE_COMMIT_SHA"
-
-          # 3️⃣ Get the tree SHA of that commit
-          BASE_TREE_SHA=$(gh api \
-            repos/${REPO}/git/commits/${BASE_COMMIT_SHA} \
-            -q .tree.sha)
-          echo "Base tree SHA: $BASE_TREE_SHA"
-
-          # 4️⃣ Create a new tree that updates the submodule (mode 160000)
-          SUB_TREE_PAYLOAD=$(jq -c -n \
-            --arg path "$SUB_PATH" \
-            --arg sha "$SUBMODULE_SHA" \
-            '[{ "path": $path, "mode": "160000", "type": "commit", "sha": $sha }]')
-          echo "$SUB_TREE_PAYLOAD" | jq .
-
-          BUMP_TREE=$(gh api -X POST "repos/${REPO}/git/trees" \
-            -f base_tree="$BASE_TREE_SHA" \
-            --raw-field tree="$SUB_TREE_PAYLOAD" \
+          # 2️⃣ Get the current SHA of the file representing the submodule in the base repo
+          # This is required by the API to update the file
+          SUBMODULE_FILE_SHA=$(gh api repos/${REPO}/contents/${SUB_PATH} \
             -q .sha)
-          echo "New tree SHA: $BUMP_TREE"
 
-          # 5️⃣ Create a new commit pointing to that tree
-          BUMP_COMMIT=$(gh api -X POST "repos/${REPO}/git/commits" \
+          # 3️⃣ Update the submodule pointer via the contents API
+          gh api -X PUT "repos/${REPO}/contents/${SUB_PATH}" \
             -f message="chore(submod): bump $SUB_REPO to $SUBMODULE_SHA" \
-            -f tree="$BUMP_TREE" \
-            -f parents='["'"$BASE_COMMIT_SHA"'"]' \
-            -q .sha)
-          echo "New commit SHA: $BUMP_COMMIT"
+            -f sha="$SUBMODULE_FILE_SHA" \
+            -f content=$(echo -n "$SUBMODULE_SHA" | base64) \
+            -f branch="$HEAD_REF"
 
-          # 6️⃣ Move the branch reference to point to the new commit (safe, no force push)
-          gh api -X PATCH "repos/${REPO}/git/refs/heads/${HEAD_REF}" \
-            -f sha="$BUMP_COMMIT"
+          echo "result=• $SUB_REPO: merged #$PR_NUM + bumped ✅" >> "$GITHUB_OUTPUT"
 
           echo "result=• $SUB_REPO: merged #$PR_NUM + bumped ✅" >> "$GITHUB_OUTPUT"
 
