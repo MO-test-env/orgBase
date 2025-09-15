@@ -145,30 +145,23 @@ jobs:
           git -C "$SUB_PATH" fetch origin
           SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse "origin/${SUBMODULE_DEFAULT_BRANCH}")
 
-          echo "where am i getting err"
 
-          # 2️⃣ Get the tree SHA for the current head of the base PR
-          BASE_TREE_SHA=$(gh api \
-            repos/${REPO}/git/trees/${HEAD_REF} \
+          # 2️⃣ Get the commit SHA for the current head of the base PR branch
+          BASE_COMMIT_SHA=$(gh api \
+            repos/${REPO}/git/ref/heads/${HEAD_REF} \
             -q .object.sha)
 
-            echo "2 completed"
-
-
-            echo "Checking base commit vs base tree..."
+          # 🔎 Get the tree SHA from that commit
           ACTUAL_TREE_SHA=$(gh api \
-            "repos/${REPO}/git/commits/${BASE_TREE_SHA}" \
+            repos/${REPO}/git/commits/${BASE_COMMIT_SHA} \
             -q .tree.sha)
 
-          echo "BASE_TREE_SHA:   $BASE_TREE_SHA"
-          echo "ACTUAL_TREE_SHA: $ACTUAL_TREE_SHA"
+          echo "BASE_COMMIT_SHA:  $BASE_COMMIT_SHA"
+          echo "ACTUAL_TREE_SHA:  $ACTUAL_TREE_SHA"
 
-          if [ "$BASE_TREE_SHA" != "$ACTUAL_TREE_SHA" ]; then
-            echo "❌ Mismatch! Using actual tree instead."
-            BASE_TREE_SHA="$ACTUAL_TREE_SHA"
-          else
-            echo "✅ Base tree matches commit."
-          fi
+          # Use ACTUAL_TREE_SHA as BASE_TREE_SHA going forward
+          BASE_TREE_SHA="$ACTUAL_TREE_SHA"
+
 
           # 3️⃣ Build a new tree that updates the submodule entry (gitlink mode 160000)
           #    Use --raw-field so the JSON array is sent un‑escaped.
