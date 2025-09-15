@@ -149,7 +149,7 @@ jobs:
 
           # 2️⃣ Get the tree SHA for the current head of the base PR
           BASE_TREE_SHA=$(gh api \
-            repos/${REPO}/git/trees/${BASE_BRANCH} \
+            repos/${REPO}/git/trees/${HEAD_REF} \
             -q .object.sha)
 
             echo "2 completed"
