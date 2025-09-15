@@ -111,34 +111,47 @@ jobs:
           echo "🔎 Processing $SUB_REPO at $SUB_PATH"
           RESULT=""
 
-          # Find PR in submodule
-          PR_NUM=$(gh api repos/$SUB_REPO/pulls \
-            -H "Authorization: Bearer $CROSS_TOKEN" \
-            --jq ".[] | select(.head.ref==\"$HEAD_REF\") | .number" || true)
+          
+              # --------------------------------------------------------------
+              # 1️⃣ Find PR in submodule that matches the base PR HEAD ref
+              # --------------------------------------------------------------
+              PR_NUM=$(gh api repos/$SUB_REPO/pulls \
+                --jq ".[] | select(.head.ref==\"$HEAD_REF\") | .number" || true)
 
-          if [[ -n "$PR_NUM" ]]; then
-            echo "✅ Found submodule PR #$PR_NUM"
-            gh api repos/$SUB_REPO/pulls/$PR_NUM/merge \
-              -H "Authorization: Bearer $CROSS_TOKEN" \
-              -f merge_method=squash || { echo "❌ Merge failed"; exit 1; }
+              if [[ -n "$PR_NUM" ]]; then
+                echo "✅ Found submodule PR #$PR_NUM"
 
-            # Bump pointer
-            git fetch origin "$HEAD_REF"
-            git checkout -B "$HEAD_REF" "origin/$HEAD_REF"
-            git submodule update --init "$SUB_PATH"
-            git -C "$SUB_PATH" fetch origin main
-            git -C "$SUB_PATH" checkout origin/main
-            git add "$SUB_PATH"
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git commit -m "chore(submod): bump $SUB_REPO to origin/main" || true
-            git push "https://${CROSS_TOKEN}@github.com/$REPO.git" "$HEAD_REF" --force
-            RESULT="• $SUB_REPO: merged #$PR_NUM + bumped ✅"
-          else
-            RESULT="• $SUB_REPO: no matching PR found ℹ️"
-          fi
+                # --------------------------------------------------------------
+                # 2️⃣ Merge the submodule PR (squash) – let gh handle auth
+                # --------------------------------------------------------------
+                gh api -X PUT \
+                  -H "Accept: application/vnd.github+json" \
+                  repos/$SUB_REPO/pulls/$PR_NUM/merge \
+                  -f merge_method=squash \
+                  -f commit_title="chore(submod): merge $SUB_REPO #$PR_NUM" \
+                  -f commit_message="Squash‑merged submodule PR #$PR_NUM" \
+                  || { echo "❌ Merge failed for $SUB_REPO PR #$PR_NUM"; exit 1; }
 
-          echo "result=$RESULT" >> $GITHUB_OUTPUT
+                # --------------------------------------------------------------
+                # 3️⃣ Bump the submodule pointer in the base repo
+                # --------------------------------------------------------------
+                git fetch origin "$HEAD_REF"
+                git checkout -B "$HEAD_REF" "origin/$HEAD_REF"
+                git submodule update --init "$SUB_PATH"
+                git -C "$SUB_PATH" fetch origin main
+                git -C "$SUB_PATH" checkout origin/main
+                git add "$SUB_PATH"
+                git config user.name "github-actions[bot]"
+                git config user.email "github-actions[bot]@users.noreply.github.com"
+                git commit -m "chore(submod): bump $SUB_REPO to origin/main" || true
+                git push "https://${CROSS_TOKEN}@github.com/$REPO.git" "$HEAD_REF" --force
+
+                RESULT="• $SUB_REPO: merged #$PR_NUM + bumped ✅"
+              else
+                RESULT="• $SUB_REPO: no matching PR found ℹ️"
+              fi
+
+              echo "result=$RESULT" >> $GITHUB_OUTPUT
 
   # ------------------------------------------------------------------
   # 3️⃣ Merge base PR after all submodules succeed
