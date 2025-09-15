@@ -1,3 +1,39 @@
+name: Merge Submodule + Base PR (on /merge comment)
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: write
+  actions: write
+
+env:
+  # Filled in by the “Get submodule info” step – keep the placeholder for local testing.
+  SUBMODULE_REPO: MOvenshire/submod
+  CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
+
+jobs:
+  merge-flow:
+    if: |
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/merge' &&
+      github.event.comment.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    steps:
+
+      # ------------------------------------------------------------------
+      # 1️⃣ Checkout base repo (full history, **with** submodules)
+      # ------------------------------------------------------------------
+      - name: Checkout base repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: true
+          token: ${{ env.CROSS_TOKEN }}
+
       # ------------------------------------------------------------------
       # 2️⃣ Detect ALL submodules
       # ------------------------------------------------------------------
