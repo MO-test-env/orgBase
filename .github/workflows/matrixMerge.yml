@@ -145,10 +145,14 @@ jobs:
           git -C "$SUB_PATH" fetch origin
           SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse "origin/${SUBMODULE_DEFAULT_BRANCH}")
 
+          echo "where am i getting err"
+
           # 2️⃣ Get the tree SHA for the current head of the base PR
           BASE_TREE_SHA=$(gh api \
             repos/${REPO}/git/trees/${HEAD_REF} \
             -q .sha)
+
+            echo "2 completed"
 
           # 3️⃣ Build a new tree that updates the submodule entry (gitlink mode 160000)
           #    Use --raw-field so the JSON array is sent un‑escaped.
@@ -158,6 +162,8 @@ jobs:
             --raw-field tree='[{"path":"'"$SUB_PATH"'","mode":"160000","type":"commit","sha":"'"$SUBMODULE_SHA"'"}]' \
             -q .sha)
 
+          echo "3 i think its here"
+
           # 4️⃣ Create a commit that points to the new tree
           BUMP_COMMIT=$(gh api -X POST \
             repos/${REPO}/git/commits \
@@ -166,10 +172,13 @@ jobs:
             -f parents='["'"$(gh api repos/${REPO}/git/refs/heads/${HEAD_REF} -q .object.sha)"'"]' \
             -q .sha)
 
+          echo "4 completed"
+
           # 5️⃣ Move the branch tip to the new commit (no force‑push)
           gh api -X PATCH \
             repos/${REPO}/git/refs/heads/${HEAD_REF} \
             -f sha=$BUMP_COMMIT \
+          echo "5"
 
           echo "result=• $SUB_REPO: merged #$PR_NUM + bumped ✅" >> "$GITHUB_OUTPUT"
 
