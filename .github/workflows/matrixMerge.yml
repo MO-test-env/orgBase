@@ -81,7 +81,7 @@ jobs:
   # 3️⃣ Bump all submodules in a single commit
   # --------------------------------------------------------------
   bump-all:
-    needs: process-submodules
+    needs: merge-submodules
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -116,7 +116,7 @@ jobs:
   # 4️⃣ Merge the base PR
   # --------------------------------------------------------------
   merge-base:
-    needs: bump-submodules
+    needs: bump-all
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
