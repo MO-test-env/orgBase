@@ -84,11 +84,15 @@ jobs:
           GH_TOKEN: ${{ secrets.WORKFLOWS }}
           SUB_PATH: ${{ matrix.submod.path }}
           SUB_REPO: ${{ matrix.submod.repo }}
+          SUB_URL: ${{ matrix.submod.url }}
           PR_NUM: ${{ matrix.submod.pr_number }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           echo "🔎 Processing $SUB_REPO at $SUB_PATH"
+          OWNER=$(echo "$SUB_REPO_URL" | sed -E 's|https://github.com/([^/]+)/.*|\1|')
+          REPO_NAME=$(echo "$SUB_REPO_URL" | sed -E 's|https://github.com/[^/]+/(.*).git|\1|')
+          FULL_REPO="$OWNER/$REPO_NAME"
 
           if [[ -z "$PR_NUM" ]]; then
             echo "⚠️ No PR number defined for $SUB_REPO – skipping."
@@ -101,7 +105,7 @@ jobs:
           # Merge submodule PR
           gh api -X PUT \
             -H "Accept: application/vnd.github+json" \
-            repos/$SUB_REPO/pulls/$PR_NUM/merge \
+            repos/$FULL_REPO/pulls/$PR_NUM/merge \
             -f merge_method=squash \
             -f commit_title="chore(submod): merge $SUB_REPO #$PR_NUM" \
             -f commit_message="Squash‑merged submodule PR #$PR_NUM" \
