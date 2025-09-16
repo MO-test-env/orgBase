@@ -137,7 +137,7 @@ jobs:
   # 5️⃣ Post summary comment
   # --------------------------------------------------------------
   comment-result:
-    needs: [process-submodules, merge-base]
+    needs: [merge-submodules, merge-base]
     runs-on: ubuntu-latest
     steps:
       - id: collect
