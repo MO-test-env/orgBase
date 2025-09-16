@@ -71,6 +71,8 @@ jobs:
             cat submodules.json
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+
+
       # -----------------------------------------------------------
       # 4️⃣ Create PRs in changed submodules
       # -----------------------------------------------------------
@@ -84,50 +86,73 @@ jobs:
           jq -c '.[]' <<< '${{ steps.detect.outputs.submodules_json }}' | while read sub; do
             path=$(jq -r .path <<< "$sub")
             url=$(jq -r .url <<< "$sub")
-            repo=$(jq -r .repo <<< "$sub")
 
-            echo "🔎 Processing $repo at $path"
+            # Normalize URL (convert git@ to https://)
+            clean_url=${url/git@github.com:/https:\/\/github.com\/}
+            repo=$(basename "$clean_url" .git)
+            owner=$(basename "$(dirname "$clean_url")")
 
-            # Clone the submodule repo
-            git clone "$url" "$repo"
+            echo "🔎 Processing $owner/$repo at $path"
+
+            # Build authenticated URL
+            auth_url="https://${GH_TOKEN}@github.com/${owner}/${repo}.git"
+
+            # Clone the submodule repo with token
+            git clone "$auth_url" "$repo"
             cd "$repo"
 
-            # Create branch with same name as base PR
+            # Ensure we’re on default branch (fetch all first)
+            git fetch origin --prune
+            git checkout main || git checkout -b main origin/main
+
+            # Create or reuse branch with same name as base PR
             if git ls-remote --exit-code origin "refs/heads/$branch"; then
-              echo "Branch $branch already exists in $repo"
+              echo "✅ Branch $branch already exists in $repo"
               git fetch origin $branch
               git checkout $branch
             else
-              echo "Creating new branch $branch in $repo"
+              echo "🌱 Creating new branch $branch in $repo"
               git checkout -b "$branch"
               git push origin "$branch"
             fi
 
-            # Create PR in submodule
+            # Create or reuse a PR in the submodule
             pr_url=$(gh pr create \
               --title "Sync from base PR #$pr_number" \
               --body "This PR was automatically created from ${{ github.repository }}#${pr_number}" \
               --head "$branch" \
               --base main \
-              --repo "$url" || true)
+              --repo "${owner}/${repo}" || true)
 
             pr_num=null
             if [[ "$pr_url" == https* ]]; then
               pr_num=$(basename "$pr_url")
+            else
+              # try to fetch existing PR number if creation failed
+              existing=$(gh pr list --head "$branch" --base main --repo "${owner}/${repo}" --json number -q '.[0].number' || true)
+              if [[ -n "$existing" ]]; then
+                pr_num=$existing
+              fi
             fi
 
             cd ..
 
+            # Update JSON entry with pr_number
             tmp=$(mktemp)
             jq --arg path "$path" \
                --arg url "$url" \
                --arg repo "$repo" \
                --argjson pr_number "$pr_num" \
-               '.[] | select(.path==$path) |= . + {"pr_number": $pr_number}' \
+               'map(if .path == $path then . + {pr_number: $pr_number} else . end)' \
                submodules.json > "$tmp" && mv "$tmp" submodules.json
           done
 
-          echo "final_json=$(cat submodules.json)" >> $GITHUB_OUTPUT
+          # ✅ Use heredoc for multiline JSON output
+          {
+            echo "final_json<<EOF"
+            cat submodules.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ env.GH_TOKEN }}
 
