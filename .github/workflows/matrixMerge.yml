@@ -99,13 +99,14 @@ jobs:
             exit 0
           fi
 
-          gh api -X PUT \
-            -H "Accept: application/vnd.github+json" \
-            repos/$FULL_REPO/pulls/$PR_NUM/merge \
-            -f merge_method=squash \
-            -f commit_title="chore(submod): merge $FULL_REPO #$PR_NUM" \
-            -f commit_message="Squash‑merged submodule PR #$PR_NUM"
+          # gh api -X PUT \
+          #   -H "Accept: application/vnd.github+json" \
+          #   repos/$FULL_REPO/pulls/$PR_NUM/merge \
+          #   -f merge_method=squash \
+          #   -f commit_title="chore(submod): merge $FULL_REPO #$PR_NUM" \
+          #   -f commit_message="Squash‑merged submodule PR #$PR_NUM"
 
+          echo "MERGE!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
           git -C "$SUB_PATH" fetch origin main
           NEW_SHA=$(git -C "$SUB_PATH" rev-parse origin/main)
 
@@ -115,13 +116,19 @@ jobs:
       - name: Persist matrix result for aggregation (no artifact)
         id: persist
         run: |
-          # Build a compact JSON object that other jobs can consume
+          # Build a compact JSON object that other jobs can consume.
+          # Using jq guarantees proper quoting even if values contain spaces.
           json=$(jq -n \
             --arg path "${{ matrix.submod.path }}" \
             --arg sha "${{ steps.subproc.outputs.submodule_sha }}" \
             '{path: $path, sha: $sha}')
-          # Export as step output
-          echo "json=$json" >> "$GITHUB_OUTPUT"
+
+          # Write the JSON as a *multiline* output (required by GitHub Actions)
+          {
+            echo "json<<EOF"
+            echo "$json"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
   # --------------------------------------------------------------
   # 3️⃣ Aggregate matrix results into a single JSON map
