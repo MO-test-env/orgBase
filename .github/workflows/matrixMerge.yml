@@ -63,7 +63,7 @@ jobs:
               return;
             }
 
-            const submodules = jsonMatch[1].trim;
+            const submodules = jsonMatch[0];
             core.info(`Extracted submodules: ${submodules}`);
             core.setOutput("submodules", submodules);
 
