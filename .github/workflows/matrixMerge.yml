@@ -1,4 +1,62 @@
-...
+name: Merge Submodule Matrix + Base PR (on /merge comment)
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: write
+  actions: write
+
+env:
+  # Token that has write access to both the base repo and all submodule repos
+  CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
+  GH_TOKEN: ${{ secrets.WORKFLOWS }}
+
+jobs:
+  # --------------------------------------------------------------
+  # 1️⃣ Detect the “/merge” comment and pull the cached submodule JSON
+  # --------------------------------------------------------------
+  detect-submodules:
+    if: |
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/merge' &&
+      github.event.comment.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    outputs:
+      submodules: ${{ steps.extract.outputs.submodules }}
+    steps:
+      - name: Checkout base repository (needed for .gitmodules)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: true
+          token: ${{ env.CROSS_TOKEN }}
+
+      - name: Extract cached submodule JSON from a hidden comment
+        id: extract
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.issue.number;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber
+            });
+            const cache = comments.find(c => /<!-- SUBMODULES_JSON -->/.test(c.body));
+            if (!cache) throw new Error("No cached submodule comment found");
+            const jsonMatch = cache.body.match(/```json\s*([\s\S]*?)\s*```/);
+            if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
+            const submodules = JSON.parse(jsonMatch[1]);
+            core.setOutput('submodules', JSON.stringify(submodules));
+
+  # --------------------------------------------------------------
+  # 2️⃣ Process each submodule in parallel (matrix)
+  # --------------------------------------------------------------
   process-submodules:
     needs: detect-submodules
     runs-on: ubuntu-latest
@@ -10,7 +68,7 @@
       # expose each matrix result so later jobs can aggregate them
       result: ${{ steps.subproc.outputs.result }}
       sha:    ${{ steps.subproc.outputs.submodule_sha }}
-      # NEW: expose a tiny JSON payload for aggregation (no artifact)
+      #expose a tiny JSON payload for aggregation (no artifact)
       json:   ${{ steps.persist.outputs.json }}
     steps:
       - name: Checkout base repository (with submodules)
@@ -54,7 +112,6 @@
           echo "submodule_sha=$NEW_SHA" >> "$GITHUB_OUTPUT"
           echo "result=• $FULL_REPO: merged #$PR_NUM → $NEW_SHA ✅" >> "$GITHUB_OUTPUT"
 
-      # NEW: Create a tiny JSON payload and expose it as a step output
       - name: Persist matrix result for aggregation (no artifact)
         id: persist
         run: |
@@ -65,13 +122,6 @@
             '{path: $path, sha: $sha}')
           # Export as step output
           echo "json=$json" >> "$GITHUB_OUTPUT"
-        # No artifact upload – the JSON lives in the job output now
-
-      # -----------------------------------------------------------------
-      # NOTE: The previous “Upload matrix result artifact” step has been
-      # removed. All downstream jobs will read the `json` output directly
-      # from the matrix jobs via the `needs` context.
-      # -----------------------------------------------------------------
 
   # --------------------------------------------------------------
   # 3️⃣ Aggregate matrix results into a single JSON map
