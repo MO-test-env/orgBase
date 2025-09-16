@@ -52,7 +52,7 @@ jobs:
     outputs:
       result: ${{ steps.subproc.outputs.result }}
     steps:
-      - name: Merge submodule PR
+      - name: Merge submodule PR (or skip if already merged)
         id: subproc
         env:
           SUB_URL: ${{ matrix.submod.url }}
@@ -68,14 +68,31 @@ jobs:
             exit 0
           fi
 
-          gh api -X PUT \
+          # Check PR state
+          state=$(gh api repos/$FULL_REPO/pulls/$PR_NUM --jq .state)
+          merged=$(gh api repos/$FULL_REPO/pulls/$PR_NUM --jq .merged)
+
+          if [[ "$merged" == "true" ]]; then
+            echo "result=• $FULL_REPO: PR #$PR_NUM already merged ✅" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$state" != "open" ]]; then
+            echo "result=• $FULL_REPO: PR #$PR_NUM is closed (not merged) ⚠️" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Attempt merge
+          if gh api -X PUT \
             -H "Accept: application/vnd.github+json" \
             repos/$FULL_REPO/pulls/$PR_NUM/merge \
             -f merge_method=squash \
             -f commit_title="chore(submod): merge $FULL_REPO #$PR_NUM" \
-            -f commit_message="Squash-merged submodule PR #$PR_NUM"
-
-          echo "result=• $FULL_REPO: merged #$PR_NUM ✅" >> "$GITHUB_OUTPUT"
+            -f commit_message="Squash-merged submodule PR #$PR_NUM"; then
+            echo "result=• $FULL_REPO: merged #$PR_NUM ✅" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=• $FULL_REPO: merge attempt failed ❌" >> "$GITHUB_OUTPUT"
+          fi
 
   # --------------------------------------------------------------
   # 3️⃣ Bump all submodules in a single commit (on PR branch)
