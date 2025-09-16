@@ -40,9 +40,9 @@ jobs:
             const jsonMatch = cache.body.match(/```json\s*([\s\S]*?)\s*```/);
             if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
             core.setOutput('submodules', jsonMatch[1]);
-
-  # 2️⃣ Merge submodule PRs in parallel and output SHAs
-  merge-submodules:
+            
+  # 2️⃣ Process each submodule in parallel (matrix)
+  process-submodules:
     needs: detect-submodules
     runs-on: ubuntu-latest
     strategy:
@@ -50,152 +50,90 @@ jobs:
         submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
       max-parallel: 4
     outputs:
-      result: ${{ steps.subproc.outputs.result }}
+      path_sha: ${{ steps.subproc.outputs.path_sha }} # each matrix job outputs its submodule path+SHA
     steps:
-      - name: Merge submodule PR (or skip if already merged)
+      - name: Checkout submodule (for PR merge)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ env.CROSS_TOKEN }}
+          submodules: true
+
+      - name: Merge submodule PR
         id: subproc
-        env:
-          SUB_URL: ${{ matrix.submod.url }}
-          PR_NUM: ${{ matrix.submod.pr_number }}
         run: |
           set -euo pipefail
-          OWNER=$(echo "$SUB_URL" | sed -E 's|https://github.com/([^/]+)/.*|\1|')
-          REPO=$(echo "$SUB_URL" | sed -E 's|https://github.com/[^/]+/([^/.]+)(\.git)?|\1|')
-          FULL_REPO="$OWNER/$REPO"
-
+          SUB_PATH="${{ matrix.submod.path }}"
+          SUB_REPO="${{ matrix.submod.repo }}"
+          PR_NUM="${{ matrix.submod.pr_number }}"
           if [[ -z "$PR_NUM" ]]; then
-            echo "result=• $FULL_REPO: no PR defined" >> "$GITHUB_OUTPUT"
+            echo "path_sha=$SUB_PATH:null" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          # Check PR state
-          state=$(gh api repos/$FULL_REPO/pulls/$PR_NUM --jq .state)
-          merged=$(gh api repos/$FULL_REPO/pulls/$PR_NUM --jq .merged)
-
-          if [[ "$merged" == "true" ]]; then
-            echo "result=• $FULL_REPO: PR #$PR_NUM already merged ✅" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [[ "$state" != "open" ]]; then
-            echo "result=• $FULL_REPO: PR #$PR_NUM is closed (not merged) ⚠️" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Attempt merge
-          if gh api -X PUT \
+          # Merge submodule PR
+          gh api -X PUT \
             -H "Accept: application/vnd.github+json" \
-            repos/$FULL_REPO/pulls/$PR_NUM/merge \
+            repos/$SUB_REPO/pulls/$PR_NUM/merge \
             -f merge_method=squash \
-            -f commit_title="chore(submod): merge $FULL_REPO #$PR_NUM" \
-            -f commit_message="Squash-merged submodule PR #$PR_NUM"; then
-            echo "result=• $FULL_REPO: merged #$PR_NUM ✅" >> "$GITHUB_OUTPUT"
-          else
-            echo "result=• $FULL_REPO: merge attempt failed ❌" >> "$GITHUB_OUTPUT"
-          fi
+            -f commit_title="chore(submod): merge $SUB_REPO #$PR_NUM"
 
-  # --------------------------------------------------------------
-  # 3️⃣ Bump all submodules in a single commit (on PR branch)
-  # --------------------------------------------------------------
-  bump-all:
-    needs: merge-submodules
+          # Update submodule to latest main
+          git submodule update --init "$SUB_PATH"
+          git -C "$SUB_PATH" fetch origin main
+          git -C "$SUB_PATH" checkout origin/main
+          SHA=$(git -C "$SUB_PATH" rev-parse HEAD)
+          echo "path_sha=$SUB_PATH:$SHA" >> $GITHUB_OUTPUT
+
+  # 3️⃣ Serial bump job (avoids race conditions)
+  bump-submodules:
+    needs: process-submodules
     runs-on: ubuntu-latest
     steps:
       - name: Checkout base PR branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: true
-          ref: ${{ github.event.pull_request.head.ref || github.head_ref }}
+          submodules: recursive
           token: ${{ env.CROSS_TOKEN }}
 
-      - name: Update submodule references
+      - name: Bump all submodules
         run: |
           set -euo pipefail
-          # Enable command tracing for verbose logging
-          set -x
-
-          echo "🟢 Starting submodule bump process"
-          echo "🔑 Using CROSS_TOKEN (masked): ${{ env.CROSS_TOKEN != '' && 'set' || 'unset' }}"
-
-          SUBMODULES='${{ needs.detect-submodules.outputs.submodules }}'
-          echo "🔎 Loaded submodules JSON (raw):"
-          echo "$SUBMODULES"
-
-          # Pretty‑print JSON for easier reading
-          echo "$SUBMODULES" | jq . > submodules_pretty.json
-          echo "📄 Pretty‑printed JSON saved to submodules_pretty.json"
-          cat submodules_pretty.json
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          UPDATED=0
-
-          echo "🚀 Iterating over each submodule entry"
-          echo "$SUBMODULES" | jq -c '.[]' | while read -r row; do
-            echo "🔸 Processing raw row: $row"
-
-            path=$(echo "$row" | jq -r '.path')
-            url=$(echo "$row" | jq -r '.url')
-            echo "📁 Submodule path: $path"
-            echo "🔗 Submodule URL : $url"
-
-            # Fetch latest from the upstream main branch
-            echo "🔄 Fetching origin/main for $path"
-            git -C "$path" fetch origin main
-
-            # Ensure we are on the latest commit
-            echo "🔀 Checking out origin/main for $path"
-            git -C "$path" checkout origin/main
-
-            new_sha=$(git -C "$path" rev-parse HEAD)
-            echo "✅ New SHA for $path: $new_sha"
-
-            echo "🗂 Adding updated submodule path to index"
-            git add "$path"
-
-            if git diff --cached --quiet "$path"; then
-              echo "⚠️ No changes detected for $path after update"
-            else
-              echo "✨ Detected changes for $path – will be committed"
-              UPDATED=1
+          SUBMODULES="${{ join(needs.process-submodules.*.outputs.path_sha, ' ') }}"
+          for ps in $SUBMODULES; do
+            path="${ps%%:*}"
+            sha="${ps##*:}"
+            if [[ "$sha" != "null" ]]; then
+              git submodule update --init "$path"
+              git -C "$path" checkout "$sha"
+              git add "$path"
             fi
           done
 
-          echo "🔚 Submodule iteration completed – UPDATED flag = $UPDATED"
-          if [ "$UPDATED" -eq 1 ]; then
-            echo "📝 Creating commit for submodule bumps"
-            git commit -m "chore(submods): bump merged submodules to origin/main"
-
-            echo "📤 Pushing commit back to PR branch"
-            git push "https://${CROSS_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-              HEAD:${{ github.event.pull_request.head.ref || github.head_ref }}
-
-            echo "✅ Push successful"
+          if git diff --cached --quiet; then
+            echo "No submodule changes to commit"
           else
-            echo "ℹ️ No submodules needed bump – exiting without commit"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git commit -m "chore(submods): bump all merged submodules"
+            git push origin HEAD:${{ github.event.issue.pull_request.head.ref }}
           fi
 
-          echo "🏁 Bump‑all job completed"
-
-  # --------------------------------------------------------------
-  # 4️⃣ Merge the base PR
-  # --------------------------------------------------------------
+  # 4️⃣ Merge base PR (after bump)
   merge-base:
-    needs: bump-all
+    needs: bump-submodules
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v7
+      - name: Merge base PR
+        uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const pr = context.issue.number;
+            const prNumber = context.issue.number;
             await github.rest.pulls.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: pr,
-              merge_method: "squash",
-              commit_title: `chore(submods): squash merge #${pr}`,
-              commit_message: "Squash-merged base PR after submodule merges."
+              pull_number: prNumber,
+              merge_method: 'squash'
             });

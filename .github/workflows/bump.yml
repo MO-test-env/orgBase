@@ -1,0 +1,82 @@
+name: Bump Submodules on /bump Comment
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  GH_TOKEN: ${{ secrets.GH_TOKEN }}
+
+jobs:
+  bump-submodules:
+    if: contains(github.event.comment.body, '/bump')
+    runs-on: ubuntu-latest
+    steps:
+      # 1️⃣ Checkout base repository at the PR branch
+      - name: Checkout base repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.issue.pull_request.head.ref }}
+          token: ${{ secrets.GH_TOKEN }}
+          submodules: recursive
+
+      # 2️⃣ Parse submodule JSON from comment
+      - name: Parse submodules from comment
+        id: parse
+        run: |
+          echo "Extracting submodule JSON from comment..."
+          SUBMODULE_JSON=$(echo "${{ github.event.comment.body }}" | sed -n '/\[/{:a;N;/\]/!ba;p}')
+          echo "submodules=$SUBMODULE_JSON" >> $GITHUB_OUTPUT
+
+      # 3️⃣ Update merged submodules efficiently
+      - name: Update merged submodules
+        run: |
+          set -euo pipefail
+          echo "${{ steps.parse.outputs.submodules }}" | jq -c '.[]' | while read sub; do
+            path=$(echo "$sub" | jq -r '.path')
+            pr_number=$(echo "$sub" | jq -r '.pr_number')
+            if [ "$pr_number" != "null" ]; then
+              echo "Processing merged submodule $path"
+              if [ ! -d "$path/.git" ]; then
+                echo "Initializing submodule $path"
+                git submodule update --init "$path"
+              fi
+              pushd "$path"
+              git fetch origin main
+              CURRENT=$(git rev-parse HEAD)
+              LATEST=$(git rev-parse origin/main)
+              if [ "$CURRENT" != "$LATEST" ]; then
+                echo "Updating $path from $CURRENT to $LATEST"
+                git checkout origin/main
+              else
+                echo "$path is already up to date"
+              fi
+              popd
+            else
+              echo "Skipping $path (no merged PR)"
+            fi
+          done
+
+      # 4️⃣ Commit updated submodules if needed
+      - name: Commit submodule bumps
+        run: |
+          set -euo pipefail
+          git add .
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --cached --quiet; then
+            echo "No submodule updates to commit"
+          else
+            git commit -m "Bump merged submodules to latest main"
+          fi
+
+      # 5️⃣ Push updated PR branch
+      - name: Push changes
+        run: |
+          set -euo pipefail
+          git push origin HEAD:${{ github.event.issue.pull_request.head.ref }}
