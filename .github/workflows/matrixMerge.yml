@@ -118,15 +118,25 @@ jobs:
             -f commit_message="Squash‑merged submodule PR #$PR_NUM" \
             || { echo "❌ Merge failed for $SUB_REPO PR #$PR_NUM"; exit 1; }
 
-          # Bump submodule pointer
-          git fetch origin
-          git checkout -B "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" "origin/${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          # Bump submodule pointer on base repo
+          # Ensure we are on the PR branch (fallback to default refs if HEAD_REF is empty)
+          HEAD_REF="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git fetch origin "$HEAD_REF"
+          git checkout -B "$HEAD_REF" "origin/$HEAD_REF"
+
+          # Update submodule to the latest commit on its main branch
+          git submodule update --init "$SUB_PATH"
+          git -C "$SUB_PATH" fetch origin main
+          git -C "$SUB_PATH" checkout origin/main
+
+          # Capture the new submodule SHA for the commit message
           SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse HEAD)
+
           git add "$SUB_PATH"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore(submod): bump $SUB_REPO to $SUBMODULE_SHA"
-          git push "https://${CROSS_TOKEN}@github.com/$REPO.git" HEAD
+          git commit -m "chore(submod): bump $SUB_REPO to $SUBMODULE_SHA" || true
+          git push "https://${CROSS_TOKEN}@github.com/$REPO.git" "$HEAD_REF"
 
           RESULT="• $SUB_REPO: merged #$PR_NUM + bumped ✅"
           echo "result=$RESULT" >> "$GITHUB_OUTPUT"
