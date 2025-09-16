@@ -112,44 +112,72 @@ jobs:
       - name: Update submodule references
         run: |
           set -euo pipefail
+          # Enable command tracing for verbose logging
+          set -x
+
+          echo "🟢 Starting submodule bump process"
+          echo "🔑 Using CROSS_TOKEN (masked): ${{ env.CROSS_TOKEN != '' && 'set' || 'unset' }}"
 
           SUBMODULES='${{ needs.detect-submodules.outputs.submodules }}'
-          echo "🔎 Loaded submodules JSON:"
-          echo "$SUBMODULES" | jq .
+          echo "🔎 Loaded submodules JSON (raw):"
+          echo "$SUBMODULES"
+
+          # Pretty‑print JSON for easier reading
+          echo "$SUBMODULES" | jq . > submodules_pretty.json
+          echo "📄 Pretty‑printed JSON saved to submodules_pretty.json"
+          cat submodules_pretty.json
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           UPDATED=0
 
+          echo "🚀 Iterating over each submodule entry"
           echo "$SUBMODULES" | jq -c '.[]' | while read -r row; do
+            echo "🔸 Processing raw row: $row"
+
             path=$(echo "$row" | jq -r '.path')
             url=$(echo "$row" | jq -r '.url')
-            echo "🔧 Processing submodule: $path"
+            echo "📁 Submodule path: $path"
+            echo "🔗 Submodule URL : $url"
 
+            # Fetch latest from the upstream main branch
+            echo "🔄 Fetching origin/main for $path"
             git -C "$path" fetch origin main
+
+            # Ensure we are on the latest commit
+            echo "🔀 Checking out origin/main for $path"
             git -C "$path" checkout origin/main
 
             new_sha=$(git -C "$path" rev-parse HEAD)
-            echo "New SHA: $new_sha"
+            echo "✅ New SHA for $path: $new_sha"
 
+            echo "🗂 Adding updated submodule path to index"
             git add "$path"
 
             if git diff --cached --quiet "$path"; then
-              echo "⚠️ No change for $path"
+              echo "⚠️ No changes detected for $path after update"
             else
-              echo "✅ Updated $path to $new_sha"
+              echo "✨ Detected changes for $path – will be committed"
               UPDATED=1
             fi
           done
 
+          echo "🔚 Submodule iteration completed – UPDATED flag = $UPDATED"
           if [ "$UPDATED" -eq 1 ]; then
+            echo "📝 Creating commit for submodule bumps"
             git commit -m "chore(submods): bump merged submodules to origin/main"
-            git push "https://${CROSS_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:${{ github.event.pull_request.head.ref || github.head_ref }}
+
+            echo "📤 Pushing commit back to PR branch"
+            git push "https://${CROSS_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+              HEAD:${{ github.event.pull_request.head.ref || github.head_ref }}
+
+            echo "✅ Push successful"
           else
-            echo "ℹ️ No submodules needed bump"
+            echo "ℹ️ No submodules needed bump – exiting without commit"
           fi
 
+          echo "🏁 Bump‑all job completed"
 
   # --------------------------------------------------------------
   # 4️⃣ Merge the base PR
@@ -170,49 +198,4 @@ jobs:
               merge_method: "squash",
               commit_title: `chore(submods): squash merge #${pr}`,
               commit_message: "Squash-merged base PR after submodule merges."
-            });
-
-  # --------------------------------------------------------------
-  # 5️⃣ Post summary comment
-  # --------------------------------------------------------------
-  comment-result:
-    needs: [merge-submodules, merge-base]
-    runs-on: ubuntu-latest
-    steps:
-      - id: collect
-        run: |
-          # Collect submodule results safely
-          submodule_results=$(jq -n '[]')
-          for res in ${{ toJSON(needs.merge-submodules.*.outputs.result) }}; do
-            if [ "$res" != "null" ] && [ -n "$res" ]; then
-              submodule_results=$(echo "$submodule_results" | jq --arg r "$res" '. + [$r]')
-            fi
-          done
-
-          echo "results<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$submodule_results" | jq -r '.[]' >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-
-      - name: Update original comment
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const commentId = context.payload.comment.id;
-            const results = `${{ steps.collect.outputs.results }}` || "• No submodule merges";
-
-            const body = [
-              "Pull Request Merged ✅",
-              "",
-              "### Submodule Results",
-              results,
-              "",
-              "### Base Repo",
-              "• Base PR merged successfully ✅"
-            ].join("\n");
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-              body
             });
