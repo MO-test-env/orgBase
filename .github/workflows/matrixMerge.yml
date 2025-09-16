@@ -41,21 +41,28 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const prNumber = context.issue.number;
+
+            // List all comments on the PR
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber
             });
 
-            const cache = comments.find(c => c.body.includes("🔎 Detected submodules"));
+            // Find the comment with the submodules JSON placeholder
+            const cache = comments.find(c => /<!-- SUBMODULES_JSON -->/.test(c.body));
             if (!cache) throw new Error("No cached submodule comment found");
 
-            const match = cache.body.match(/\[(.|\n)*\]/);
-            if (!match) throw new Error("Failed to parse JSON from cached comment");
+            // Extract JSON between the code block
+            const jsonMatch = cache.body.match(/```json\s*([\s\S]*?)\s*```/);
+            if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
 
-            core.info(`Extracted submodules: ${match[0]}`);
-            core.setOutput("submodules", match[0]);
+            // Parse JSON to make sure it's valid
+            const submodules = JSON.parse(jsonMatch[1]);
 
+            console.log(`Extracted submodules: ${JSON.stringify(submodules)}`);
+
+            return submodules;  // This sets the step output automatically
 
   # ------------------------------------------------------------------
   # 2️⃣ Process each submodule in parallel (matrix)
