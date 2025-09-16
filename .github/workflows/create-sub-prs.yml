@@ -162,7 +162,9 @@ jobs:
       - name: Comment JSON on base PR
         if: ${{ steps.create.outputs.final_json != '' }}
         run: |
+          pretty=$(jq . <<< '${{ steps.create.outputs.final_json }}')
+
           gh pr comment ${{ github.event.pull_request.number }} \
-            --body "### Submodule PRs\n\`\`\`json\n${{ steps.create.outputs.final_json }}\n\`\`\`"
+            --body "### Submodule PRs\n\`\`\`json\n${pretty}\n\`\`\`"
         env:
           GH_TOKEN: ${{ env.GH_TOKEN }}
