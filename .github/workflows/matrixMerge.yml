@@ -24,12 +24,6 @@ jobs:
     outputs:
       submodules: ${{ steps.extract.outputs.submodules }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: true
-          token: ${{ env.CROSS_TOKEN }}
-
       - id: extract
         uses: actions/github-script@v7
         with:
@@ -56,14 +50,8 @@ jobs:
         submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
       max-parallel: 4
     outputs:
-      shas: ${{ steps.output_shas.outputs.shas }}
+      shas: ${{ steps.merge.outputs.shas }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: true
-          token: ${{ env.CROSS_TOKEN }}
-
       - id: merge
         run: |
           set -euo pipefail
@@ -81,13 +69,13 @@ jobs:
               repos/$FULL_REPO/pulls/$PR_NUM/merge \
               -f merge_method=squash \
               -f commit_title="chore(submod): merge $FULL_REPO #$PR_NUM" \
-              -f commit_message="Squash‑merged submodule PR #$PR_NUM"
+              -f commit_message="Squash-merged submodule PR #$PR_NUM"
           fi
 
+          git clone --depth 1 "$SUB_URL" "$SUB_PATH"
           git -C "$SUB_PATH" fetch origin main
           NEW_SHA=$(git -C "$SUB_PATH" rev-parse origin/main)
 
-          # Output as JSON to GitHub Actions output
           echo "shas=$(jq -n --arg path "$SUB_PATH" --arg sha "$NEW_SHA" '{($path): $sha}')" >> "$GITHUB_OUTPUT"
 
   # 3️⃣ Commit updated submodule SHAs to base PR branch
@@ -106,8 +94,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Combine all matrix outputs into one JSON map
-          ALL_SHAS=$(jq -s 'add' <<< "$(printf '%s\n' ${{ toJSON(needs.merge-submodules.*.outputs.shas) }})")
+          ALL_SHAS=$(jq -s 'add' <<< '${{ toJSON(needs.merge-submodules.*.outputs.shas) }}')
           for path in $(jq -r 'keys[]' <<< "$ALL_SHAS"); do
             sha=$(jq -r --arg p "$path" '.[$p]' <<< "$ALL_SHAS")
             git -C "$path" fetch origin main
@@ -135,7 +122,7 @@ jobs:
               pull_number: pr,
               merge_method: "squash",
               commit_title: `chore(submodules): squash merge #${pr}`,
-              commit_message: "Squash‑merged base PR after submodule merges."
+              commit_message: "Squash-merged base PR after submodule merges."
             });
 
   # 5️⃣ Post summary comment
@@ -145,7 +132,7 @@ jobs:
     steps:
       - id: collect
         run: |
-          ALL_SHAS=$(jq -s 'add' <<< "$(printf '%s\n' ${{ toJSON(needs.merge-submodules.*.outputs.shas) }})")
+          ALL_SHAS=$(jq -s 'add' <<< '${{ toJSON(needs.merge-submodules.*.outputs.shas) }}')
           RESULTS=$(jq -r 'to_entries|map("• \(.key) → \(.value)")|.[]' <<< "$ALL_SHAS")
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"
 
