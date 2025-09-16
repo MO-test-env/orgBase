@@ -110,20 +110,21 @@ jobs:
           token: ${{ env.CROSS_TOKEN }}
 
       - name: Update submodule references
-        env:
-          SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
         run: |
           set -euo pipefail
+
+          SUBMODULES='${{ needs.detect-submodules.outputs.submodules }}'
+          echo "🔎 Loaded submodules JSON:"
+          echo "$SUBMODULES" | jq .
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           UPDATED=0
 
-          for row in $(echo "$SUBMODULES" | jq -r '.[] | @base64'); do
-            _jq() { echo "${row}" | base64 --decode | jq -r "${1}"; }
-            path=$(_jq '.path')
-            url=$(_jq '.url')
+          echo "$SUBMODULES" | jq -c '.[]' | while read -r row; do
+            path=$(echo "$row" | jq -r '.path')
+            url=$(echo "$row" | jq -r '.url')
             echo "🔧 Processing submodule: $path"
 
             git -C "$path" fetch origin main
@@ -148,6 +149,7 @@ jobs:
           else
             echo "ℹ️ No submodules needed bump"
           fi
+
 
   # --------------------------------------------------------------
   # 4️⃣ Merge the base PR
@@ -179,9 +181,16 @@ jobs:
     steps:
       - id: collect
         run: |
-          results=$(printf '%s\n' ${{ toJSON(needs.process-submodules.*.outputs.result) }} | jq -r '.[]')
+          # Collect submodule results safely
+          submodule_results=$(jq -n '[]')
+          for res in ${{ toJSON(needs.merge-submodules.*.outputs.result) }}; do
+            if [ "$res" != "null" ] && [ -n "$res" ]; then
+              submodule_results=$(echo "$submodule_results" | jq --arg r "$res" '. + [$r]')
+            fi
+          done
+
           echo "results<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$results" >> "$GITHUB_OUTPUT"
+          echo "$submodule_results" | jq -r '.[]' >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Update original comment
@@ -190,7 +199,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const commentId = context.payload.comment.id;
-            const results = `${{ steps.collect.outputs.results }}`;
+            const results = `${{ steps.collect.outputs.results }}` || "• No submodule merges";
 
             const body = [
               "Pull Request Merged ✅",
