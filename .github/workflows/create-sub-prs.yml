@@ -162,9 +162,16 @@ jobs:
       - name: Comment JSON on base PR
         if: ${{ steps.create.outputs.final_json != '' }}
         run: |
+<<<<<<< Updated upstream
           pretty=$(jq . <<< '${{ steps.create.outputs.final_json }}')
 
           gh pr comment ${{ github.event.pull_request.number }} \
             --body "### Submodule PRs\n\`\`\`json\n${pretty}\n\`\`\`"
+=======
+          compact=$(jq -c . <<< '${{ steps.create.outputs.final_json }}')
+
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body "🔎 Detected submodules (cached for downstream workflows):\n\n\`\`\`json\n${compact}\n\`\`\`"
+>>>>>>> Stashed changes
         env:
           GH_TOKEN: ${{ env.GH_TOKEN }}
