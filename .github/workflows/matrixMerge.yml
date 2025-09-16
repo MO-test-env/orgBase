@@ -90,8 +90,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "🔎 Processing $SUB_REPO at $SUB_PATH"
-          OWNER=$(echo "$SUB_REPO_URL" | sed -E 's|https://github.com/([^/]+)/.*|\1|')
-          REPO_NAME=$(echo "$SUB_REPO_URL" | sed -E 's|https://github.com/[^/]+/(.*).git|\1|')
+          OWNER=$(echo "$SUB_URL" | sed -E 's|https://github.com/([^/]+)/.*|\1|')
+          REPO_NAME=$(echo "$SUB_URL" | sed -E 's|https://github.com/[^/]+/(.*).git|\1|')
           FULL_REPO="$OWNER/$REPO_NAME"
 
           if [[ -z "$PR_NUM" ]]; then
