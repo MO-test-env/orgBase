@@ -50,6 +50,7 @@ jobs:
         submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
       max-parallel: 4
     outputs:
+<<<<<<< Updated upstream
       shas: ${{ steps.merge.outputs.shas }}
     steps:
       - id: merge
@@ -59,10 +60,22 @@ jobs:
           SUB_URL=${{ matrix.submod.url }}
           PR_NUM=${{ matrix.submod.pr_number }}
 
+=======
+      result: ${{ steps.subproc.outputs.result }}
+    steps:
+      - name: Merge submodule PR
+        id: subproc
+        env:
+          SUB_URL: ${{ matrix.submod.url }}
+          PR_NUM: ${{ matrix.submod.pr_number }}
+        run: |
+          set -euo pipefail
+>>>>>>> Stashed changes
           OWNER=$(echo "$SUB_URL" | sed -E 's|https://github.com/([^/]+)/.*|\1|')
           REPO=$(echo "$SUB_URL" | sed -E 's|https://github.com/[^/]+/([^/.]+)(\.git)?|\1|')
           FULL_REPO="$OWNER/$REPO"
 
+<<<<<<< Updated upstream
           if [[ -n "$PR_NUM" ]]; then
             gh api -X PUT \
               -H "Accept: application/vnd.github+json" \
@@ -81,6 +94,27 @@ jobs:
   # 3️⃣ Commit updated submodule SHAs to base PR branch
   bump-submodules:
     needs: merge-submodules
+=======
+          if [[ -z "$PR_NUM" ]]; then
+            echo "result=• $FULL_REPO: no PR defined" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          gh api -X PUT \
+            -H "Accept: application/vnd.github+json" \
+            repos/$FULL_REPO/pulls/$PR_NUM/merge \
+            -f merge_method=squash \
+            -f commit_title="chore(submod): merge $FULL_REPO #$PR_NUM" \
+            -f commit_message="Squash-merged submodule PR #$PR_NUM"
+
+          echo "result=• $FULL_REPO: merged #$PR_NUM ✅" >> "$GITHUB_OUTPUT"
+
+  # --------------------------------------------------------------
+  # 3️⃣ Bump all submodules in a single commit
+  # --------------------------------------------------------------
+  bump-all:
+    needs: process-submodules
+>>>>>>> Stashed changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -89,24 +123,49 @@ jobs:
           submodules: true
           token: ${{ env.CROSS_TOKEN }}
 
+<<<<<<< Updated upstream
       - run: |
+=======
+      - name: Update submodule references
+        env:
+          SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
+        run: |
+>>>>>>> Stashed changes
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+<<<<<<< Updated upstream
           ALL_SHAS=$(jq -s 'add' <<< '${{ toJSON(needs.merge-submodules.*.outputs.shas) }}')
           for path in $(jq -r 'keys[]' <<< "$ALL_SHAS"); do
             sha=$(jq -r --arg p "$path" '.[$p]' <<< "$ALL_SHAS")
+=======
+          for row in $(echo "$SUBMODULES" | jq -r '.[] | @base64'); do
+            _jq() { echo "${row}" | base64 --decode | jq -r "${1}"; }
+            path=$(_jq '.path')
+
+            echo "🔧 Updating $path to origin/main"
+>>>>>>> Stashed changes
             git -C "$path" fetch origin main
-            git -C "$path" checkout "$sha"
+            git -C "$path" checkout origin/main
             git add "$path"
           done
 
+<<<<<<< Updated upstream
           git commit -m "chore(submodules): bump all merged submodules"
           HEAD_REF="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           git push "https://${CROSS_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$HEAD_REF"
 
   # 4️⃣ Merge the base PR (squash)
+=======
+          git commit -m "chore(submods): bump all merged submodules to origin/main"
+          HEAD_REF="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git push "https://${CROSS_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$HEAD_REF"
+
+  # --------------------------------------------------------------
+  # 4️⃣ Merge the base PR
+  # --------------------------------------------------------------
+>>>>>>> Stashed changes
   merge-base:
     needs: bump-submodules
     runs-on: ubuntu-latest
@@ -121,6 +180,7 @@ jobs:
               repo: context.repo.repo,
               pull_number: pr,
               merge_method: "squash",
+<<<<<<< Updated upstream
               commit_title: `chore(submodules): squash merge #${pr}`,
               commit_message: "Squash-merged base PR after submodule merges."
             });
@@ -128,25 +188,55 @@ jobs:
   # 5️⃣ Post summary comment
   comment-result:
     needs: [merge-submodules, merge-base]
+=======
+              commit_title: `chore(submods): squash merge #${pr}`,
+              commit_message: "Squash-merged base PR after submodule merges."
+            });
+
+  # --------------------------------------------------------------
+  # 5️⃣ Post summary comment
+  # --------------------------------------------------------------
+  comment-result:
+    needs: [process-submodules, merge-base]
+>>>>>>> Stashed changes
     runs-on: ubuntu-latest
     steps:
       - id: collect
         run: |
+<<<<<<< Updated upstream
           ALL_SHAS=$(jq -s 'add' <<< '${{ toJSON(needs.merge-submodules.*.outputs.shas) }}')
           RESULTS=$(jq -r 'to_entries|map("• \(.key) → \(.value)")|.[]' <<< "$ALL_SHAS")
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"
 
       - uses: actions/github-script@v7
+=======
+          results=$(printf '%s\n' ${{ toJSON(needs.process-submodules.*.outputs.result) }} | jq -r '.[]')
+          echo "results<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$results" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Update original comment
+        uses: actions/github-script@v7
+>>>>>>> Stashed changes
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const commentId = context.payload.comment.id;
             const results = `${{ steps.collect.outputs.results }}`;
+<<<<<<< Updated upstream
             const body = [
               "Pull Request Merged ✅",
               "",
               "### Submodule SHAs",
               results || "_(none)_",
+=======
+
+            const body = [
+              "Pull Request Merged ✅",
+              "",
+              "### Submodule Results",
+              results,
+>>>>>>> Stashed changes
               "",
               "### Base Repo",
               "• Base PR merged successfully ✅"
