@@ -57,16 +57,20 @@ jobs:
 
                 tmp=$(mktemp)
                 jq --arg path "$path" \
-                   --arg url "$url" \
-                   --arg repo "$repo" \
-                   '. += [{"path": $path, "url": $url, "repo": $repo}]' \
-                   submodules.json > "$tmp" && mv "$tmp" submodules.json
+                  --arg url "$url" \
+                  --arg repo "$repo" \
+                  '. += [{"path": $path, "url": $url, "repo": $repo}]' \
+                  submodules.json > "$tmp" && mv "$tmp" submodules.json
               fi
             done
           fi
 
-          echo "submodules_json=$(cat submodules.json)" >> $GITHUB_OUTPUT
-
+          # ✅ Use heredoc for multiline JSON
+          {
+            echo "submodules_json<<EOF"
+            cat submodules.json
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       # -----------------------------------------------------------
       # 4️⃣ Create PRs in changed submodules
       # -----------------------------------------------------------
