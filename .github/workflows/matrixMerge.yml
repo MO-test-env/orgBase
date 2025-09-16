@@ -41,31 +41,22 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const prNumber = context.issue.number;
-
-            // List all comments on the PR
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber
             });
-
-            // Find the comment with the submodules JSON placeholder
             const cache = comments.find(c => /<!-- SUBMODULES_JSON -->/.test(c.body));
             if (!cache) throw new Error("No cached submodule comment found");
 
-            // Extract JSON between the code block
             const jsonMatch = cache.body.match(/```json\s*([\s\S]*?)\s*```/);
             if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
 
-            // Parse JSON to make sure it's valid
             const submodules = JSON.parse(jsonMatch[1]);
-
-            console.log(`Extracted submodules: ${JSON.stringify(submodules)}`);
             core.setOutput('submodules', JSON.stringify(submodules));
 
-
   # ------------------------------------------------------------------
-  # 2️⃣ Process each submodule in parallel (matrix)
+  # 2️⃣ Process each submodule in parallel (matrix) and output SHA
   # ------------------------------------------------------------------
   process-submodules:
     needs: detect-submodules
@@ -75,7 +66,8 @@ jobs:
         submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
       max-parallel: 4
     outputs:
-      result: ${{ steps.subproc.outputs.result }}
+      submodule_sha_${{ matrix.submod.path }}: ${{ steps.subproc.outputs.submodule_sha }}
+      result_${{ matrix.submod.path }}: ${{ steps.subproc.outputs.result }}
     steps:
       - name: Checkout base repository
         uses: actions/checkout@v4
@@ -84,7 +76,7 @@ jobs:
           submodules: true
           token: ${{ env.CROSS_TOKEN }}
 
-      - name: Process submodule
+      - name: Merge submodule PR and capture SHA
         id: subproc
         env:
           CROSS_TOKEN: ${{ env.CROSS_TOKEN }}
@@ -103,11 +95,10 @@ jobs:
 
           if [[ -z "$PR_NUM" ]]; then
             echo "⚠️ No PR number defined for $SUB_REPO – skipping."
+            echo "submodule_sha=null" >> "$GITHUB_OUTPUT"
             echo "result=• $SUB_REPO: no PR defined" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-
-          echo "✅ Found submodule PR #$PR_NUM"
 
           # Merge submodule PR
           gh api -X PUT \
@@ -118,35 +109,58 @@ jobs:
             -f commit_message="Squash‑merged submodule PR #$PR_NUM" \
             || { echo "❌ Merge failed for $SUB_REPO PR #$PR_NUM"; exit 1; }
 
-          # Bump submodule pointer on base repo
-          # Ensure we are on the PR branch (fallback to default refs if HEAD_REF is empty)
-          HEAD_REF="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          git fetch origin "$HEAD_REF"
-          git checkout -B "$HEAD_REF" "origin/$HEAD_REF"
-
-          # Update submodule to the latest commit on its main branch
-          git submodule update --init "$SUB_PATH"
+          # Get latest commit SHA from submodule main branch
           git -C "$SUB_PATH" fetch origin main
-          git -C "$SUB_PATH" checkout origin/main
+          SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse origin/main)
 
-          # Capture the new submodule SHA for the commit message
-          SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse HEAD)
+          echo "submodule_sha=$SUBMODULE_SHA" >> "$GITHUB_OUTPUT"
+          echo "result=• $SUB_REPO: merged #$PR_NUM + SHA $SUBMODULE_SHA ✅" >> "$GITHUB_OUTPUT"
 
-          git add "$SUB_PATH"
+  # ------------------------------------------------------------------
+  # 3️⃣ Bump all submodules in one commit
+  # ------------------------------------------------------------------
+  bump-all:
+    needs: process-submodules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: true
+          token: ${{ env.CROSS_TOKEN }}
+
+      - name: Update submodules to merged SHAs
+        run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore(submod): bump $SUB_REPO to $SUBMODULE_SHA" || true
-          git push "https://${CROSS_TOKEN}@github.com/$REPO.git" "$HEAD_REF"
 
-          RESULT="• $SUB_REPO: merged #$PR_NUM + bumped ✅"
-          echo "result=$RESULT" >> "$GITHUB_OUTPUT"
+          # Build an associative array of submodule paths -> SHAs
+          declare -A SHAS
+          {% for mod in needs.process-submodules.matrix %}
+          SHAS["{{ mod.path }}"]="${{ needs.process-submodules.outputs['submodule_sha_' + mod.path] }}"
+          {% endfor %}
 
+          for path in "${!SHAS[@]}"; do
+            sha="${SHAS[$path]}"
+            if [[ "$sha" != "null" ]]; then
+              echo "Updating $path to $sha"
+              git -C "$path" fetch origin main
+              git -C "$path" checkout "$sha"
+              git add "$path"
+            fi
+          done
+
+          git commit -m "chore(submods): bump all merged submodules" || true
+          HEAD_REF="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git push "https://${CROSS_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$HEAD_REF"
 
   # ------------------------------------------------------------------
-  # 3️⃣ Merge base PR
+  # 4️⃣ Merge base PR
   # ------------------------------------------------------------------
   merge-base:
-    needs: process-submodules
+    needs: bump-all
     runs-on: ubuntu-latest
     steps:
       - name: Merge base PR
@@ -165,7 +179,7 @@ jobs:
             });
 
   # ------------------------------------------------------------------
-  # 4️⃣ Comment results
+  # 5️⃣ Comment results
   # ------------------------------------------------------------------
   comment-result:
     needs: [process-submodules, merge-base]
