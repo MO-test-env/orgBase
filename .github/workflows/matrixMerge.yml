@@ -228,7 +228,8 @@ jobs:
   # 6️⃣ Post a summary comment on the original "/merge" comment
   # --------------------------------------------------------------
   comment-result:
-    needs: [process-submodules, merge-base]
+    # Add the aggregate‑results job so we can access the SHAs map
+    needs: [process-submodules, merge-base, aggregate-results]
     runs-on: ubuntu-latest
     steps:
       - name: Gather submodule result texts
@@ -242,18 +243,42 @@ jobs:
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          # Pass the JSON map from `aggregate-results` into the script
           script: |
             const commentId = context.payload.comment.id;
             const results = `${{ steps.collect.outputs.results }}`;
+
+            // ---- Submodule SHA map -------------------------------------------------
+            // `needs.aggregate-results.outputs.submodule_shas` is a JSON string like:
+            // {"submod":"d7d9726bdd92a6fa21576615a3a5f046e4128e42", ...}
+            const shasJson = `${{ needs.aggregate-results.outputs.submodule_shas }}`;
+            let shasMap = {};
+            try {
+              shasMap = JSON.parse(shasJson);
+            } catch (e) {
+              core.warning('Failed to parse submodule_shas JSON: ' + e);
+            }
+
+            // Build a friendly list `path → sha`
+            const shasList = Object.entries(shasMap)
+              .filter(([, sha]) => sha && sha !== 'null')
+              .map(([path, sha]) => `• ${path} → ${sha}`)
+              .join('\n');
+
+            // ---- Assemble the final comment body ----------------------------------
             const body = [
               "Pull Request Merged ✅",
               "",
               "### Submodule Results",
               results,
               "",
+              "### Submodule SHAs",
+              shasList,
+              "",
               "### Base Repo",
               "• Base PR merged successfully ✅"
             ].join("\n");
+
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
