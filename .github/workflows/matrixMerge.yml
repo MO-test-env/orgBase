@@ -1,62 +1,4 @@
-name: Merge Submodule Matrix + Base PR (on /merge comment)
-
-on:
-  issue_comment:
-    types: [created]
-
-permissions:
-  issues: write
-  pull-requests: write
-  contents: write
-  actions: write
-
-env:
-  # Token that has write access to both the base repo and all submodule repos
-  CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
-  GH_TOKEN: ${{ secrets.WORKFLOWS }}
-
-jobs:
-  # --------------------------------------------------------------
-  # 1️⃣ Detect the “/merge” comment and pull the cached submodule JSON
-  # --------------------------------------------------------------
-  detect-submodules:
-    if: |
-      github.event.issue.pull_request != null &&
-      github.event.comment.body == '/merge' &&
-      github.event.comment.user.type != 'Bot'
-    runs-on: ubuntu-latest
-    outputs:
-      submodules: ${{ steps.extract.outputs.submodules }}
-    steps:
-      - name: Checkout base repository (needed for .gitmodules)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: true
-          token: ${{ env.CROSS_TOKEN }}
-
-      - name: Extract cached submodule JSON from a hidden comment
-        id: extract
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const prNumber = context.issue.number;
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber
-            });
-            const cache = comments.find(c => /<!-- SUBMODULES_JSON -->/.test(c.body));
-            if (!cache) throw new Error("No cached submodule comment found");
-            const jsonMatch = cache.body.match(/```json\s*([\s\S]*?)\s*```/);
-            if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
-            const submodules = JSON.parse(jsonMatch[1]);
-            core.setOutput('submodules', JSON.stringify(submodules));
-
-  # --------------------------------------------------------------
-  # 2️⃣ Process each submodule in parallel (matrix)
-  # --------------------------------------------------------------
+...
   process-submodules:
     needs: detect-submodules
     runs-on: ubuntu-latest
@@ -68,6 +10,8 @@ jobs:
       # expose each matrix result so later jobs can aggregate them
       result: ${{ steps.subproc.outputs.result }}
       sha:    ${{ steps.subproc.outputs.submodule_sha }}
+      # NEW: expose a tiny JSON payload for aggregation (no artifact)
+      json:   ${{ steps.persist.outputs.json }}
     steps:
       - name: Checkout base repository (with submodules)
         uses: actions/checkout@v4
@@ -86,7 +30,6 @@ jobs:
           set -euo pipefail
           echo "🔎 Processing $SUB_URL (path: $SUB_PATH, PR #$PR_NUM)"
 
-          # Extract owner & repo from the URL (handles optional .git suffix)
           OWNER=$(printf '%s' "$SUB_URL" | sed -E 's|https://github.com/([^/]+)/.*|\1|')
           REPO=$(printf '%s' "$SUB_URL" | sed -E 's|https://github.com/[^/]+/([^/.]+)(\.git)?|\1|')
           FULL_REPO="$OWNER/$REPO"
@@ -98,7 +41,6 @@ jobs:
             exit 0
           fi
 
-          # Squash‑merge the submodule PR
           gh api -X PUT \
             -H "Accept: application/vnd.github+json" \
             repos/$FULL_REPO/pulls/$PR_NUM/merge \
@@ -106,29 +48,30 @@ jobs:
             -f commit_title="chore(submod): merge $FULL_REPO #$PR_NUM" \
             -f commit_message="Squash‑merged submodule PR #$PR_NUM"
 
-          # Get the new SHA from the submodule's default branch (assumed main)
           git -C "$SUB_PATH" fetch origin main
           NEW_SHA=$(git -C "$SUB_PATH" rev-parse origin/main)
 
           echo "submodule_sha=$NEW_SHA" >> "$GITHUB_OUTPUT"
           echo "result=• $FULL_REPO: merged #$PR_NUM → $NEW_SHA ✅" >> "$GITHUB_OUTPUT"
 
-      - name: Persist matrix result for aggregation
+      # NEW: Create a tiny JSON payload and expose it as a step output
+      - name: Persist matrix result for aggregation (no artifact)
+        id: persist
         run: |
-          mkdir -p "${{ runner.temp }}/submodule-results"
-          cat <<EOF > "${{ runner.temp }}/submodule-results/${{ matrix.submod.path }}.json"
-          {
-            "path": "${{ matrix.submod.path }}",
-            "sha": "${{ steps.subproc.outputs.submodule_sha }}"
-          }
-          EOF
+          # Build a compact JSON object that other jobs can consume
+          json=$(jq -n \
+            --arg path "${{ matrix.submod.path }}" \
+            --arg sha "${{ steps.subproc.outputs.submodule_sha }}" \
+            '{path: $path, sha: $sha}')
+          # Export as step output
+          echo "json=$json" >> "$GITHUB_OUTPUT"
+        # No artifact upload – the JSON lives in the job output now
 
-      - name: Upload matrix result artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: submodule-results
-          path: ${{ runner.temp }}/submodule-results/
-          retention-days: 1
+      # -----------------------------------------------------------------
+      # NOTE: The previous “Upload matrix result artifact” step has been
+      # removed. All downstream jobs will read the `json` output directly
+      # from the matrix jobs via the `needs` context.
+      # -----------------------------------------------------------------
 
   # --------------------------------------------------------------
   # 3️⃣ Aggregate matrix results into a single JSON map
@@ -139,19 +82,21 @@ jobs:
     outputs:
       submodule_shas: ${{ steps.combine.outputs.submodule_shas }}
     steps:
-      - name: Download matrix artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: submodule-results
-          path: ./submodule-results
-
-      - name: Combine all JSON files into a map (path → sha)
+      - name: Combine all matrix JSON outputs into a map (path → sha)
         id: combine
         run: |
           set -euo pipefail
-          MAP=$(jq -n '
-            reduce inputs as $i ({}; .[$i.path] = $i.sha)
-          ' ./submodule-results/*.json)
+
+          # Gather the per‑matrix JSON strings emitted via the `json` output
+          # `needs.process-submodules.*.outputs.json` expands to a list for every matrix run.
+          # `join(..., '\n')` builds a newline‑separated string that we can pipe to jq.
+          jsons="${{ join(needs.process-submodules.*.outputs.json, '\n') }}"
+
+          # Turn the newline‑separated objects into a single map: {path: sha, ...}
+          MAP=$(printf '%s\n' "$jsons" | jq -s '
+            map({(.path): .sha}) | add
+          ')
+
           echo "submodule_shas=$MAP" >> "$GITHUB_OUTPUT"
 
   # --------------------------------------------------------------
@@ -176,7 +121,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Turn JSON map into Bash associative array
+          # Convert JSON map to Bash associative array
           declare -A SHAS
           while IFS="=" read -r key value; do
             SHAS["$key"]="$value"
