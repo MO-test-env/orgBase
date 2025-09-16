@@ -157,14 +157,43 @@ jobs:
           GH_TOKEN: ${{ env.GH_TOKEN }}
 
       # -----------------------------------------------------------
-      # 5️⃣ Comment JSON summary back on base PR
+      # 5️⃣ Post submodule list as PR comment (cached for downstream workflows)
       # -----------------------------------------------------------
-      - name: Comment JSON on base PR
-        if: ${{ steps.create.outputs.final_json != '' }}
-        run: |
-          compact=$(jq -c . <<< '${{ steps.create.outputs.final_json }}')
+      - name: Post submodule list as PR comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.GH_TOKEN }}
+          script: |
+            const json = `${{ steps.create.outputs.final_json }}`;
+            const body = [
+              "🔎 **Detected submodules** (cached for downstream workflows):",
+              "<!-- SUBMODULES_JSON -->",
+              "```json",
+              json,
+              "```",
+              "<!-- /SUBMODULES_JSON -->"
+            ].join("\n");
 
-          gh pr comment ${{ github.event.pull_request.number }} \
-            --body "🔎 Detected submodules (cached for downstream workflows):\n\n\`\`\`json\n${compact}\n\`\`\`"
-        env:
-          GH_TOKEN: ${{ env.GH_TOKEN }}
+            // Look for existing cache comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            const cacheComment = comments.find(c => c.body.includes('<!-- SUBMODULES_JSON -->'));
+
+            if (cacheComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: cacheComment.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }
