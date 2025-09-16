@@ -50,8 +50,7 @@ jobs:
               issue_number: prNumber
             });
 
-            // Look for the first comment that starts with your marker
-            const cache = comments.find(c => c.body.includes("🔎 Detected submodules"));
+            const cache = comments.find(c => c.body.includes("<!-- SUBMODULES_JSON -->"));
             if (!cache) {
               core.setFailed("No submodule cache comment found");
               return;
@@ -64,7 +63,7 @@ jobs:
               return;
             }
 
-            const submodules = jsonMatch[0];
+            const submodules = jsonMatch[1].trim;
             core.info(`Extracted submodules: ${submodules}`);
             core.setOutput("submodules", submodules);
 

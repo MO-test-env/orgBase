@@ -29,27 +29,22 @@ jobs:
       - name: Collect submodule data
         id: collect
         run: |
-          # Build a JSON array like [{ "path":"submod", "repo":"owner/repo" }, …]
-          SUBMODULES_JSON="[]"
-          while IFS= read -r entry; do
-            SUB_PATH=$(echo "$entry" | awk '{print $2}')
-            SUB_URL=$(git config --file .gitmodules --get "submodule.${SUB_PATH}.url")
-
-            # Convert SSH/HTTPS URLs to the owner/repo format
-            if [[ "$SUB_URL" =~ ^git@github.com:(.+)\.git$ ]]; then
-              SUB_REPO="${BASH_REMATCH[1]}"
-            elif [[ "$SUB_URL" =~ ^https://github.com/(.+)\.git$ ]]; then
-              SUB_REPO="${BASH_REMATCH[1]}"
-            else
-              echo "❌ Unsupported submodule URL: $SUB_URL"
-              exit 1
-            fi
-
-            SUBMODULES_JSON=$(jq -c \
-              --arg path "$SUB_PATH" \
-              --arg repo "$SUB_REPO" \
-              '. += [{"path": $path, "repo": $repo}]' <<< "$SUBMODULES_JSON")
-          done < <(git config --file .gitmodules --get-regexp '^submodule\..*\.path$')
+          # Output JSON array like: [ { "path": "subdir", "repo": "owner/repo" }, … ]
+          SUBMODULES_JSON=$(git config -f .gitmodules --get-regexp 'submodule\..*\.url' \
+            | jq -R -s -c '
+              split("\n")[:-1] 
+              | map(
+                  split(" ") 
+                  | { 
+                      path: (.[0] | sub("^submodule\\.|\\.url$"; "")), 
+                      repo: (.[1] 
+                        | sub("^git@github.com:"; "") 
+                        | sub("^https://github.com/"; "") 
+                        | sub("\\.git$"; "")
+                      ) 
+                    }
+                )
+            ')
           echo "submodules=$SUBMODULES_JSON" >> "$GITHUB_OUTPUT"
           echo "✅ Detected submodules: $SUBMODULES_JSON"
 
@@ -149,19 +144,38 @@ jobs:
         if: steps.branch_check.outputs.exists != 'true'
         run: |
           echo "⚠️ No matching branch '${{ steps.pr_meta.outputs.head_ref }}' in submodule '${{ matrix.submod.repo }}' – skipping PR creation."
+      
+      - name: Record result
+        id: record
+        run: |
+          if [ "${{ steps.branch_check.outputs.exists }}" = "true" ]; then
+            RESULT="created"
+          else
+            RESULT="skipped"
+          fi
+          echo "result={\"repo\":\"${{ matrix.submod.repo }}\",\"branch\":\"${{ steps.pr_meta.outputs.head_ref }}\",\"status\":\"$RESULT\"}" >> "$GITHUB_OUTPUT"
+    outputs:
+      result: ${{ steps.record.outputs.result }}
 
-  # ------------------------------------------------------------------
-  # 3️⃣ (Optional) Comment back on the original PR with a summary
-  # ------------------------------------------------------------------
+
   comment-summary:
     needs: create-submodule-prs
     runs-on: ubuntu-latest
     if: always()
     steps:
-      - name: Summarize results
-        id: summary
+      - name: Aggregate results
+        id: aggregate
         run: |
-          echo "summary=$(jq -n '[]')" >> "$GITHUB_OUTPUT"
+          # Gather JSON results from all matrix jobs
+          RESULTS=$(jq -n '[]')
+          for job in ${{ toJson(needs.create-submodule-prs) }}; do
+            RESULT=$(echo "$job" | jq -r '.result // empty')
+            if [ -n "$RESULT" ]; then
+              RESULTS=$(jq -c --argjson r "$RESULT" '. + [$r]' <<< "$RESULTS")
+            fi
+          done
+          echo "summary=$RESULTS" >> "$GITHUB_OUTPUT"
+          echo "📋 Summary: $RESULTS"
 
       - name: Post comment on the base PR
         uses: actions/github-script@v7
@@ -169,14 +183,17 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const prNumber = context.issue.number;
-            const body = [
-              "✅ **Submodule PR creation completed**",
-              "",
-              "*The workflow attempted to create a PR for each submodule that has a branch matching the PR head.*",
-            ].join("\n");
+            const summary = JSON.parse(process.env.SUMMARY_JSON);
+            let lines = ["✅ **Submodule PR creation completed**", ""];
+            for (const item of summary) {
+              lines.push(`- \`${item.repo}\` (branch: \`${item.branch}\`) → **${item.status}**`);
+            }
+            const body = lines.join("\n");
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
               body
             });
+        env:
+          SUMMARY_JSON: ${{ steps.aggregate.outputs.summary }}
