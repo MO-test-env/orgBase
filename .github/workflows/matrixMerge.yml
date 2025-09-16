@@ -95,23 +95,71 @@ jobs:
           SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
         run: |
           set -euo pipefail
+          # -------------------------------------------------
+          # Log environment for debugging
+          # -------------------------------------------------
+          echo "=== Runner info ==="
+          echo "GitHub Ref: $GITHUB_REF"
+          echo "Head Ref: ${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "-----"
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          # Track whether any submodule was actually updated
+          UPDATED=0
+
           for row in $(echo "$SUBMODULES" | jq -r '.[] | @base64'); do
             _jq() { echo "${row}" | base64 --decode | jq -r "${1}"; }
-            path=$(_jq '.path')
 
-            echo "🔧 Updating $path to origin/main"
+            path=$(_jq '.path')
+            url=$(_jq '.url')
+            echo "🔧 Processing submodule: $path (remote: $url)"
+
+            # Show current commit SHA before update
+            current_sha=$(git -C "$path" rev-parse HEAD || echo "none")
+            echo "Current SHA: $current_sha"
+
+            # Fetch latest main from origin and checkout
             git -C "$path" fetch origin main
             git -C "$path" checkout origin/main
+
+            # Show new commit SHA after checkout
+            new_sha=$(git -C "$path" rev-parse HEAD)
+            echo "New SHA after checkout: $new_sha"
+
+            # Stage the submodule change
             git add "$path"
+
+            # Detect whether the submodule reference actually changed
+            if git diff --cached --quiet "$path"; then
+              echo "⚠️ No change detected for $path – reference already at latest commit."
+            else
+              echo "✅ Change staged for $path."
+              UPDATED=1
+            fi
+            echo "---"
           done
 
-          git commit -m "chore(submods): bump all merged submodules to origin/main"
-          HEAD_REF="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          git push "https://${CROSS_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$HEAD_REF"
+          # -------------------------------------------------
+          # Only commit if we staged at least one change
+          # -------------------------------------------------
+          if [ "$UPDATED" -eq 1 ]; then
+            echo "📝 Creating commit for bumped submodules..."
+            git status --short
+            git commit -m "chore(submods): bump all merged submodules to origin/main"
+          else
+            echo "ℹ️ No submodule references changed – skipping commit."
+          fi
 
+          # -------------------------------------------------
+          # Push (only if we actually created a commit)
+          # -------------------------------------------------
+          HEAD_REF="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          echo "🚀 Pushing to $HEAD_REF ..."
+          git push "https://${CROSS_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$HEAD_REF"
+          
   # --------------------------------------------------------------
   # 4️⃣ Merge the base PR
   # --------------------------------------------------------------
