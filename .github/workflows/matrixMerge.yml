@@ -116,14 +116,10 @@ jobs:
           git checkout -B "${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" "origin/${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
           SUBMODULE_SHA=$(git -C "$SUB_PATH" rev-parse HEAD)
           git add "$SUB_PATH"
-          if git diff --cached --quiet; then
-            echo "No changes in submodule pointer; skipping commit."
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git commit -m "chore(submod): bump $SUB_REPO to $SUBMODULE_SHA"
-            git push "https://${CROSS_TOKEN}@github.com/$REPO.git" HEAD
-          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore(submod): bump $SUB_REPO to $SUBMODULE_SHA"
+          git push "https://${CROSS_TOKEN}@github.com/$REPO.git" HEAD
 
           RESULT="• $SUB_REPO: merged #$PR_NUM + bumped ✅"
           echo "result=$RESULT" >> "$GITHUB_OUTPUT"
