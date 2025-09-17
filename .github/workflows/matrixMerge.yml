@@ -50,83 +50,89 @@ jobs:
         submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
       max-parallel: 4
     outputs:
-      path_sha: ${{ steps.subproc.outputs.path_sha }}
+      results: ${{ steps.collect.outputs.results }}
     steps:
-      - name: Merge submodule PR with GitHub API
-        id: subproc
+      - name: Merge submodule PR
+        id: merge
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.GH_TOKEN }}
           script: |
             const sub = ${{ toJson(matrix.submod) }};
             const [owner, repo] = sub.repo.split('/');
-            const prNumber = sub.pr_number;
+            const pr = sub.pr_number;
 
-            if (!prNumber) {
-              core.info(`⚠️ No matching submodule PR found for ${sub.repo} – skipping.`);
-              core.setOutput("result", `• ${sub.repo}: no matching PR`);
-              return;
+            if (!pr) {
+              return { repo: sub.repo, result: "skipped" };
             }
-
-            core.info(`✅ Found submodule PR #${prNumber} in ${sub.repo}`);
 
             try {
               const res = await github.rest.pulls.merge({
                 owner,
                 repo,
-                pull_number: prNumber,
+                pull_number: pr,
                 merge_method: "squash",
-                commit_title: `chore(submod): merge ${sub.repo} #${prNumber}`,
-                commit_message: `Squash-merged submodule PR #${prNumber}`,
+                commit_title: `chore(submod): merge ${sub.repo} #${pr}`,
               });
-
-              core.info(`🎉 Successfully merged submodule PR #${prNumber}`);
-              core.setOutput("result", `• ${sub.repo}: merged #${prNumber} (${res.data.sha})`);
+              return { repo: sub.repo, result: "merged", sha: res.data.sha };
             } catch (err) {
-              core.setFailed(`❌ Merge failed for ${sub.repo} PR #${prNumber}: ${err.message}`);
+              return { repo: sub.repo, result: "failed", error: err.message };
             }
 
+      - name: Save result
+        id: collect
+        run: echo "results=$(echo '${{ steps.merge.outputs.result }}' | jq -c .)" >> $GITHUB_OUTPUT
 
 
-  # 3️⃣ Serial bump job (avoids race conditions)
-  bump-submodules:
+  # 3️⃣ Aggregate results
+  aggregate-results:
     needs: process-submodules
     runs-on: ubuntu-latest
+    outputs:
+      merged: ${{ steps.aggregate.outputs.merged }}
     steps:
-      - name: Checkout base PR branch (no submodules)
+      - name: Collect merged SHAs
+        id: aggregate
+        run: |
+          echo '${{ toJson(needs.process-submodules.outputs.*.results) }}' | jq -c '[.[] | select(.result=="merged")]' > merged.json
+          echo "merged=$(cat merged.json)" >> $GITHUB_OUTPUT
+
+
+  # 4️⃣ Bump in one commit
+  bump-submodules:
+    needs: aggregate-results
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base PR branch
         uses: actions/checkout@v4
         with:
           token: ${{ env.CROSS_TOKEN }}
-          fetch-depth: 0   # so we can push commits back
+          fetch-depth: 0
           submodules: true
 
       - name: Configure git for private submodules
         run: |
           git config --global url."https://${{ env.CROSS_TOKEN }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
 
-      - name: Bump detected submodules
+      - name: Apply bumps
         run: |
           set -euo pipefail
-          SUBMODULES='${{ needs.detect-submodules.outputs.submodules }}'
+          MERGED='${{ needs.aggregate-results.outputs.merged }}'
 
-          echo "$SUBMODULES" | jq -c '.[]' | while read -r sub; do
+          echo "$MERGED" | jq -c '.[]' | while read -r sub; do
             path=$(echo "$sub" | jq -r '.path')
-            url=$(echo "$sub" | jq -r '.url')
+            sha=$(echo "$sub" | jq -r '.sha')
 
-            echo "🔄 Updating $path"
+            echo "🔄 Bumping $path to $sha"
             git submodule update --init -- "$path"
-
             pushd "$path" >/dev/null
-            git remote set-url origin "$url"
-            git fetch origin main
-            latest_sha=$(git rev-parse origin/main)
-            git checkout "$latest_sha"
+            git fetch origin
+            git checkout "$sha"
             popd >/dev/null
-
             git add "$path"
           done
 
-          git commit -m "chore: bump submodules to latest main" || echo "✅ No changes to commit"
+          git commit -m "chore: bump submodules ($(echo "$MERGED" | jq -r '.[].repo' | paste -sd ', '))" || echo "✅ No changes"
           git push origin HEAD
 
 
