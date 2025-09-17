@@ -50,7 +50,7 @@ jobs:
         submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
       max-parallel: 4
     outputs:
-      results: ${{ steps.set-result.outputs.result }}
+      merged-submodules: ${{ steps.set-output.outputs.merged }}
     steps:
       - name: Merge submodule PR
         id: merge
@@ -64,7 +64,8 @@ jobs:
             const pr = sub.pr_number;
 
             if (!pr) {
-              return { path: sub.path, repo: `${owner}/${repo}`, result: "skipped" };
+              core.setOutput('result', JSON.stringify({ path: sub.path, repo: `${owner}/${repo}`, result: "skipped" }));
+              return;
             }
 
             try {
@@ -74,68 +75,55 @@ jobs:
                 pull_number: pr,
                 merge_method: "squash",
               });
-              return { path: sub.path, repo: `${owner}/${repo}`, result: "merged", sha: res.data.sha };
+              core.setOutput('result', JSON.stringify({ path: sub.path, repo: `${owner}/${repo}`, result: "merged", sha: res.data.sha }));
             } catch (err) {
-              return { path: sub.path, repo: `${owner}/${repo}`, result: "failed", error: err.message };
+              core.setOutput('result', JSON.stringify({ path: sub.path, repo: `${owner}/${repo}`, result: "failed", error: err.message }));
             }
 
-  check-and-bump-submodules:
+      - name: Set merged submodule output
+        id: set-output
+        run: echo "merged=${{ steps.merge.outputs.result }}" >> $GITHUB_OUTPUT
+
+  # 3️⃣ Check & bump only merged submodules
+  bump-submodules:
+    needs: process-submodules
     runs-on: ubuntu-latest
     steps:
-      - name: Echo workflow start
-        run: echo "🚀 Starting submodule bump workflow"
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: true
           fetch-depth: 0
           token: ${{ env.CROSS_TOKEN }}
 
-      - name: Determine current branch
+      - name: Determine branch
         id: branch
         run: |
-          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          echo "Current branch: $CURRENT_BRANCH"
-          echo "branch=$CURRENT_BRANCH" >> $GITHUB_OUTPUT
+          echo "branch=$(git rev-parse --abbrev-ref HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Bump outdated submodules
+      - name: Bump merged submodules
         uses: actions/github-script@v7
         with:
           script: |
             const { execSync } = require('child_process');
 
-            const branch = process.env.GITHUB_OUTPUT_BRANCH || process.env.GITHUB_REF_NAME;
-            console.log(`🔧 Working on branch: ${branch}`);
+            // Parse merged submodules from previous job
+            const mergedSubmodules = [${{ needs.process-submodules.outputs.merged-submodules }}]
+              .map(s => JSON.parse(s))
+              .filter(s => s.result === "merged");
 
-            console.log('🔧 Starting submodule inspection');
-
-            const submodules = execSync(
-              'git config --file .gitmodules --get-regexp path',
-              { encoding: 'utf8' }
-            )
-              .trim()
-              .split('\n')
-              .map(line => {
-                const [, path] = line.split(' ');
-                const name = path.split('/').pop();
-                const url = execSync(`git config --file .gitmodules --get submodule.${name}.url`, { encoding: 'utf8' }).trim();
-                return { name, path, url };
-              });
-
-            console.log(`Found ${submodules.length} submodule(s)`);
+            if (mergedSubmodules.length === 0) {
+              console.log("No merged submodules to bump.");
+              return;
+            }
 
             let changed = false;
 
-            for (const sub of submodules) {
-              console.log(`Checking submodule ${sub.name} at ${sub.path}`);
-
-              let urlWithToken = sub.url;
-              if (sub.url.startsWith('https://')) {
-                urlWithToken = sub.url.replace('https://', `https://${process.env.CROSS_TOKEN}@`);
-              } else {
-                throw new Error(`Unsupported submodule URL: ${sub.url}`);
-              }
+            for (const sub of mergedSubmodules) {
+              console.log(`🔧 Updating submodule ${sub.path}`);
+              const urlWithToken = sub.repo.startsWith('https://')
+                ? sub.repo.replace('https://', `https://${process.env.CROSS_TOKEN}@`)
+                : sub.repo;
 
               const defaultBranch = execSync(
                 `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
@@ -147,55 +135,21 @@ jobs:
                 { encoding: 'utf8' }
               ).trim();
 
-              // Get current commit of submodule
-              let currentCommit;
-              try {
-                currentCommit = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
-              } catch (e) {
-                throw new Error(`Failed to get current commit for submodule ${sub.name}`);
-              }
-
-              console.log(`Default branch: ${defaultBranch}`);
-              console.log(`Latest commit on ${defaultBranch}: ${latestCommit}`);
-              console.log(`Current submodule commit: ${currentCommit}`);
+              const currentCommit = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
 
               if (currentCommit !== latestCommit) {
-                console.log(`⚠️  Submodule ${sub.name} is outdated. Updating...`);
                 execSync(`git -C ${sub.path} fetch origin ${defaultBranch}`);
                 execSync(`git -C ${sub.path} reset --hard ${latestCommit}`);
                 execSync(`git add ${sub.path}`);
                 changed = true;
-              } else {
-                console.log(`✅ Submodule ${sub.name} is up-to-date`);
               }
             }
 
             if (changed) {
-              console.log('Committing updated submodules...');
               execSync('git config user.name "github-actions[bot]"');
               execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
-              execSync(`git commit -m "Bump submodules to latest default branch"`);
+              execSync(`git commit -m "Bump merged submodules to latest default branch"`);
               execSync(`git push origin ${process.env.GITHUB_REF_NAME}`);
             } else {
-              console.log('All submodules are up-to-date, nothing to commit.');
+              console.log("All merged submodules are up-to-date.");
             }
-
-            console.log('🔧 Submodule inspection completed');
-
-  # 4️⃣ Merge base PR (after bump)
-  merge-base:
-    needs: bump-submodules
-    runs-on: ubuntu-latest
-    steps:
-      - name: Merge base PR
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const prNumber = context.issue.number;
-            await github.rest.pulls.merge({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-              merge_method: 'squash'
-            });
