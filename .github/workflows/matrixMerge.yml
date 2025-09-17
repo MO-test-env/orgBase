@@ -111,7 +111,7 @@ jobs:
             // Parse submodules JSON from environment variable
             const submoduleStr = JSON.stringify(${{ needs.detect-submodules.outputs.submodules }});
             console.log("1");
-            if (!subsJson) throw new Error("No submodules JSON found");
+            if (!submoduleStr) throw new Error("No submodules JSON found");
 
             let submoduleJson;
             try {
