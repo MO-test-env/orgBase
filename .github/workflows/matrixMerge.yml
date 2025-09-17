@@ -109,26 +109,26 @@ jobs:
             const fs = require('fs');
 
             // Parse submodules JSON from environment variable
-            const subsJson = JSON.stringify(${{ needs.detect-submodules.outputs.submodules }});
+            const submoduleStr = JSON.stringify(${{ needs.detect-submodules.outputs.submodules }});
             console.log("1");
             if (!subsJson) throw new Error("No submodules JSON found");
 
-            let allSubmodules;
+            let submoduleJson;
             try {
-              allSubmodules = JSON.parse(subsJson);
+              submoduleJson = JSON.parse(submoduleStr);
               console.log("2");
             } catch (e) {
               throw new Error("Failed to parse submodules JSON: " + e.message);
             }
             console.log("3")
-            if (allSubmodules.length === 0) {
+            if (submoduleJson.length === 0) {
               console.log("No merged submodules to bump.");
               return;
             }
             console.log("4 but im pretty sure 2 is the culprit");
             let changed = false;
 
-            for (const sub of mergedSubmodules) {
+            for (const sub of submoduleJson) {
               console.log(`🔧 Updating submodule ${sub.path}`);
               const urlWithToken = sub.repo.startsWith('https://')
                 ? sub.repo.replace('https://', `https://${process.env.CROSS_TOKEN}@`)
