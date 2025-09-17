@@ -128,6 +128,9 @@ jobs:
             console.log("4 but im pretty sure 2 is the culprit");
             let changed = false;
 
+            const branch = ${{ steps.branch.outputs.branch }};
+            console.log(`Current branch: ${branch}`);
+
             for (const sub of submoduleJson) {
               console.log(`Checking submodule ${sub.repo} at ${sub.path}`);
 
@@ -176,7 +179,8 @@ jobs:
               execSync('git config user.name "github-actions[bot]"');
               execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
               execSync(`git commit -m "Bump submodules to latest default branch"`);
-              execSync(`git push origin ${process.env.GITHUB_REF_NAME}`);
+              // Only push changes to the PR branch
+              execSync(`git push origin ${branch}`);
             } else {
               console.log('All submodules are up-to-date, nothing to commit.');
             }
@@ -201,7 +205,6 @@ jobs:
               pull_number: prNumber,
               merge_method: 'squash'
             });
-
 
 #if bump or merge base fails revert each submodule
 #
