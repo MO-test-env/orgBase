@@ -123,7 +123,7 @@ jobs:
             console.log("4 but im pretty sure 2 is the culprit");
             let changed = false;
 
-            const branch = github.context.pullRequest.head.ref;
+            const branch = github.event.pull_request.head.ref;
             console.log(`Current branch: ${branch}`);
 
             for (const sub of submoduleJson) {
