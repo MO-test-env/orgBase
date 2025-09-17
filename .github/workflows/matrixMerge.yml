@@ -77,10 +77,10 @@ jobs:
               }
             }
   bump-submodules:
-    needs: process-submodules
+    needs: 
+      - detect-submodules
+      - process-submodules
     runs-on: ubuntu-latest
-    env:
-      SUBMODULES_JSON: ${{ needs.detect-submodules.outputs.submodules }}
     steps:
       - name: Checkout repository (without submodules)
         uses: actions/checkout@v4
@@ -102,7 +102,7 @@ jobs:
             const fs = require('fs');
 
             // Parse submodules JSON from environment variable
-            const subsJson = process.env.SUBMODULES_JSON;
+            const subsJson = ${{ needs.detect-submodules.outputs.submodules }};
             if (!subsJson) throw new Error("No submodules JSON found");
 
             let allSubmodules;
