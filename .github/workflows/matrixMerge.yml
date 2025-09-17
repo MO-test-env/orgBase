@@ -50,38 +50,42 @@ jobs:
         submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
       max-parallel: 4
     outputs:
-      path_sha: ${{ steps.subproc.outputs.path_sha }} # each matrix job outputs its submodule path+SHA
+      path_sha: ${{ steps.subproc.outputs.path_sha }}
     steps:
-      - name: Merge submodule PR
+      - name: Merge submodule PR with GitHub API
         id: subproc
-        run: |
-          set -euo pipefail
-          echo "🔎 Processing $SUB_REPO at $SUB_PATH"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.GH_TOKEN }}
+          script: |
+            const sub = ${{ toJson(matrix.submod) }};
+            const [owner, repo] = sub.repo.split('/');
+            const prNumber = sub.pr_number;
 
-          # --------------------------------------------------------------
-          # 1️⃣ Find a submodule PR whose head ref matches the base PR
-          # --------------------------------------------------------------
-          SUB_PATH="${{ matrix.submod.path }}"
-          SUB_REPO="${{ matrix.submod.repo }}"
-          PR_NUM="${{ matrix.submod.pr_number }}"
-          if [[ -z "$PR_NUM" ]]; then
-            echo "⚠️ No matching submodule PR found for $SUB_REPO – skipping."
-            echo "result=• $SUB_REPO: no matching PR" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+            if (!prNumber) {
+              core.info(`⚠️ No matching submodule PR found for ${sub.repo} – skipping.`);
+              core.setOutput("result", `• ${sub.repo}: no matching PR`);
+              return;
+            }
 
-          echo "✅ Found submodule PR #$PR_NUM"
+            core.info(`✅ Found submodule PR #${prNumber} in ${sub.repo}`);
 
-          # --------------------------------------------------------------
-          # 2️⃣ Squash‑merge the submodule PR
-          # --------------------------------------------------------------
-          gh api -X PUT \
-            -H "Accept: application/vnd.github+json" \
-            repos/$SUB_REPO/pulls/$PR_NUM/merge \
-            -f merge_method=squash \
-            -f commit_title="chore(submod): merge $SUB_REPO #$PR_NUM" \
-            -f commit_message="Squash‑merged submodule PR #$PR_NUM" \
-            || { echo "❌ Merge failed for $SUB_REPO PR #$PR_NUM"; exit 1; }
+            try {
+              const res = await github.rest.pulls.merge({
+                owner,
+                repo,
+                pull_number: prNumber,
+                merge_method: "squash",
+                commit_title: `chore(submod): merge ${sub.repo} #${prNumber}`,
+                commit_message: `Squash-merged submodule PR #${prNumber}`,
+              });
+
+              core.info(`🎉 Successfully merged submodule PR #${prNumber}`);
+              core.setOutput("result", `• ${sub.repo}: merged #${prNumber} (${res.data.sha})`);
+            } catch (err) {
+              core.setFailed(`❌ Merge failed for ${sub.repo} PR #${prNumber}: ${err.message}`);
+            }
+
 
 
   # 3️⃣ Serial bump job (avoids race conditions)
