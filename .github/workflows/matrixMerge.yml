@@ -76,11 +76,12 @@ jobs:
                 result = { path: sub.path, repo: `${owner}/${repo}`, result: "failed", error: err.message };
               }
             }
-
-  # 4️⃣ Bump only merged submodules (optimized)
   bump-submodules:
     needs: process-submodules
     runs-on: ubuntu-latest
+    env:
+      CROSS_TOKEN: ${{ env.CROSS_TOKEN }}
+      SUBMODULES_JSON: ${{ needs.detect-submodules.outputs.submodules }}  
     steps:
       - name: Checkout repository (without submodules)
         uses: actions/checkout@v4
@@ -94,15 +95,25 @@ jobs:
         run: |
           echo "branch=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
 
-      - name: Bump merged submodules (optimized)
+      - name: Bump merged submodules
         uses: actions/github-script@v7
         with:
           script: |
             const { execSync } = require('child_process');
             const fs = require('fs');
 
-            const mergedSubmodules = ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
-              .filter(s => s.result === "merged");
+            // Parse submodules JSON from environment variable
+            const subsJson = process.env.SUBMODULES_JSON;
+            if (!subsJson) throw new Error("No submodules JSON found");
+
+            let allSubmodules;
+            try {
+              allSubmodules = JSON.parse(subsJson);
+            } catch (e) {
+              throw new Error("Failed to parse submodules JSON: " + e.message);
+            }
+
+            const mergedSubmodules = allSubmodules.filter(s => s.result === "merged");
 
             if (mergedSubmodules.length === 0) {
               console.log("No merged submodules to bump.");
@@ -117,20 +128,17 @@ jobs:
                 ? sub.repo.replace('https://', `https://${process.env.CROSS_TOKEN}@`)
                 : sub.repo;
 
-              // Get default branch
               const defaultBranch = execSync(
                 `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
                 { encoding: 'utf8' }
               ).trim();
 
-              // Get latest commit
               const latestCommit = execSync(
                 `git ls-remote ${urlWithToken} refs/heads/${defaultBranch} | awk '{print $1}'`,
                 { encoding: 'utf8' }
               ).trim();
 
               if (!fs.existsSync(sub.path)) {
-                console.log(`Initializing submodule ${sub.path}`);
                 execSync(`git submodule add --branch ${defaultBranch} ${urlWithToken} ${sub.path}`);
               } else {
                 execSync(`git -C ${sub.path} fetch origin ${defaultBranch}`);
@@ -149,7 +157,7 @@ jobs:
               execSync('git config user.name "github-actions[bot]"');
               execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
               execSync(`git commit -m "Bump merged submodules to latest default branch"`);
-              execSync(`git push origin ${process.env.GITHUB_REF_NAME}`);
+              execSync(`git push origin ${{ steps.branch.outputs.branch }}`);
             } else {
               console.log("All merged submodules are up-to-date.");
             }
