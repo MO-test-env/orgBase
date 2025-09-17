@@ -21,12 +21,18 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0
-          token: ${{ secrets.WORKFLOWS }}
+          token: ${{ env.CROSS_TOKEN }}
+
+      - name: Determine current branch
+        id: branch
+        run: |
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "Current branch: $CURRENT_BRANCH"
+          echo "branch=$CURRENT_BRANCH" >> $GITHUB_OUTPUT
 
       - name: Echo after checkout
         run: |
           echo "🔎 Repository checked out"
-          echo "Current branch: $(git rev-parse --abbrev-ref HEAD)"
           echo "Number of submodules:"
           git config --file .gitmodules --get-regexp path | wc -l
 
@@ -36,9 +42,11 @@ jobs:
           script: |
             const { execSync } = require('child_process');
 
+            const branch = process.env.GITHUB_OUTPUT_BRANCH || process.env.GITHUB_REF_NAME;
+            console.log(`🔧 Working on branch: ${branch}`);
+
             console.log('🔧 Starting submodule inspection');
 
-            // Get submodules
             const submodules = execSync(
               'git config --file .gitmodules --get-regexp path',
               { encoding: 'utf8' }
@@ -76,10 +84,13 @@ jobs:
                 { encoding: 'utf8' }
               ).trim();
 
-              const currentCommit = execSync(
-                `git rev-parse ${sub.path}`,
-                { encoding: 'utf8' }
-              ).trim();
+              // Get current commit of submodule
+              let currentCommit;
+              try {
+                currentCommit = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
+              } catch (e) {
+                throw new Error(`Failed to get current commit for submodule ${sub.name}`);
+              }
 
               console.log(`Default branch: ${defaultBranch}`);
               console.log(`Latest commit on ${defaultBranch}: ${latestCommit}`);
@@ -89,7 +100,7 @@ jobs:
                 console.log(`⚠️  Submodule ${sub.name} is outdated. Updating...`);
                 execSync(`git -C ${sub.path} fetch origin ${defaultBranch}`);
                 execSync(`git -C ${sub.path} reset --hard ${latestCommit}`);
-                execSync(`git add ${sub.path}`); // add updated submodule
+                execSync(`git add ${sub.path}`);
                 changed = true;
               } else {
                 console.log(`✅ Submodule ${sub.name} is up-to-date`);
@@ -100,8 +111,8 @@ jobs:
               console.log('Committing updated submodules...');
               execSync('git config user.name "github-actions[bot]"');
               execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
-              execSync('git commit -m "Bump submodules to latest default branch"');
-              execSync('git push origin main');
+              execSync(`git commit -m "Bump submodules to latest default branch"`);
+              execSync(`git push origin ${process.env.GITHUB_REF_NAME}`);
             } else {
               console.log('All submodules are up-to-date, nothing to commit.');
             }
