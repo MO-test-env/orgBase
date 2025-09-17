@@ -109,6 +109,12 @@ jobs:
           fetch-depth: 0
           token: ${{ env.CROSS_TOKEN }}
           ref: ${{ steps.pr.outputs.head_ref }}
+      
+      - name: Authenticate submodules
+        run: |
+          git config --global url."https://${{ env.CROSS_TOKEN }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
+          git submodule sync --recursive
+          git submodule update --init --recursive
 
       # 3️⃣ Bump submodules manually (no recursive checkout)
       - name: Bump submodules
