@@ -84,10 +84,13 @@ jobs:
                 { encoding: 'utf8' }
               ).trim();
 
-              const currentCommit = execSync(
-                `git rev-parse ${sub.path}`,
-                { encoding: 'utf8' }
-              ).trim();
+              // Get current commit of submodule
+              let currentCommit;
+              try {
+                currentCommit = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
+              } catch (e) {
+                throw new Error(`Failed to get current commit for submodule ${sub.name}`);
+              }
 
               console.log(`Default branch: ${defaultBranch}`);
               console.log(`Latest commit on ${defaultBranch}: ${latestCommit}`);
