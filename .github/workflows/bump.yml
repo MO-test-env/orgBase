@@ -1,3 +1,4 @@
+# File c:/bea/base/.github/workflows/bump.yml
 name: Check Submodules on Default Branch
 on:
   push:
@@ -24,8 +25,11 @@ jobs:
           script: |
             const { execSync } = require('child_process');
 
-            // Get submodule paths and URLs
-            const submodules = execSync('git config --file .gitmodules --get-regexp path', { encoding: 'utf8' })
+            // Get submodules
+            const submodules = execSync(
+              'git config --file .gitmodules --get-regexp path',
+              { encoding: 'utf8' }
+            )
               .trim()
               .split('\n')
               .map(line => {
@@ -40,7 +44,6 @@ jobs:
             for (const sub of submodules) {
               console.log(`Checking submodule ${sub.name} at ${sub.path}`);
 
-              // Rewrite URL for token auth if HTTPS
               let urlWithToken = sub.url;
               if (sub.url.startsWith('https://')) {
                 urlWithToken = sub.url.replace('https://', `https://${process.env.CROSS_TOKEN}@`);
@@ -48,26 +51,38 @@ jobs:
                 throw new Error(`Unsupported submodule URL: ${sub.url}`);
               }
 
-              // Get default branch
-              const defaultBranch = execSync(`git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`, { encoding: 'utf8' }).trim();
-              const latestCommit = execSync(`git ls-remote ${urlWithToken} refs/heads/${defaultBranch} | awk '{print $1}'`, { encoding: 'utf8' }).trim();
-              const currentCommit = execSync(`git rev-parse ${sub.path}`, { encoding: 'utf8' }).trim();
+              const defaultBranch = execSync(
+                `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
+                { encoding: 'utf8' }
+              ).trim();
+
+              const latestCommit = execSync(
+                `git ls-remote ${urlWithToken} refs/heads/${defaultBranch} | awk '{print $1}'`,
+                { encoding: 'utf8' }
+              ).trim();
+
+              const currentCommit = execSync(
+                `git rev-parse ${sub.path}`,
+                { encoding: 'utf8' }
+              ).trim();
 
               if (currentCommit !== latestCommit) {
                 console.log(`⚠️  Submodule ${sub.name} is outdated. Updating...`);
                 execSync(`git -C ${sub.path} fetch origin ${defaultBranch}`);
                 execSync(`git -C ${sub.path} reset --hard ${latestCommit}`);
-                
-                // Add the submodule change to the superproject
                 execSync(`git add ${sub.path}`);
-                
                 changed = true;
+              } else {
+                console.log(`✅ Submodule ${sub.name} is up-to-date`);
+              }
             }
 
             if (changed) {
-                console.log('Committing updated submodules...');
-                execSync('git config user.name "github-actions[bot]"');
-                execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
-                execSync('git commit -m "Bump submodules to latest default branch"');
-                execSync('git push origin main');
+              console.log('Committing updated submodules...');
+              execSync('git config user.name "github-actions[bot]"');
+              execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
+              execSync('git commit -m "Bump submodules to latest default branch"');
+              execSync('git push origin main');
+            } else {
+              console.log('All submodules are up-to-date, nothing to commit.');
             }
