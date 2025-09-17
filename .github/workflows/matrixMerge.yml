@@ -80,7 +80,6 @@ jobs:
     needs: process-submodules
     runs-on: ubuntu-latest
     env:
-      CROSS_TOKEN: ${{ env.CROSS_TOKEN }}
       SUBMODULES_JSON: ${{ needs.detect-submodules.outputs.submodules }}
     steps:
       - name: Checkout repository (without submodules)
