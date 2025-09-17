@@ -57,19 +57,17 @@ jobs:
                 console.log(`⚠️  Submodule ${sub.name} is outdated. Updating...`);
                 execSync(`git -C ${sub.path} fetch origin ${defaultBranch}`);
                 execSync(`git -C ${sub.path} reset --hard ${latestCommit}`);
+                
+                // Add the submodule change to the superproject
+                execSync(`git add ${sub.path}`);
+                
                 changed = true;
-              } else {
-                console.log(`✅ Submodule ${sub.name} is up-to-date`);
-              }
             }
 
             if (changed) {
-              console.log('Committing updated submodules...');
-              execSync('git config user.name "github-actions[bot]"');
-              execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
-              execSync('git add .');
-              execSync('git commit -m "Bump submodules to latest default branch"');
-              execSync('git push origin main');
-            } else {
-              console.log('All submodules are up-to-date, nothing to commit.');
+                console.log('Committing updated submodules...');
+                execSync('git config user.name "github-actions[bot]"');
+                execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
+                execSync('git commit -m "Bump submodules to latest default branch"');
+                execSync('git push origin main');
             }
