@@ -110,20 +110,22 @@ jobs:
 
             // Parse submodules JSON from environment variable
             const subsJson = ${{ needs.detect-submodules.outputs.submodules }};
+            console.log("1");
             if (!subsJson) throw new Error("No submodules JSON found");
 
             let allSubmodules;
             try {
               allSubmodules = JSON.parse(subsJson);
+              console.log("2");
             } catch (e) {
               throw new Error("Failed to parse submodules JSON: " + e.message);
             }
-
+            console.log("3")
             if (allSubmodules.length === 0) {
               console.log("No merged submodules to bump.");
               return;
             }
-
+            console.log("4 but im pretty sure 2 is the culprit");
             let changed = false;
 
             for (const sub of mergedSubmodules) {
