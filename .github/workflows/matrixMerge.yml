@@ -129,10 +129,14 @@ jobs:
             let changed = false;
 
             for (const sub of submoduleJson) {
-              console.log(`🔧 Updating submodule ${sub.path}`);
-              const urlWithToken = sub.repo.startsWith('https://')
-                ? sub.repo.replace('https://', `https://${process.env.CROSS_TOKEN}@`)
-                : sub.repo;
+              console.log(`Checking submodule ${sub.repo} at ${sub.path}`);
+
+              let urlWithToken = sub.url;
+              if (sub.url.startsWith('https://')) {
+                urlWithToken = sub.url.replace('https://', `https://${process.env.CROSS_TOKEN}@`);
+              } else {
+                throw new Error(`Unsupported submodule URL: ${sub.url}`);
+              }
 
               const defaultBranch = execSync(
                 `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
@@ -144,29 +148,41 @@ jobs:
                 { encoding: 'utf8' }
               ).trim();
 
-              if (!fs.existsSync(sub.path)) {
-                execSync(`git submodule add --branch ${defaultBranch} ${urlWithToken} ${sub.path}`);
-              } else {
-                execSync(`git -C ${sub.path} fetch origin ${defaultBranch}`);
+              // Get current commit of submodule
+              let currentCommit;
+              try {
+                currentCommit = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
+              } catch (e) {
+                throw new Error(`Failed to get current commit for submodule ${sub.repo}`);
               }
 
-              const currentCommit = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
+              console.log(`Default branch: ${defaultBranch}`);
+              console.log(`Latest commit on ${defaultBranch}: ${latestCommit}`);
+              console.log(`Current submodule commit: ${currentCommit}`);
 
               if (currentCommit !== latestCommit) {
+                console.log(`⚠️  Submodule ${sub.repo} is outdated. Updating...`);
+                execSync(`git -C ${sub.path} fetch origin ${defaultBranch}`);
                 execSync(`git -C ${sub.path} reset --hard ${latestCommit}`);
                 execSync(`git add ${sub.path}`);
                 changed = true;
+              } else {
+                console.log(`✅ Submodule ${sub.repo} is up-to-date`);
               }
             }
 
             if (changed) {
+              console.log('Committing updated submodules...');
               execSync('git config user.name "github-actions[bot]"');
               execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
-              execSync(`git commit -m "Bump merged submodules to latest default branch"`);
-              execSync(`git push origin ${{ steps.branch.outputs.branch }}`);
+              execSync(`git commit -m "Bump submodules to latest default branch"`);
+              execSync(`git push origin ${process.env.GITHUB_REF_NAME}`);
             } else {
-              console.log("All merged submodules are up-to-date.");
+              console.log('All submodules are up-to-date, nothing to commit.');
             }
+
+            console.log('🔧 Submodules bumped');
+
 
   # 4️⃣ Merge base PR (after bump)
   # merge-base:
