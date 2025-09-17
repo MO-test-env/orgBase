@@ -59,7 +59,10 @@ jobs:
           github-token: ${{ env.GH_TOKEN }}
           script: |
             const sub = ${{ toJson(matrix.submod) }};
-            const [owner, repo] = sub.repo.split('/');
+            const url = new URL(sub.url);
+            // e.g. https://github.com/MOvenshire/submod2.git → ["MOvenshire","submod2"]
+            const parts = url.pathname.replace(/^\//, '').replace(/\.git$/, '').split('/');
+            const [owner, repo] = parts;
             const pr = sub.pr_number;
 
             if (!pr) {
