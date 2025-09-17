@@ -182,10 +182,10 @@ jobs:
             }
 
   # 4️⃣ Merge base PR (after bump)
-  # merge-base:
-  #   needs: bump-submodules
-  #   runs-on: ubuntu-latest
-  #   steps:
+  merge-base:
+    needs: bump-submodules
+    runs-on: ubuntu-latest
+    steps:
       - name: Merge base PR
         uses: actions/github-script@v7
         with:
