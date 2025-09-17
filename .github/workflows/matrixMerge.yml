@@ -95,6 +95,16 @@ jobs:
           submodules: true
           fetch-depth: 0
           token: ${{ env.CROSS_TOKEN }}
+          
+
+      - name: Determine branch
+        id: branch
+        run: |
+          echo "branch1=${{ github.event.issue.pull_request.ref }}"
+          echo "branch2=${{ github.event.issue.pull_request.base_ref }}"
+          echo "branch3=${{ github.event.issue.pull_request.head_ref }}"
+          echo "branch=${{ github.event.issue.pull_request.ref }}" >> $GITHUB_OUTPUT
+
 
       - name: Bump merged submodules
         uses: actions/github-script@v7
