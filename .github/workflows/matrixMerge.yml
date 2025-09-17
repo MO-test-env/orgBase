@@ -40,7 +40,7 @@ jobs:
             const jsonMatch = cache.body.match(/```json\s*([\s\S]*?)\s*```/);
             if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
             core.setOutput('submodules', jsonMatch[1]);
-            
+
   # 2️⃣ Process each submodule in parallel (matrix)
   process-submodules:
     needs: detect-submodules
@@ -52,73 +52,79 @@ jobs:
     outputs:
       path_sha: ${{ steps.subproc.outputs.path_sha }} # each matrix job outputs its submodule path+SHA
     steps:
-      - name: Checkout submodule (for PR merge)
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ env.CROSS_TOKEN }}
-          submodules: true
-
       - name: Merge submodule PR
         id: subproc
         run: |
           set -euo pipefail
+          echo "🔎 Processing $SUB_REPO at $SUB_PATH"
+
+          # --------------------------------------------------------------
+          # 1️⃣ Find a submodule PR whose head ref matches the base PR
+          # --------------------------------------------------------------
           SUB_PATH="${{ matrix.submod.path }}"
           SUB_REPO="${{ matrix.submod.repo }}"
           PR_NUM="${{ matrix.submod.pr_number }}"
           if [[ -z "$PR_NUM" ]]; then
-            echo "path_sha=$SUB_PATH:null" >> $GITHUB_OUTPUT
+            echo "⚠️ No matching submodule PR found for $SUB_REPO – skipping."
+            echo "result=• $SUB_REPO: no matching PR" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # Merge submodule PR
+          echo "✅ Found submodule PR #$PR_NUM"
+
+          # --------------------------------------------------------------
+          # 2️⃣ Squash‑merge the submodule PR
+          # --------------------------------------------------------------
           gh api -X PUT \
             -H "Accept: application/vnd.github+json" \
             repos/$SUB_REPO/pulls/$PR_NUM/merge \
             -f merge_method=squash \
-            -f commit_title="chore(submod): merge $SUB_REPO #$PR_NUM"
+            -f commit_title="chore(submod): merge $SUB_REPO #$PR_NUM" \
+            -f commit_message="Squash‑merged submodule PR #$PR_NUM" \
+            || { echo "❌ Merge failed for $SUB_REPO PR #$PR_NUM"; exit 1; }
 
-          # Update submodule to latest main
-          git submodule update --init "$SUB_PATH"
-          git -C "$SUB_PATH" fetch origin main
-          git -C "$SUB_PATH" checkout origin/main
-          SHA=$(git -C "$SUB_PATH" rev-parse HEAD)
-          echo "path_sha=$SUB_PATH:$SHA" >> $GITHUB_OUTPUT
 
   # 3️⃣ Serial bump job (avoids race conditions)
   bump-submodules:
     needs: process-submodules
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout base PR branch
+      - name: Checkout base PR branch (no submodules)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          submodules: recursive
           token: ${{ env.CROSS_TOKEN }}
+          fetch-depth: 0   # so we can push commits back
+          submodules: true
 
-      - name: Bump all submodules
+      - name: Configure git for private submodules
+        run: |
+          git config --global url."https://${{ env.CROSS_TOKEN }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
+
+      - name: Bump detected submodules
         run: |
           set -euo pipefail
-          SUBMODULES="${{ join(needs.process-submodules.*.outputs.path_sha, ' ') }}"
-          for ps in $SUBMODULES; do
-            path="${ps%%:*}"
-            sha="${ps##*:}"
-            if [[ "$sha" != "null" ]]; then
-              git submodule update --init "$path"
-              git -C "$path" checkout "$sha"
-              git add "$path"
-            fi
+          SUBMODULES='${{ needs.detect-submodules.outputs.submodules }}'
+
+          echo "$SUBMODULES" | jq -c '.[]' | while read -r sub; do
+            path=$(echo "$sub" | jq -r '.path')
+            url=$(echo "$sub" | jq -r '.url')
+
+            echo "🔄 Updating $path"
+            git submodule update --init -- "$path"
+
+            pushd "$path" >/dev/null
+            git remote set-url origin "$url"
+            git fetch origin main
+            latest_sha=$(git rev-parse origin/main)
+            git checkout "$latest_sha"
+            popd >/dev/null
+
+            git add "$path"
           done
 
-          if git diff --cached --quiet; then
-            echo "No submodule changes to commit"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git commit -m "chore(submods): bump all merged submodules"
-            git push origin HEAD:${{ github.event.issue.pull_request.head.ref }}
-          fi
+          git commit -m "chore: bump submodules to latest main" || echo "✅ No changes to commit"
+          git push origin HEAD
+
 
   # 4️⃣ Merge base PR (after bump)
   merge-base:
