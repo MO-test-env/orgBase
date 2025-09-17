@@ -3,14 +3,10 @@ on:
   push:
     branches:
       - main
-env:
-  CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
 
 jobs:
   check-and-bump-submodules:
     runs-on: ubuntu-latest
-    env:
-      CROSS_TOKEN: ${{ secrets.CROSS_TOKEN }}
     steps:
       - name: Checkout repository with submodules
         uses: actions/checkout@v4
