@@ -81,11 +81,17 @@ jobs:
             const filename = `submodule-${sub.path.replace(/\//g,'_')}.json`;
             fs.writeFileSync(filename, JSON.stringify(result));
 
+      - name: Save submodule result file
+        run: |
+          filename="submodule-${{ matrix.submod.path }}.json"
+          filename=${filename//\//_}   # replace / with _
+          echo '${{ steps.merge.outputs.result }}' > "$filename"
+
       - name: Upload submodule result artifact
         uses: actions/upload-artifact@v3
         with:
           name: submodule-${{ matrix.submod.path }}
-          path: submodule-${{ matrix.submod.path.replace('/','_') }}.json
+          path: ${{ github.workspace }}/submodule-${{ matrix.submod.path }}.json
 
   # 3️⃣ Aggregate results from all matrix runs
   aggregate-submodules:
