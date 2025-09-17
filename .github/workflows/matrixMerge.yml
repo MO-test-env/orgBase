@@ -77,50 +77,9 @@ jobs:
               }
             }
 
-            const fs = require('fs');
-            const filename = `submodule-${sub.path.replace(/\//g,'_')}.json`;
-            fs.writeFileSync(filename, JSON.stringify(result));
-
-      - name: Save submodule result file
-        run: |
-          filename="submodule-${{ matrix.submod.path }}.json"
-          filename=${filename//\//_}   # replace / with _
-          echo '${{ steps.merge.outputs.result }}' > "$filename"
-
-      - name: Upload submodule result artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: submodule-${{ matrix.submod.path }}
-          path: ${{ github.workspace }}/submodule-${{ matrix.submod.path }}.json
-
-  # 3️⃣ Aggregate results from all matrix runs
-  aggregate-submodules:
-    needs: process-submodules
-    runs-on: ubuntu-latest
-    outputs:
-      merged-submodules: ${{ steps.aggregate.outputs.merged_submodules }}
-    steps:
-      - name: Download submodule artifacts
-        uses: actions/download-artifact@v3
-        with:
-          path: ./submodules-json
-
-      - name: Aggregate submodule results
-        id: aggregate
-        run: |
-          jq -s '.' ./submodules-json/*.json > aggregated.json
-          cat aggregated.json
-          echo "merged_submodules=$(cat aggregated.json)" >> $GITHUB_OUTPUT
-
-      - name: Clean up artifacts
-        run: |
-          rm -rf ./submodules-json
-          rm -f aggregated.json
-          echo "✅ Artifacts cleaned up."
-
   # 4️⃣ Bump only merged submodules (optimized)
   bump-submodules:
-    needs: aggregate-submodules
+    needs: process-submodules
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository (without submodules)
@@ -133,7 +92,7 @@ jobs:
       - name: Determine branch
         id: branch
         run: |
-          echo "branch=$(git rev-parse --abbrev-ref HEAD)" >> $GITHUB_OUTPUT
+          echo "branch=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
 
       - name: Bump merged submodules (optimized)
         uses: actions/github-script@v7
@@ -142,7 +101,7 @@ jobs:
             const { execSync } = require('child_process');
             const fs = require('fs');
 
-            const mergedSubmodules = ${{ fromJson(needs.aggregate-submodules.outputs.merged-submodules) }}
+            const mergedSubmodules = ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
               .filter(s => s.result === "merged");
 
             if (mergedSubmodules.length === 0) {
