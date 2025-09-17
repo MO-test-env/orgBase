@@ -109,7 +109,7 @@ jobs:
             const fs = require('fs');
 
             // Parse submodules JSON from environment variable
-            const subsJson = ${{ needs.detect-submodules.outputs.submodules }};
+            const subsJson = ${{ needs.detect-submodules.yaml.submodules }};
             if (!subsJson) throw new Error("No submodules JSON found");
 
             let allSubmodules;
@@ -119,9 +119,7 @@ jobs:
               throw new Error("Failed to parse submodules JSON: " + e.message);
             }
 
-            const mergedSubmodules = allSubmodules.filter(s => s.result === "merged");
-
-            if (mergedSubmodules.length === 0) {
+            if (allSubmodules.length === 0) {
               console.log("No merged submodules to bump.");
               return;
             }
