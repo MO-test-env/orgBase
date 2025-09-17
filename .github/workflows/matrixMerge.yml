@@ -92,8 +92,8 @@ jobs:
       - name: Checkout repository (without submodules)
         uses: actions/checkout@v4
         with:
-          submodules: false
-          fetch-depth: 1
+          submodules: true
+          fetch-depth: 0
           token: ${{ env.CROSS_TOKEN }}
 
       - name: Determine branch
