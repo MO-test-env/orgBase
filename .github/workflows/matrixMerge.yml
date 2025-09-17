@@ -109,7 +109,7 @@ jobs:
             const fs = require('fs');
 
             // Parse submodules JSON from environment variable
-            const subsJson = ${{ needs['detect-submodules'].detect-submodules.outputs.submodules }};
+            const subsJson = ${{ needs.detect-submodules.outputs.submodules }};
             if (!subsJson) throw new Error("No submodules JSON found");
 
             let allSubmodules;
