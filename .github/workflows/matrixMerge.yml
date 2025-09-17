@@ -77,9 +77,15 @@ jobs:
               }
             }
 
-            // Write individual result to file
             const fs = require('fs');
-            fs.writeFileSync(`submodule-${sub.path.replace(/\//g,'_')}.json`, JSON.stringify(result));
+            const filename = `submodule-${sub.path.replace(/\//g,'_')}.json`;
+            fs.writeFileSync(filename, JSON.stringify(result));
+
+      - name: Upload submodule result artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: submodule-${{ matrix.submod.path }}
+          path: submodule-${{ matrix.submod.path.replace('/','_') }}.json
 
   # 3️⃣ Aggregate results from all matrix runs
   aggregate-submodules:
@@ -88,15 +94,25 @@ jobs:
     outputs:
       merged-submodules: ${{ steps.aggregate.outputs.merged_submodules }}
     steps:
+      - name: Download submodule artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: ./submodules-json
+
       - name: Aggregate submodule results
         id: aggregate
         run: |
-          # Collect all individual JSON files
-          jq -s '.' submodule-*.json > aggregated.json
+          jq -s '.' ./submodules-json/*.json > aggregated.json
           cat aggregated.json
           echo "merged_submodules=$(cat aggregated.json)" >> $GITHUB_OUTPUT
 
-    # 4️⃣ Bump only merged submodules (optimized)
+      - name: Clean up artifacts
+        run: |
+          rm -rf ./submodules-json
+          rm -f aggregated.json
+          echo "✅ Artifacts cleaned up."
+
+  # 4️⃣ Bump only merged submodules (optimized)
   bump-submodules:
     needs: aggregate-submodules
     runs-on: ubuntu-latest
@@ -118,6 +134,7 @@ jobs:
         with:
           script: |
             const { execSync } = require('child_process');
+            const fs = require('fs');
 
             const mergedSubmodules = ${{ fromJson(needs.aggregate-submodules.outputs.merged-submodules) }}
               .filter(s => s.result === "merged");
@@ -131,7 +148,6 @@ jobs:
 
             for (const sub of mergedSubmodules) {
               console.log(`🔧 Updating submodule ${sub.path}`);
-
               const urlWithToken = sub.repo.startsWith('https://')
                 ? sub.repo.replace('https://', `https://${process.env.CROSS_TOKEN}@`)
                 : sub.repo;
@@ -142,22 +158,19 @@ jobs:
                 { encoding: 'utf8' }
               ).trim();
 
-              // Get latest commit on default branch
+              // Get latest commit
               const latestCommit = execSync(
                 `git ls-remote ${urlWithToken} refs/heads/${defaultBranch} | awk '{print $1}'`,
                 { encoding: 'utf8' }
               ).trim();
 
-              // Check if submodule path exists locally
-              if (!require('fs').existsSync(sub.path)) {
+              if (!fs.existsSync(sub.path)) {
                 console.log(`Initializing submodule ${sub.path}`);
                 execSync(`git submodule add --branch ${defaultBranch} ${urlWithToken} ${sub.path}`);
               } else {
-                // Fetch only the default branch for this submodule
                 execSync(`git -C ${sub.path} fetch origin ${defaultBranch}`);
               }
 
-              // Get current commit
               const currentCommit = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
 
               if (currentCommit !== latestCommit) {
