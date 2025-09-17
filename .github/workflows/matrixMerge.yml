@@ -11,7 +11,6 @@ permissions:
 
 env:
   CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
-  GH_TOKEN: ${{ secrets.WORKFLOWS }}
 
 jobs:
   # 1️⃣ Detect /merge comment and get cached submodules
@@ -41,7 +40,7 @@ jobs:
             if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
             core.setOutput('submodules', jsonMatch[1]);
 
-  # 2️⃣ Process each submodule in parallel (matrix)
+  # 2️⃣ Merge submodule PRs in parallel
   process-submodules:
     needs: detect-submodules
     runs-on: ubuntu-latest
@@ -49,8 +48,6 @@ jobs:
       matrix:
         submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
       max-parallel: 4
-    outputs:
-      merged-submodules: ${{ steps.set-output.outputs.merged }}
     steps:
       - name: Merge submodule PR
         id: merge
@@ -63,37 +60,52 @@ jobs:
             const [owner, repo] = url.pathname.replace(/^\//,'').replace(/\.git$/,'').split('/');
             const pr = sub.pr_number;
 
+            let result;
             if (!pr) {
-              core.setOutput('result', JSON.stringify({ path: sub.path, repo: `${owner}/${repo}`, result: "skipped" }));
-              return;
+              result = { path: sub.path, repo: `${owner}/${repo}`, result: "skipped" };
+            } else {
+              try {
+                const res = await github.rest.pulls.merge({
+                  owner,
+                  repo,
+                  pull_number: pr,
+                  merge_method: "squash",
+                });
+                result = { path: sub.path, repo: `${owner}/${repo}`, result: "merged", sha: res.data.sha };
+              } catch (err) {
+                result = { path: sub.path, repo: `${owner}/${repo}`, result: "failed", error: err.message };
+              }
             }
 
-            try {
-              const res = await github.rest.pulls.merge({
-                owner,
-                repo,
-                pull_number: pr,
-                merge_method: "squash",
-              });
-              core.setOutput('result', JSON.stringify({ path: sub.path, repo: `${owner}/${repo}`, result: "merged", sha: res.data.sha }));
-            } catch (err) {
-              core.setOutput('result', JSON.stringify({ path: sub.path, repo: `${owner}/${repo}`, result: "failed", error: err.message }));
-            }
+            // Write individual result to file
+            const fs = require('fs');
+            fs.writeFileSync(`submodule-${sub.path.replace(/\//g,'_')}.json`, JSON.stringify(result));
 
-      - name: Set merged submodule output
-        id: set-output
-        run: echo "merged=${{ steps.merge.outputs.result }}" >> $GITHUB_OUTPUT
-
-  # 3️⃣ Check & bump only merged submodules
-  bump-submodules:
+  # 3️⃣ Aggregate results from all matrix runs
+  aggregate-submodules:
     needs: process-submodules
     runs-on: ubuntu-latest
+    outputs:
+      merged-submodules: ${{ steps.aggregate.outputs.merged_submodules }}
     steps:
-      - name: Checkout repository
+      - name: Aggregate submodule results
+        id: aggregate
+        run: |
+          # Collect all individual JSON files
+          jq -s '.' submodule-*.json > aggregated.json
+          cat aggregated.json
+          echo "merged_submodules=$(cat aggregated.json)" >> $GITHUB_OUTPUT
+
+    # 4️⃣ Bump only merged submodules (optimized)
+  bump-submodules:
+    needs: aggregate-submodules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (without submodules)
         uses: actions/checkout@v4
         with:
-          submodules: true
-          fetch-depth: 0
+          submodules: false
+          fetch-depth: 1
           token: ${{ env.CROSS_TOKEN }}
 
       - name: Determine branch
@@ -101,15 +113,13 @@ jobs:
         run: |
           echo "branch=$(git rev-parse --abbrev-ref HEAD)" >> $GITHUB_OUTPUT
 
-      - name: Bump merged submodules
+      - name: Bump merged submodules (optimized)
         uses: actions/github-script@v7
         with:
           script: |
             const { execSync } = require('child_process');
 
-            // Parse merged submodules from previous job
-            const mergedSubmodules = [${{ needs.process-submodules.outputs.merged-submodules }}]
-              .map(s => JSON.parse(s))
+            const mergedSubmodules = ${{ fromJson(needs.aggregate-submodules.outputs.merged-submodules) }}
               .filter(s => s.result === "merged");
 
             if (mergedSubmodules.length === 0) {
@@ -121,24 +131,36 @@ jobs:
 
             for (const sub of mergedSubmodules) {
               console.log(`🔧 Updating submodule ${sub.path}`);
+
               const urlWithToken = sub.repo.startsWith('https://')
                 ? sub.repo.replace('https://', `https://${process.env.CROSS_TOKEN}@`)
                 : sub.repo;
 
+              // Get default branch
               const defaultBranch = execSync(
                 `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
                 { encoding: 'utf8' }
               ).trim();
 
+              // Get latest commit on default branch
               const latestCommit = execSync(
                 `git ls-remote ${urlWithToken} refs/heads/${defaultBranch} | awk '{print $1}'`,
                 { encoding: 'utf8' }
               ).trim();
 
+              // Check if submodule path exists locally
+              if (!require('fs').existsSync(sub.path)) {
+                console.log(`Initializing submodule ${sub.path}`);
+                execSync(`git submodule add --branch ${defaultBranch} ${urlWithToken} ${sub.path}`);
+              } else {
+                // Fetch only the default branch for this submodule
+                execSync(`git -C ${sub.path} fetch origin ${defaultBranch}`);
+              }
+
+              // Get current commit
               const currentCommit = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
 
               if (currentCommit !== latestCommit) {
-                execSync(`git -C ${sub.path} fetch origin ${defaultBranch}`);
                 execSync(`git -C ${sub.path} reset --hard ${latestCommit}`);
                 execSync(`git add ${sub.path}`);
                 changed = true;
