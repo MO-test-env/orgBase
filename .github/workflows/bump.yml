@@ -72,3 +72,50 @@ jobs:
                 urlWithToken = sub.url.replace('https://', `https://${process.env.CROSS_TOKEN}@`);
               } else {
                 throw new Error(`Unsupported submodule URL: ${sub.url}`);
+              }
+
+              const defaultBranch = execSync(
+                `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
+                { encoding: 'utf8' }
+              ).trim();
+
+              const latestCommit = execSync(
+                `git ls-remote ${urlWithToken} refs/heads/${defaultBranch} | awk '{print $1}'`,
+                { encoding: 'utf8' }
+              ).trim();
+
+              const currentCommit = execSync(
+                `git rev-parse ${sub.path}`,
+                { encoding: 'utf8' }
+              ).trim();
+
+              console.log(`Default branch: ${defaultBranch}`);
+              console.log(`Latest commit on ${defaultBranch}: ${latestCommit}`);
+              console.log(`Current submodule commit: ${currentCommit}`);
+
+              if (currentCommit !== latestCommit) {
+                console.log(`⚠️  Submodule ${sub.name} is outdated. Updating...`);
+                execSync(`git -C ${sub.path} fetch origin ${defaultBranch}`);
+                execSync(`git -C ${sub.path} reset --hard ${latestCommit}`);
+                execSync(`git add ${sub.path}`);
+                changed = true;
+              } else {
+                console.log(`✅ Submodule ${sub.name} is up-to-date`);
+              }
+            }
+
+            if (changed) {
+              console.log('Committing updated submodules...');
+              execSync('git config user.name "github-actions[bot]"');
+              execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
+              execSync(`git commit -m "Bump submodules to latest default branch"`);
+              execSync(`git push origin ${process.env.GITHUB_REF_NAME}`);
+            } else {
+              console.log('All submodules are up-to-date, nothing to commit.');
+            }
+
+            console.log('🔧 Submodule inspection completed');
+
+      - name: Echo workflow end
+        if: always()
+        run: echo "✅ Submodule bump workflow finished"
