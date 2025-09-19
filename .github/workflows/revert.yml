@@ -71,14 +71,14 @@ jobs:
                   }
                 }
               `;
-              core.debug(`📡 PR Query: ${prQuery}`);
-              core.debug(`📌 Query Variables: owner=${owner}, repo=${repo}, prNumber=${prNumber}`);
+              core.info(`📡 PR Query: ${prQuery}`);
+              core.info(`📌 Query Variables: owner=${owner}, repo=${repo}, prNumber=${prNumber}`);
 
               const prData = await github.graphql(prQuery, { owner, repo, prNumber });
-              core.debug(`📥 PR Data Response: ${JSON.stringify(prData, null, 2)}`);
+              core.info(`📥 PR Data Response: ${JSON.stringify(prData, null, 2)}`);
 
               const prId = prData.repository.pullRequest.id;
-              core.debug(`🆔 PR Node ID: ${prId}`);
+              core.info(`🆔 PR Node ID: ${prId}`);
 
               // Revert PR mutation
               const revertMutation = `
@@ -91,31 +91,43 @@ jobs:
                   }
                 }
               `;
-              core.debug(`📡 Revert Mutation: ${revertMutation}`);
-              core.debug(`📌 Revert Variables: pullRequestId=${prId}`);
+              core.info(`📡 Revert Mutation: ${revertMutation}`);
+              core.info(`📌 Revert Variables: pullRequestId=${prId}`);
 
               const revertResponse = await github.graphql(revertMutation, {
                 input: { pullRequestId: prId }
               });
-              core.debug(`📥 Revert Response: ${JSON.stringify(revertResponse, null, 2)}`);
+              core.info(`📥 Revert Response: ${JSON.stringify(revertResponse, null, 2)}`);
 
-              const newPR = revertResponse.revertPullRequest.pullRequest;
-              core.info(`✅ Created revert PR #${newPR.number} (reverting original PR #${prNumber}) at ${newPR.url}`);
 
-              // Merge the new revert PR automatically
-              core.debug(`🔀 Merging revert PR #${newPR.number}`);
-              const mergeResponse = await github.rest.pulls.merge({
+              
+              const revertBranch = revertResponse.revertPullRequest.pullRequest.headRefName;
+              core.info(`✅ Revert PR branch created: ${revertBranch}`);
+
+              // Get the new PR number using REST
+              const { data: pullRequests } = await github.rest.pulls.list({
+                owner,
+                repo,
+                head: `${owner}:${revertBranch}`,
+                state: "open"
+              });
+
+              const newPR = pullRequests[0];
+              core.info(`✅ Created revert PR #${newPR.number} (reverting original PR #${prNumber}) at ${newPR.html_url}`);
+
+              // Merge the revert PR
+              await github.rest.pulls.merge({
                 owner,
                 repo,
                 pull_number: newPR.number,
                 merge_method: "squash",
               });
-              core.debug(`📥 Merge Response: ${JSON.stringify(mergeResponse, null, 2)}`);
+              core.info(`📥 Merge Response: ${JSON.stringify(mergeResponse, null, 2)}`);
 
               core.info(`✅ Successfully merged revert PR #${newPR.number}, undoing original PR #${prNumber}`);
             } catch (err) {
               core.error(`🔥 Failed to revert submodule PR #${prNumber} in ${repo}: ${err.message}`);
-              core.debug(err.stack);
+              core.info(err.stack);
             }
 
 
