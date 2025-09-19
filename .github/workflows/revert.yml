@@ -68,24 +68,24 @@ jobs:
                     number
                     url
                   }
-                  clientMutationId
                 }
               }
             `;
 
-            try {
-              const response = await github.graphql(query, {
-                input: {
-                  pullRequestId: (await github.rest.pulls.get({owner, repo, pull_number: prNumber})).data.node_id,
-                  commitHeadline: `Revert Submodule PR #${prNumber}`,
-                  revertBranchName: `revert-submodule-pr-${prNumber}-${Date.now()}`,
-                }
-              });
+            const prData = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: prNumber,
+            });
 
-              const newPR = response.revertPullRequest.pullRequest;
-              core.info(`✅ Created revert PR #${newPR.number} at ${newPR.url}`);
+            const response = await github.graphql(query, {
+              input: { pullRequestId: prData.data.node_id }
+            });
 
-              // Optional: Merge automatically
+            const newPR = response.revertPullRequest.pullRequest;
+            console.log(`✅ Created revert PR #${newPR.number} at ${newPR.url}`);
+
+              // Merge automatically
               await github.rest.pulls.merge({
                 owner,
                 repo,
