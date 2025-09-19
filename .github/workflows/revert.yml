@@ -316,7 +316,7 @@ jobs:
   revert-base:
     needs: 
       - create-base-revert-pr
-      - aggregate
+      - bump-submodules
     runs-on: ubuntu-latest
     steps:
       - name: Merge base PR
