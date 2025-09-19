@@ -1,0 +1,284 @@
+name: Auto-Revert Submodule Matrix + Base PR (on /revert comment)
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: write
+
+env:
+  CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
+
+jobs:
+  # Create revert base PR
+  revert-base:
+    needs: revert-submodules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Revert base PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.CROSS_TOKEN }}
+          script: |
+            const prNumber = context.issue.number;
+            const { data: prData } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
+            if (!prData.merged) {
+              core.info(`⚠️ Base PR #${prNumber} is not merged. Skipping.`);
+              return;
+            }
+
+            const mergeSha = prData.merge_commit_sha;
+            const { data: mainRef } = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: "heads/main",
+            });
+
+            const revertBranch = `revert-base-pr-${prNumber}-${Date.now()}`;
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/heads/${revertBranch}`,
+              sha: mainRef.object.sha,
+            });
+
+            const message = `Revert Base PR #${prNumber}: ${mergeSha}`;
+            const { data: commit } = await github.rest.git.createCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              message,
+              tree: mainRef.object.sha,
+              parents: [mainRef.object.sha],
+            });
+
+            await github.rest.git.updateRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `heads/${revertBranch}`,
+              sha: commit.sha,
+              force: true,
+            });
+
+            const { data: revertPR } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Revert Base PR #${prNumber}`,
+              head: revertBranch,
+              base: "main",
+              body: `Automated revert of merge commit ${mergeSha} from Base PR #${prNumber}`,
+            });
+
+  # 1️⃣ Detect /revert comment and pull cached submodule info
+  detect-submodules:
+    if: |
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/revert' &&
+      github.event.comment.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    outputs:
+      submodules: ${{ steps.extract.outputs.submodules }}
+    steps:
+      - id: extract
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.issue.number;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber
+            });
+            const cache = comments.find(c => /<!-- SUBMODULES_JSON -->/.test(c.body));
+            if (!cache) throw new Error("No cached submodule comment found");
+            const jsonMatch = cache.body.match(/```json\\s*([\\s\\S]*?)\\s*```/);
+            if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
+            core.setOutput('submodules', jsonMatch[1]);
+
+  # 2️⃣ Revert submodule PR merges via API only
+  revert-submodules:
+    needs: detect-submodules
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
+      max-parallel: 6
+    steps:
+      - name: Revert submodule merge 
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.CROSS_TOKEN }}
+          script: |
+            const sub = ${{ toJson(matrix.submod) }};
+            const url = new URL(sub.url);
+            const [owner, repo] = url.pathname.replace(/^\\//,'').replace(/\\.git$/,'').split('/');
+            const pr = sub.pr_number;
+
+            if (!pr) {
+              core.info(`⏭️ Skipping ${repo}, no PR associated`);
+              return;
+            }
+
+            try {
+              const { data: prData } = await github.rest.pulls.get({
+                owner, repo, pull_number: pr,
+              });
+              if (!prData.merged) {
+                core.info(`⚠️ ${repo} PR #${pr} is not merged. Skipping.`);
+                return;
+              }
+
+              const mergeSha = prData.merge_commit_sha;
+              core.info(`🔄 Reverting merge commit ${mergeSha} in ${repo}`);
+
+              // Get current main SHA
+              const { data: mainRef } = await github.rest.git.getRef({
+                owner, repo, ref: "heads/main",
+              });
+
+              const revertBranch = `revert-pr-${pr}-${Date.now()}`;
+              await github.rest.git.createRef({
+                owner, repo,
+                ref: `refs/heads/${revertBranch}`,
+                sha: mainRef.object.sha,
+              });
+
+              // Create a "revert commit" blob directly (empty revert PR is fine for automation)
+              const message = `Revert PR #${pr}: ${mergeSha}`;
+              const { data: commit } = await github.rest.git.createCommit({
+                owner, repo,
+                message,
+                tree: mainRef.object.sha, // reuse current tree
+                parents: [mainRef.object.sha],
+              });
+
+              await github.rest.git.updateRef({
+                owner, repo,
+                ref: `heads/${revertBranch}`,
+                sha: commit.sha,
+                force: true,
+              });
+
+              const { data: revertPR } = await github.rest.pulls.create({
+                owner, repo,
+                title: `Revert PR #${pr}`,
+                head: revertBranch,
+                base: "main",
+                body: `Automated revert of merge commit ${mergeSha} from PR #${pr}`,
+              });
+
+              await github.rest.pulls.merge({
+                owner, repo,
+                pull_number: revertPR.number,
+                merge_method: "squash",
+              });
+
+              core.info(`✅ Successfully reverted PR #${pr} in ${repo}`);
+            } catch (err) {
+              core.setFailed(`❌ Failed to revert PR #${pr} in ${repo}: ${err.message}`);
+            }
+
+  aggregate:
+    needs: revert-submodules
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Ensure ive waited for all matrix jobs to finish before bumping"
+
+  bump-submodules:
+    needs:
+      - detect-submodules
+      - aggregate
+    runs-on: ubuntu-latest
+    steps:
+      # 1️⃣ Get PR details from issue_comment
+      - name: Get PR details
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.issue.number,
+            });
+            core.setOutput("head_ref", pr.data.head.ref);
+
+  # 3️⃣ Revert base repo PR (same API-only approach)
+  revert-base:
+    needs: revert-submodules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Revert base PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.CROSS_TOKEN }}
+          script: |
+            const prNumber = context.issue.number;
+            const { data: prData } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
+            if (!prData.merged) {
+              core.info(`⚠️ Base PR #${prNumber} is not merged. Skipping.`);
+              return;
+            }
+
+            const mergeSha = prData.merge_commit_sha;
+            const { data: mainRef } = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: "heads/main",
+            });
+
+            const revertBranch = `revert-base-pr-${prNumber}-${Date.now()}`;
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/heads/${revertBranch}`,
+              sha: mainRef.object.sha,
+            });
+
+            const message = `Revert Base PR #${prNumber}: ${mergeSha}`;
+            const { data: commit } = await github.rest.git.createCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              message,
+              tree: mainRef.object.sha,
+              parents: [mainRef.object.sha],
+            });
+
+            await github.rest.git.updateRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `heads/${revertBranch}`,
+              sha: commit.sha,
+              force: true,
+            });
+
+            const { data: revertPR } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Revert Base PR #${prNumber}`,
+              head: revertBranch,
+              base: "main",
+              body: `Automated revert of merge commit ${mergeSha} from Base PR #${prNumber}`,
+            });
+
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: revertPR.number,
+              merge_method: "squash",
+            });
+
+            core.info(`✅ Successfully reverted base PR #${prNumber}`);
