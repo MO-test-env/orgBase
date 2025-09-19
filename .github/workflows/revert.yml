@@ -133,8 +133,7 @@ jobs:
               throw err;
             }
 
-
-  # Revert submodule PR merges via API only
+  # Revert submodule PR merges via GraphQL revertPullRequest + squash merge
   revert-submodules:
     needs: 
       - detect-submodules
@@ -161,6 +160,7 @@ jobs:
             }
 
             try {
+              // Check if the PR was merged
               const { data: prData } = await github.rest.pulls.get({
                 owner, repo, pull_number: pr,
               });
@@ -169,50 +169,58 @@ jobs:
                 return;
               }
 
-              const mergeSha = prData.merge_commit_sha;
-              core.info(`🔄 Reverting merge commit ${mergeSha} in ${repo}`);
+              core.info(`🔄 Reverting PR #${pr} in ${repo} using GraphQL revertPullRequest`);
 
-              // Get current main SHA
-              const { data: mainRef } = await github.rest.git.getRef({
-                owner, repo, ref: "heads/main",
+              // Get PR node ID via GraphQL
+              const query = `
+                query($owner: String!, $repo: String!, $prNumber: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $prNumber) {
+                      id
+                    }
+                  }
+                }
+              `;
+              const qres = await github.graphql(query, { owner, repo, prNumber: pr });
+              const prNodeId = qres.repository.pullRequest.id;
+
+              // Call revertPullRequest mutation
+              const mutation = `
+                mutation($input: RevertPullRequestInput!) {
+                  revertPullRequest(input: $input) {
+                    pullRequest {
+                      number
+                      headRefName
+                      state
+                    }
+                  }
+                }
+              `;
+              const revertRes = await github.graphql(mutation, {
+                input: {
+                  pullRequestId: prNodeId,
+                  clientMutationId: `${repo}-revert-${pr}-${Date.now()}`
+                }
               });
 
-              const revertBranch = `revert-pr-${pr}-${Date.now()}`;
-              await github.rest.git.createRef({
-                owner, repo,
-                ref: `refs/heads/${revertBranch}`,
-                sha: mainRef.object.sha,
-              });
+              const newPr = revertRes.revertPullRequest.pullRequest;
+              if (!newPr) {
+                throw new Error("GraphQL revert did not produce a PR");
+              }
 
-              // Create a "revert commit" blob directly (empty revert PR is fine for automation)
-              const message = `Revert PR #${pr}: ${mergeSha}`;
-              const { data: commit } = await github.rest.git.createCommit({
-                owner, repo,
-                message,
-                tree: mainRef.object.sha, // reuse current tree
-                parents: [mainRef.object.sha],
-              });
+              core.info(`📥 Created revert PR #${newPr.number} (${newPr.headRefName})`);
 
-              await github.rest.git.updateRef({
-                owner, repo,
-                ref: `heads/${revertBranch}`,
-                sha: commit.sha,
-                force: true,
-              });
-
-              const { data: revertPR } = await github.rest.pulls.create({
-                owner, repo,
-                title: `Revert PR #${pr}`,
-                head: revertBranch,
-                base: "main",
-                body: `Automated revert of merge commit ${mergeSha} from PR #${pr}`,
-              });
-
-              await github.rest.pulls.merge({
-                owner, repo,
-                pull_number: revertPR.number,
+              // Merge it via squash
+              const mergeRes = await github.rest.pulls.merge({
+                owner,
+                repo,
+                pull_number: newPr.number,
                 merge_method: "squash",
               });
+
+              if (!mergeRes.data.merged) {
+                throw new Error(`Failed to squash-merge revert PR #${newPr.number}`);
+              }
 
               core.info(`✅ Successfully reverted PR #${pr} in ${repo}`);
             } catch (err) {
