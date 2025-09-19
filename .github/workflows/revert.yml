@@ -150,28 +150,40 @@ jobs:
           github-token: ${{ env.CROSS_TOKEN }}
           script: |
             const sub = ${{ toJson(matrix.submod) }};
+            core.startGroup(`🔍 Processing submodule: ${sub.path}`);
+            core.info(`📌 Submodule info: ${JSON.stringify(sub, null, 2)}`);
+
             const url = new URL(sub.url);
             const [owner, repo] = url.pathname.replace(/^\\//,'').replace(/\\.git$/,'').split('/');
             const pr = sub.pr_number;
 
+            core.info(`➡️ Repo: ${owner}/${repo}`);
+            core.info(`➡️ PR Number: ${pr || "none"}`);
+
             if (!pr) {
               core.info(`⏭️ Skipping ${repo}, no PR associated`);
+              core.endGroup();
               return;
             }
 
             try {
-              // Check if the PR was merged
-              const { data: prData } = await github.rest.pulls.get({
-                owner, repo, pull_number: pr,
-              });
+              core.info(`🔎 Checking if PR #${pr} is merged...`);
+              const { data: prData } = await github.rest.pulls.get({ owner, repo, pull_number: pr });
+
+              core.info(`   • State: ${prData.state}`);
+              core.info(`   • Merged: ${prData.merged}`);
+              core.info(`   • Head: ${prData.head.ref}`);
+              core.info(`   • Base: ${prData.base.ref}`);
+
               if (!prData.merged) {
                 core.info(`⚠️ ${repo} PR #${pr} is not merged. Skipping.`);
+                core.endGroup();
                 return;
               }
 
-              core.info(`🔄 Reverting PR #${pr} in ${repo} using GraphQL revertPullRequest`);
+              core.info(`🔄 Reverting PR #${pr} in ${repo} using GraphQL revertPullRequest...`);
 
-              // Get PR node ID via GraphQL
+              // Get PR node ID
               const query = `
                 query($owner: String!, $repo: String!, $prNumber: Int!) {
                   repository(owner: $owner, name: $repo) {
@@ -183,6 +195,7 @@ jobs:
               `;
               const qres = await github.graphql(query, { owner, repo, prNumber: pr });
               const prNodeId = qres.repository.pullRequest.id;
+              core.info(`🆔 PR Node ID: ${prNodeId}`);
 
               // Call revertPullRequest mutation
               const mutation = `
@@ -208,9 +221,12 @@ jobs:
                 throw new Error("GraphQL revert did not produce a PR");
               }
 
-              core.info(`📥 Created revert PR #${newPr.number} (${newPr.headRefName})`);
+              core.info(`📥 Created revert PR #${newPr.number}`);
+              core.info(`   • Branch: ${newPr.headRefName}`);
+              core.info(`   • State: ${newPr.state}`);
 
               // Merge it via squash
+              core.info(`⚙️ Squash-merging revert PR #${newPr.number}...`);
               const mergeRes = await github.rest.pulls.merge({
                 owner,
                 repo,
@@ -218,13 +234,18 @@ jobs:
                 merge_method: "squash",
               });
 
+              core.info(`   • Merge response: ${JSON.stringify(mergeRes.data, null, 2)}`);
+
               if (!mergeRes.data.merged) {
                 throw new Error(`Failed to squash-merge revert PR #${newPr.number}`);
               }
 
               core.info(`✅ Successfully reverted PR #${pr} in ${repo}`);
             } catch (err) {
+              core.error(`❌ Error details: ${err.stack || err}`);
               core.setFailed(`❌ Failed to revert PR #${pr} in ${repo}: ${err.message}`);
+            } finally {
+              core.endGroup();
             }
 
   aggregate:
