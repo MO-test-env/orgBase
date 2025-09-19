@@ -358,4 +358,4 @@ jobs:
               merge_method: "squash",
             });
 
-            core.info(`✅ Successfully reverted base PR #${prNumber}`);
+            core.info(`✅ Successfully reverted base PR #${prNum}`);
