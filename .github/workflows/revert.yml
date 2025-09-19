@@ -148,86 +148,100 @@ jobs:
         with:
           github-token: ${{ env.CROSS_TOKEN }}
           script: |
-            const sub = ${{ toJson(matrix.submod) }};
-            core.startGroup(`🔍 Processing submodule: ${sub.path}`);
-
-            const url = new URL(sub.url);
-            const [owner, repo] = url.pathname.replace(/^\\//,'').replace(/\\.git$/,'').split('/');
-            const pr = sub.pr_number;
-
-            if (!pr) {
-              core.info(`⏭️ Skipping ${repo}, no PR associated`);
-              core.endGroup();
-              return;
-            }
-
             try {
-              // Get PR node ID via GraphQL
-              const prQuery = `
-                query($owner: String!, $repo: String!, $prNumber: Int!) {
-                  repository(owner: $owner, name: $repo) {
-                    pullRequest(number: $prNumber) {
-                      id
-                      mergeCommit { oid }
-                    }
-                  }
-                }
-              `;
-              const prRes = await github.graphql(prQuery, { owner, repo, prNumber: pr });
-              const prNodeId = prRes.repository.pullRequest.id;
-              const mergeSha = prRes.repository.pullRequest.mergeCommit?.oid;
-              if (!mergeSha) {
-                core.info(`⚠️ PR #${pr} in ${repo} is not merged. Skipping.`);
-                core.endGroup();
+              const sub = ${{ toJson(matrix.submod) }};
+              const url = new URL(sub.url);
+              const [owner, repo] = url.pathname.replace(/^\/|\.git$/g, '').split('/');
+              const prNumber = sub.pr_number;
+
+              core.info(`🔍 Fetching PR #${prNumber} in submodule ${repo}...`);
+
+              // Get PR data
+              const { data: prData } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: prNumber,
+              });
+
+              if (!prData.merged) {
+                core.info(`⚠️ Submodule PR #${prNumber} in ${repo} is not merged. Skipping.`);
                 return;
               }
 
-              // Create revert PR via GraphQL mutation
-              const revertMutation = `
-                mutation($input: RevertPullRequestInput!) {
-                  revertPullRequest(input: $input) {
-                    pullRequest {
-                      number
-                      headRefName
-                      state
-                    }
-                  }
-                }
-              `;
-              const revertRes = await github.graphql(revertMutation, {
-                input: {
-                  pullRequestId: prNodeId,
-                  clientMutationId: `${repo}-revert-${pr}-${Date.now()}`
-                }
+              const mergeSha = prData.merge_commit_sha;
+              core.info(`✅ Merge commit SHA: ${mergeSha}`);
+
+              // Get main branch reference
+              const { data: mainRef } = await github.rest.git.getRef({
+                owner,
+                repo,
+                ref: "heads/main",
+              });
+              core.info(`📌 main branch is at ${mainRef.object.sha}`);
+
+              // Fetch commit object for tree SHA
+              const { data: commitObj } = await github.rest.git.getCommit({
+                owner,
+                repo,
+                commit_sha: mainRef.object.sha,
+              });
+              core.info(`🌳 Tree SHA for main: ${commitObj.tree.sha}`);
+
+              // Create a new revert branch
+              const revertBranch = `revert-submodule-pr-${prNumber}-${Date.now()}`;
+              core.info(`🌿 Creating branch ${revertBranch}`);
+
+              await github.rest.git.createRef({
+                owner,
+                repo,
+                ref: `refs/heads/${revertBranch}`,
+                sha: mainRef.object.sha,
               });
 
-              const newPr = revertRes.revertPullRequest.pullRequest;
-              if (!newPr) throw new Error("GraphQL revert did not produce a PR");
-
-              core.info(`📥 Created revert PR #${newPr.number} (${newPr.headRefName})`);
-
-              // Merge the revert PR via GraphQL mutation
-              const mergeMutation = `
-                mutation($input: MergePullRequestInput!) {
-                  mergePullRequest(input: $input) {
-                    pullRequest { number merged }
-                  }
-                }
-              `;
-              const mergeRes = await github.graphql(mergeMutation, {
-                input: { pullRequestId: newPr.id, mergeMethod: "SQUASH" }
+              // Create commit on new branch
+              const message = `Revert Submodule PR #${prNumber}: ${mergeSha}`;
+              const { data: commit } = await github.rest.git.createCommit({
+                owner,
+                repo,
+                message,
+                tree: commitObj.tree.sha,
+                parents: [mainRef.object.sha],
               });
+              core.info(`✅ Created commit ${commit.sha}`);
 
-              if (!mergeRes.mergePullRequest.pullRequest.merged) {
-                throw new Error(`Failed to merge revert PR #${newPr.number}`);
-              }
+              // Update branch to new commit
+              await github.rest.git.updateRef({
+                owner,
+                repo,
+                ref: `heads/${revertBranch}`,
+                sha: commit.sha,
+                force: true,
+              });
+              core.info(`🔄 Updated branch ${revertBranch} to commit ${commit.sha}`);
 
-              core.info(`✅ Successfully reverted PR #${pr} in ${repo}`);
+              // Create revert PR
+              const { data: revertPR } = await github.rest.pulls.create({
+                owner,
+                repo,
+                title: `Revert Submodule PR #${prNumber}`,
+                head: revertBranch,
+                base: "main",
+                body: `Automated revert of merge commit ${mergeSha} from Submodule PR #${prNumber}`,
+              });
+              core.info(`✅ Created revert PR #${revertPR.number}`);
+
+              await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: revertPR.number,
+              merge_method: "squash",
+            });
+
             } catch (err) {
-              core.setFailed(`❌ Failed to revert PR #${pr} in ${repo}: ${err.message}`);
-            } finally {
-              core.endGroup();
+              core.error(`🔥 Error reverting submodule PR #${sub.pr_number} in ${sub.path}: ${err.stack || err}`);
+              throw err;
             }
+
 
   aggregate:
     needs: revert-submodules
