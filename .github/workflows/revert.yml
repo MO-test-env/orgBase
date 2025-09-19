@@ -59,120 +59,130 @@ jobs:
             const [owner, repo] = url.pathname.replace(/^\/|\.git$/g,'').split('/');
             const prNumber = sub.pr_number;
 
-            core.info(`🔍 Attempting GraphQL revert for ${repo} PR #${prNumber}`);
+            try {
+              core.info(`🔍 Fetching PR #${prNumber} in ${repo}`);
 
-            const query = `
-              mutation($input: RevertPullRequestInput!) {
-                revertPullRequest(input: $input) {
-                  pullRequest {
-                    number
-                    url
+              // Get PR node ID via GraphQL
+              const prQuery = `
+                query($owner: String!, $repo: String!, $prNumber: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $prNumber) {
+                      id
+                    }
                   }
                 }
-              }
-            `;
+              `;
+              const prData = await github.graphql(prQuery, { owner, repo, prNumber });
+              const prId = prData.repository.pullRequest.id;
 
-            const prData = await github.rest.pulls.get({
-              owner,
-              repo,
-              pull_number: prNumber,
-            });
+              // Revert PR
+              const revertMutation = `
+                mutation($input: RevertPullRequestInput!) {
+                  revertPullRequest(input: $input) {
+                    pullRequest {
+                      number
+                      url
+                    }
+                  }
+                }
+              `;
+              const revertResponse = await github.graphql(revertMutation, {
+                input: { pullRequestId: prId }
+              });
 
-            const response = await github.graphql(query, {
-              input: { pullRequestId: prData.data.node_id }
-            });
+              const newPR = revertResponse.revertPullRequest.pullRequest;
+              core.info(`✅ Created revert PR #${newPR.number} at ${newPR.url}`);
 
-            const newPR = response.revertPullRequest.pullRequest;
-            console.log(`✅ Created revert PR #${newPR.number} at ${newPR.url}`);
-
-              // Merge automatically
+              // Merge revert PR automatically
               await github.rest.pulls.merge({
                 owner,
                 repo,
                 pull_number: newPR.number,
                 merge_method: "squash",
               });
-              core.info(`✅ Reverted submodule PR #${prNumber}`);
+
+              core.info(`✅ Successfully reverted submodule PR #${prNumber}`);
             } catch (err) {
               core.error(`🔥 Failed to revert submodule PR #${prNumber} in ${repo}: ${err.message}`);
             }
 
-  # Revert base PR using GraphQL
-  revert-base:
-    needs: detect-submodules
-    runs-on: ubuntu-latest
-    steps:
-      - name: Revert base PR via GraphQL
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.CROSS_TOKEN }}
-          script: |
-            const prNumber = context.issue.number;
-            core.info(`🔍 Attempting GraphQL revert for base PR #${prNumber}`);
 
-            const basePR = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber
-            });
+  # # Revert base PR using GraphQL
+  # revert-base:
+  #   needs: detect-submodules
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Revert base PR via GraphQL
+  #       uses: actions/github-script@v7
+  #       with:
+  #         github-token: ${{ env.CROSS_TOKEN }}
+  #         script: |
+  #           const prNumber = context.issue.number;
+  #           core.info(`🔍 Attempting GraphQL revert for base PR #${prNumber}`);
 
-            if (!basePR.data.merged) {
-              core.info(`⚠️ Base PR #${prNumber} not merged. Skipping revert.`);
-              return;
-            }
+  #           const basePR = await github.rest.pulls.get({
+  #             owner: context.repo.owner,
+  #             repo: context.repo.repo,
+  #             pull_number: prNumber
+  #           });
 
-            const query = `
-              mutation($input: RevertPullRequestInput!) {
-                revertPullRequest(input: $input) {
-                  pullRequest { number url }
-                }
-              }
-            `;
+  #           if (!basePR.data.merged) {
+  #             core.info(`⚠️ Base PR #${prNumber} not merged. Skipping revert.`);
+  #             return;
+  #           }
 
-            const response = await github.graphql(query, {
-              input: {
-                pullRequestId: basePR.data.node_id,
-                commitHeadline: `Revert Base PR #${prNumber}`,
-                revertBranchName: `revert-base-pr-${prNumber}-${Date.now()}`,
-              }
-            });
+  #           const query = `
+  #             mutation($input: RevertPullRequestInput!) {
+  #               revertPullRequest(input: $input) {
+  #                 pullRequest { number url }
+  #               }
+  #             }
+  #           `;
 
-            const newPR = response.revertPullRequest.pullRequest;
-            core.info(`✅ Created revert PR #${newPR.number} at ${newPR.url}`);
+  #           const response = await github.graphql(query, {
+  #             input: {
+  #               pullRequestId: basePR.data.node_id,
+  #               commitHeadline: `Revert Base PR #${prNumber}`,
+  #               revertBranchName: `revert-base-pr-${prNumber}-${Date.now()}`,
+  #             }
+  #           });
 
-            ## hypothetcally bump here
+  #           const newPR = response.revertPullRequest.pullRequest;
+  #           core.info(`✅ Created revert PR #${newPR.number} at ${newPR.url}`);
 
-            await github.rest.pulls.merge({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: newPR.number,
-              merge_method: "squash",
-            });
-            core.info(`✅ Reverted base PR #${prNumber}`);
+  #           ## hypothetcally bump here
+
+  #           await github.rest.pulls.merge({
+  #             owner: context.repo.owner,
+  #             repo: context.repo.repo,
+  #             pull_number: newPR.number,
+  #             merge_method: "squash",
+  #           });
+  #           core.info(`✅ Reverted base PR #${prNumber}`);
   
-  dispatch-submodule-bump:
-    needs: 
-      - revert-submodules
-      - revert-base
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger Check and Bump Submodules workflow
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.CROSS_TOKEN }}
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const workflowFileName = "bump.yml";
-            const ref = "main"; // branch to run workflow on
+  # dispatch-submodule-bump:
+  #   needs: 
+  #     - revert-submodules
+  #     - revert-base
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Trigger Check and Bump Submodules workflow
+  #       uses: actions/github-script@v7
+  #       with:
+  #         github-token: ${{ env.CROSS_TOKEN }}
+  #         script: |
+  #           const owner = context.repo.owner;
+  #           const repo = context.repo.repo;
+  #           const workflowFileName = "bump.yml";
+  #           const ref = "main"; // branch to run workflow on
 
-            console.log(`🚀 Dispatching workflow '${workflowFileName}' on ${ref}...`);
+  #           console.log(`🚀 Dispatching workflow '${workflowFileName}' on ${ref}...`);
 
-            await github.rest.actions.createWorkflowDispatch({
-              owner,
-              repo,
-              workflow_id: workflowFileName,
-              ref
-            });
+  #           await github.rest.actions.createWorkflowDispatch({
+  #             owner,
+  #             repo,
+  #             workflow_id: workflowFileName,
+  #             ref
+  #           });
 
-            console.log("✅ Workflow dispatched successfully");
+  #           console.log("✅ Workflow dispatched successfully");
