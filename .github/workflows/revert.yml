@@ -96,17 +96,25 @@ jobs:
 
             core.info(`Revert PR requested via GraphQL: ${JSON.stringify(revertResponse)}`);
 
-            // Get the new revert PR number via REST
+            await new Promise(resolve => setTimeout(resolve, 3000));
             const { data: pulls } = await github.rest.pulls.list({
               owner,
               repo,
               state: 'open',
               sort: 'created',
-              direction: 'desc'
+              direction: 'desc',
+              per_page: 5
             });
-            const revertPR = pulls.find(p => p.title.includes(`Revert "${prNumber}"`) || p.body.includes(`Revert "${prNumber}"`));
-            if (!revertPR) throw new Error(`❌ Could not find revert PR for original PR #${prNumber}`);
 
+            core.info("Recent PRs:");
+            pulls.forEach(p => core.info(`- #${p.number}: ${p.title}`));
+
+            const revertPR = pulls.find(p => 
+              p.body?.includes(`#${prNumber}`) || 
+              p.title?.includes(`#${prNumber}`)
+            );
+
+            if (!revertPR) throw new Error(`❌ Could not find revert PR for original PR #${prNumber}`);
             core.info(`🔢 Revert PR number: ${revertPR.number}`);
 
             // Merge the revert PR
