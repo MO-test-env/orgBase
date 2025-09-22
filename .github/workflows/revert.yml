@@ -55,41 +55,31 @@ jobs:
             const url = new URL(sub.url);
             const [owner, repo] = url.pathname.replace(/^\/|\.git$/g,'').split('/');
             const prNumber = sub.pr_number;
-            const branch = `revert-pr-${prNumber}`;
 
+            // Get PR info
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-            if (!pr.merged) return;
-
-            let newPR;
-            try {
-              const revert = await github.graphql(
-                `mutation($input: RevertPullRequestInput!) {
-                  revertPullRequest(input: $input) {
-                    pullRequest { number url }
-                  }
-                }`,
-                {
-                  input: {
-                    pullRequestId: pr.node_id,
-                    revertBranchName: branch
-                  }
-                }
-              );
-              newPR = revert.revertPullRequest.pullRequest;
-            } catch (e) {
-              if (/already exists/i.test(e.message)) {
-                const { data: prs } = await github.rest.pulls.list({
-                  owner,
-                  repo,
-                  head: `${owner}:${branch}`,
-                  state: "open"
-                });
-                if (prs.length) newPR = prs[0];
-                else throw e;
-              } else throw e;
+            if (!pr.merged) {
+              core.info(`⚠️ PR #${prNumber} in ${repo} is not merged, skipping`);
+              return;
             }
 
-            await github.rest.pulls.merge({ owner, repo, pull_number: newPR.number, merge_method: "squash" });
+            // Use REST API to revert
+            const { data: revert } = await github.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/revert", {
+              owner,
+              repo,
+              pull_number: prNumber
+            });
+
+            core.info(`🔄 Created revert PR #${revert.number} in ${repo}`);
+
+            // Merge the new revert PR
+            await github.rest.pulls.merge({
+              owner,
+              repo,
+              pull_number: revert.number,
+              merge_method: "squash"
+            });
+            core.info(`✅ Reverted PR #${prNumber} in ${repo}`);
 
   revert-base:
     needs: revert-submodules
@@ -100,8 +90,6 @@ jobs:
           github-token: ${{ env.CROSS_TOKEN }}
           script: |
             const prNumber = context.issue.number;
-            const branch = `revert-base-pr-${prNumber}`;
-
             const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -109,39 +97,16 @@ jobs:
             });
             if (!pr.merged) return;
 
-            let newPR;
-            try {
-              const revert = await github.graphql(
-                `mutation($input: RevertPullRequestInput!) {
-                  revertPullRequest(input: $input) {
-                    pullRequest { number url }
-                  }
-                }`,
-                {
-                  input: {
-                    pullRequestId: pr.node_id,
-                    revertBranchName: branch
-                  }
-                }
-              );
-              newPR = revert.revertPullRequest.pullRequest;
-            } catch (e) {
-              if (/already exists/i.test(e.message)) {
-                const { data: prs } = await github.rest.pulls.list({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  head: `${context.repo.owner}:${branch}`,
-                  state: "open"
-                });
-                if (prs.length) newPR = prs[0];
-                else throw e;
-              } else throw e;
-            }
+            const { data: revert } = await github.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/revert", {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
+            });
 
             await github.rest.pulls.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: newPR.number,
+              pull_number: revert.number,
               merge_method: "squash"
             });
 
