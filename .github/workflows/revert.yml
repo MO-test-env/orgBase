@@ -79,7 +79,7 @@ jobs:
             const prId = prData.repository.pullRequest.id;
             core.info(`🆔 PR Node ID: ${prId}`);
 
-              // Revert PR mutation – include a unique branch name to avoid “already exists” errors
+            // Revert PR mutation – include a unique branch name to avoid “already exists” errors
             const revertBranchName = `revert-${prNumber}-${Date.now()}`;
             const revertMutation = `
               mutation($input: RevertPullRequestInput!) {
@@ -122,6 +122,7 @@ jobs:
               } else {
                 throw e; // re‑throw unexpected errors
               }
+            }
 
             const revertBranch = revertResponse.revertPullRequest.pullRequest.headRefName;
             core.info(`✅ Revert PR branch created/found: ${revertBranch}`);
