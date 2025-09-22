@@ -1,19 +1,19 @@
-name: Auto-Revert Submodule Matrix + Base PR (on /revert comment)
+name: Auto-Revert Submodules + Base PR
 
 on:
   issue_comment:
     types: [created]
 
 permissions:
-  issues: write
   pull-requests: write
   contents: write
+  issues: write
+  actions: write
 
 env:
   CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
 
 jobs:
-  # Detect /revert comment and cached submodule info
   detect-submodules:
     if: |
       github.event.issue.pull_request != null &&
@@ -35,22 +35,19 @@ jobs:
               issue_number: prNumber
             });
             const cache = comments.find(c => /<!-- SUBMODULES_JSON -->/.test(c.body));
-            if (!cache) throw new Error("No cached submodule comment found");
+            if (!cache) { core.setOutput("submodules", "[]"); return; }
             const jsonMatch = cache.body.match(/```json\s*([\s\S]*?)\s*```/);
-            if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
-            core.setOutput('submodules', jsonMatch[1]);
+            core.setOutput('submodules', jsonMatch ? jsonMatch[1] : "[]");
 
-  # Revert submodule PRs using GraphQL
   revert-submodules:
     needs: detect-submodules
+    if: needs.detect-submodules.outputs.submodules != '[]'
     runs-on: ubuntu-latest
     strategy:
       matrix:
         submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
-      max-parallel: 6
     steps:
-      - name: Revert submodule PR via GraphQL
-        uses: actions/github-script@v7
+      - uses: actions/github-script@v7
         with:
           github-token: ${{ env.CROSS_TOKEN }}
           script: |
@@ -58,174 +55,114 @@ jobs:
             const url = new URL(sub.url);
             const [owner, repo] = url.pathname.replace(/^\/|\.git$/g,'').split('/');
             const prNumber = sub.pr_number;
-            core.info(`🔍 Fetching original PR #${prNumber} in ${repo}`);
+            const branch = `revert-pr-${prNumber}`;
 
-            // Get PR node ID via GraphQL
-            const prQuery = `
-              query($owner: String!, $repo: String!, $prNumber: Int!) {
-                repository(owner: $owner, name: $repo) {
-                  pullRequest(number: $prNumber) {
-                    id
-                  }
-                }
-              }
-            `;
-            core.info(`📡 PR Query: ${prQuery}`);
-            core.info(`📌 Query Variables: owner=${owner}, repo=${repo}, prNumber=${prNumber}`);
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            if (!pr.merged) return;
 
-            const prData = await github.graphql(prQuery, { owner, repo, prNumber });
-            core.info(`📥 PR Data Response: ${JSON.stringify(prData, null, 2)}`);
-
-            const prId = prData.repository.pullRequest.id;
-            core.info(`🆔 PR Node ID: ${prId}`);
-
-            // Revert PR mutation – include a unique branch name to avoid “already exists” errors
-            const revertBranchName = `revert-${prNumber}-${Date.now()}`;
-            const revertMutation = `
-              mutation($input: RevertPullRequestInput!) {
-                revertPullRequest(input: $input) {
-                  pullRequest {
-                    number
-                    url
-                    headRefName
-                  }
-                }
-              }
-            `;
-            core.info(`📡 Revert Mutation: ${revertMutation}`);
-            core.info(`📌 Revert Variables: pullRequestId=${prId}, revertBranchName=${revertBranchName}`);
-
-            let revertResponse;
+            let newPR;
             try {
-              revertResponse = await github.graphql(revertMutation, {
-                input: {
-                  pullRequestId: prId,
-                  revertBranchName: revertBranchName
+              const revert = await github.graphql(
+                `mutation($input: RevertPullRequestInput!) {
+                  revertPullRequest(input: $input) {
+                    pullRequest { number url }
+                  }
+                }`,
+                {
+                  input: {
+                    pullRequestId: pr.node_id,
+                    revertBranchName: branch
+                  }
                 }
-              });
+              );
+              newPR = revert.revertPullRequest.pullRequest;
             } catch (e) {
-              // If a revert PR already exists GitHub returns a validation error.
-              // Detect that case, locate the existing PR and continue with merging.
-              if (/already exists/.test(e.message)) {
-                core.warning(`⚠️ Revert PR already exists for PR #${prNumber}. Attempting to locate it.`);
-                const existingPRs = await github.rest.pulls.list({
+              if (/already exists/i.test(e.message)) {
+                const { data: prs } = await github.rest.pulls.list({
                   owner,
                   repo,
-                  head: `${owner}:${revertBranchName.split('-').slice(0,2).join('-')}`, // e.g. revert-27
+                  head: `${owner}:${branch}`,
                   state: "open"
                 });
-                if (existingPRs.data.length === 0) {
-                  core.setFailed(`❌ Could not find existing revert PR for #${prNumber}.`);
-                  return;
-                }
-                revertResponse = { revertPullRequest: { pullRequest: existingPRs.data[0] } };
-              } else {
-                throw e; // re‑throw unexpected errors
-              }
+                if (prs.length) newPR = prs[0];
+                else throw e;
+              } else throw e;
             }
 
-            const revertBranch = revertResponse.revertPullRequest.pullRequest.headRefName;
-            core.info(`✅ Revert PR branch created/found: ${revertBranch}`);
+            await github.rest.pulls.merge({ owner, repo, pull_number: newPR.number, merge_method: "squash" });
 
-            // Get the new PR number (either freshly created or already existing)
-            const { data: pullRequests } = await github.rest.pulls.list({
-              owner,
-              repo,
-              head: `${owner}:${revertBranch}`,
-              state: "open"
+  revert-base:
+    needs: revert-submodules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.CROSS_TOKEN }}
+          script: |
+            const prNumber = context.issue.number;
+            const branch = `revert-base-pr-${prNumber}`;
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber
             });
+            if (!pr.merged) return;
 
-            const newPR = pullRequests[0];
-            core.info(`✅ Using revert PR #${newPR.number} (reverting original PR #${prNumber}) at ${newPR.html_url}`);
+            let newPR;
+            try {
+              const revert = await github.graphql(
+                `mutation($input: RevertPullRequestInput!) {
+                  revertPullRequest(input: $input) {
+                    pullRequest { number url }
+                  }
+                }`,
+                {
+                  input: {
+                    pullRequestId: pr.node_id,
+                    revertBranchName: branch
+                  }
+                }
+              );
+              newPR = revert.revertPullRequest.pullRequest;
+            } catch (e) {
+              if (/already exists/i.test(e.message)) {
+                const { data: prs } = await github.rest.pulls.list({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  head: `${context.repo.owner}:${branch}`,
+                  state: "open"
+                });
+                if (prs.length) newPR = prs[0];
+                else throw e;
+              } else throw e;
+            }
 
-            // Merge the revert PR
-            const mergeResponse = await github.rest.pulls.merge({
-              owner,
-              repo,
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
               pull_number: newPR.number,
-              merge_method: "squash",
+              merge_method: "squash"
             });
-            core.info(`📥 Merge Response: ${JSON.stringify(mergeResponse, null, 2)}`);
 
-            core.info(`✅ Successfully merged revert PR #${newPR.number}, undoing original PR #${prNumber}`);
+  bump-submodules:
+    needs: [revert-submodules, revert-base]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.CROSS_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const workflowFileName = "bump.yml";
+            const ref = "main";
 
-
-  # # Revert base PR using GraphQL
-  # revert-base:
-  #   needs: detect-submodules
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Revert base PR via GraphQL
-  #       uses: actions/github-script@v7
-  #       with:
-  #         github-token: ${{ env.CROSS_TOKEN }}
-  #         script: |
-  #           const prNumber = context.issue.number;
-  #           core.info(`🔍 Attempting GraphQL revert for base PR #${prNumber}`);
-
-  #           const basePR = await github.rest.pulls.get({
-  #             owner: context.repo.owner,
-  #             repo: context.repo.repo,
-  #             pull_number: prNumber
-  #           });
-
-  #           if (!basePR.data.merged) {
-  #             core.info(`⚠️ Base PR #${prNumber} not merged. Skipping revert.`);
-  #             return;
-  #           }
-
-  #           const query = `
-  #             mutation($input: RevertPullRequestInput!) {
-  #               revertPullRequest(input: $input) {
-  #                 pullRequest { number url }
-  #               }
-  #             }
-  #           `;
-
-  #           const response = await github.graphql(query, {
-  #             input: {
-  #               pullRequestId: basePR.data.node_id,
-  #               commitHeadline: `Revert Base PR #${prNumber}`,
-  #               revertBranchName: `revert-base-pr-${prNumber}-${Date.now()}`,
-  #             }
-  #           });
-
-  #           const newPR = response.revertPullRequest.pullRequest;
-  #           core.info(`✅ Created revert PR #${newPR.number} at ${newPR.url}`);
-
-  #           ## hypothetcally bump here
-
-  #           await github.rest.pulls.merge({
-  #             owner: context.repo.owner,
-  #             repo: context.repo.repo,
-  #             pull_number: newPR.number,
-  #             merge_method: "squash",
-  #           });
-  #           core.info(`✅ Reverted base PR #${prNumber}`);
-  
-  # dispatch-submodule-bump:
-  #   needs: 
-  #     - revert-submodules
-  #     - revert-base
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Trigger Check and Bump Submodules workflow
-  #       uses: actions/github-script@v7
-  #       with:
-  #         github-token: ${{ env.CROSS_TOKEN }}
-  #         script: |
-  #           const owner = context.repo.owner;
-  #           const repo = context.repo.repo;
-  #           const workflowFileName = "bump.yml";
-  #           const ref = "main"; // branch to run workflow on
-
-  #           console.log(`🚀 Dispatching workflow '${workflowFileName}' on ${ref}...`);
-
-  #           await github.rest.actions.createWorkflowDispatch({
-  #             owner,
-  #             repo,
-  #             workflow_id: workflowFileName,
-  #             ref
-  #           });
-
-  #           console.log("✅ Workflow dispatched successfully");
+            console.log(`🚀 Dispatching '${workflowFileName}' on ${ref}...`);
+            await github.rest.actions.createWorkflowDispatch({
+              owner,
+              repo,
+              workflow_id: workflowFileName,
+              ref
+            });
+            console.log("✅ Bump workflow dispatched successfully");
