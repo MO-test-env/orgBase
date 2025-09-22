@@ -55,6 +55,9 @@ jobs:
             const url = new URL(sub.url);
             const [owner, repo] = url.pathname.replace(/^\/|\.git$/g,'').split('/');
             const prNumber = sub.pr_number;
+
+            core.info(`🔍 Processing PR #${prNumber} in ${repo}`);
+
             // Get PR Node ID via GraphQL
             const prNodeQuery = `
               query($owner: String!, $repo: String!, $prNumber: Int!) {
@@ -79,43 +82,67 @@ jobs:
             }
             const prNodeId = prNode.id;
             core.info(`PR Node ID for #${prNumber}: ${prNodeId}`);
-          
-            // Revert PR via GraphQL
-            const revertMutation = `
-              mutation($input: RevertPullRequestInput!) {
-                revertPullRequest(input: $input) {
-                  pullRequest {
-                    id
-                  }
-                }
-              }
-            `;
-            const revertResponse = await github.graphql(revertMutation, {
-              input: { pullRequestId: prNodeId }
-            });
 
-            core.info(`Revert PR requested via GraphQL: ${JSON.stringify(revertResponse)}`);
-
-            await new Promise(resolve => setTimeout(resolve, 3000));
-            const { data: pulls } = await github.rest.pulls.list({
+            // Check if a revert PR already exists
+            const { data: openPRs } = await github.rest.pulls.list({
               owner,
               repo,
               state: 'open',
               sort: 'created',
               direction: 'desc',
-              per_page: 5
+              per_page: 20
             });
 
-            core.info("Recent PRs:");
-            pulls.forEach(p => core.info(`- #${p.number}: ${p.title}`));
-
-            const revertPR = pulls.find(p => 
-              p.body?.includes(`#${prNumber}`) || 
-              p.title?.includes(`#${prNumber}`)
+            let revertPR = openPRs.find(p =>
+              p.title.includes(`Revert "${prNumber}"`) || p.body?.includes(`#${prNumber}`)
             );
 
-            if (!revertPR) throw new Error(`❌ Could not find revert PR for original PR #${prNumber}`);
-            core.info(`🔢 Revert PR number: ${revertPR.number}`);
+            // If no existing revert PR, create it via GraphQL
+            if (!revertPR) {
+              core.info(`No existing revert PR found for #${prNumber}, creating...`);
+              try {
+                await github.graphql(`
+                  mutation($input: RevertPullRequestInput!) {
+                    revertPullRequest(input: $input) {
+                      pullRequest {
+                        id
+                      }
+                    }
+                  }
+                `, { input: { pullRequestId: prNodeId } });
+
+                // Wait briefly to allow the new PR to appear in REST
+                await new Promise(resolve => setTimeout(resolve, 3000));
+
+                const { data: recentPRs } = await github.rest.pulls.list({
+                  owner,
+                  repo,
+                  state: 'open',
+                  sort: 'created',
+                  direction: 'desc',
+                  per_page: 5
+                });
+
+                revertPR = recentPRs.find(p =>
+                  p.title.includes(`Revert "${prNumber}"`) || p.body?.includes(`#${prNumber}`)
+                );
+
+                if (!revertPR) throw new Error(`❌ Could not find revert PR after creating it for PR #${prNumber}`);
+                core.info(`🔄 Created revert PR #${revertPR.number}`);
+              } catch (err) {
+                // Handle race condition where GitHub already created a revert PR
+                if (err.message.includes('Validation failed: A pull request already exists')) {
+                  core.info(`⚠️ A revert PR already exists for #${prNumber}, using existing PR`);
+                  revertPR = openPRs.find(p =>
+                    p.title.includes(`Revert "${prNumber}"`) || p.body?.includes(`#${prNumber}`)
+                  );
+                } else {
+                  throw err;
+                }
+              }
+            } else {
+              core.info(`⚠️ Existing revert PR found #${revertPR.number}, skipping creation`);
+            }
 
             // Merge the revert PR
             await github.rest.pulls.merge({
@@ -125,7 +152,6 @@ jobs:
               merge_method: "squash"
             });
             core.info(`✅ Successfully merged revert PR #${revertPR.number} for original PR #${prNumber}`);
-
 
   # revert-base:
   #   needs: revert-submodules
