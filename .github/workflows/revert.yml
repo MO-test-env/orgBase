@@ -91,11 +91,12 @@ jobs:
               }
             `;
             const revertResponse = await github.graphql(revertMutation, {
-              input: { pullRequestId: `PRID_${prNumber}` } // PRID is placeholder, will replace
+              input: { pullRequestId: prNodeId }
             });
-            core.info(`🔄 Requested revert PR for #${prNumber}`);
 
-            // Get the newly created revert PR number via REST
+            core.info(`Revert PR requested via GraphQL: ${JSON.stringify(revertResponse)}`);
+
+            // Get the new revert PR number via REST
             const { data: pulls } = await github.rest.pulls.list({
               owner,
               repo,
@@ -103,8 +104,8 @@ jobs:
               sort: 'created',
               direction: 'desc'
             });
-            const revertPR = pulls.find(p => p.title.includes(`Revert "${prNumber}"`));
-            if (!revertPR) throw new Error(`❌ Could not find revert PR for #${prNumber}`);
+            const revertPR = pulls.find(p => p.title.includes(`Revert "${prNumber}"`) || p.body.includes(`Revert "${prNumber}"`));
+            if (!revertPR) throw new Error(`❌ Could not find revert PR for original PR #${prNumber}`);
 
             core.info(`🔢 Revert PR number: ${revertPR.number}`);
 
@@ -116,6 +117,7 @@ jobs:
               merge_method: "squash"
             });
             core.info(`✅ Successfully merged revert PR #${revertPR.number} for original PR #${prNumber}`);
+
 
   # revert-base:
   #   needs: revert-submodules
