@@ -97,9 +97,6 @@ jobs:
                   }
                 `, { input: { pullRequestId: prNodeId } });
 
-                // Wait briefly to allow the new PR to appear in REST
-                await new Promise(resolve => setTimeout(resolve, 3000));
-
                 const { data: recentPRs } = await github.rest.pulls.list({
                   owner, repo, state: 'open', sort: 'created', direction: 'desc', per_page: 5
                 });
@@ -132,13 +129,87 @@ jobs:
             core.info(`✅ Successfully merged revert PR #${revertPR.number} for original PR #${prNumber}`);
 
   aggregate:
-      needs: revert-submodules
-      runs-on: ubuntu-latest
-      steps:
-        - run: echo "Ensure ive waited for all matrix jobs to finish before bumping"
+    needs: revert-submodules
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All submodule reverts completed. Ready to bump."
+
+  bump-submodules:
+    needs:
+      - detect-submodules
+      - aggregate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get PR branch
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.issue.number
+            });
+            core.setOutput("head_ref", pr.data.head.ref);
+
+      - name: Checkout base repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ env.CROSS_TOKEN }}
+          ref: ${{ steps.pr.outputs.head_ref }}
+
+      - name: Authenticate submodules
+        run: |
+          git config --global url."https://${{ env.CROSS_TOKEN }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
+          git submodule sync --recursive
+          git submodule update --init --recursive
+
+      - name: Bump submodules
+        uses: actions/github-script@v7
+        env:
+          SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
+          TOKEN: ${{ env.CROSS_TOKEN }}
+          BRANCH: ${{ steps.pr.outputs.head_ref }}
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            let submodules = JSON.parse(process.env.SUBMODULES);
+            let changed = false;
+
+            for (const sub of submodules) {
+              console.log(`🔧 Updating submodule ${sub.repo} at ${sub.path}`);
+              const urlWithToken = sub.url.startsWith('https://') ? sub.url.replace('https://', `https://${process.env.TOKEN}@`) : sub.url;
+
+              execSync(`git submodule update --init ${sub.path}`, { stdio: 'inherit' });
+
+              const defaultBranch = execSync(
+                `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
+                { encoding: 'utf8' }
+              ).trim();
+
+              execSync(`git -C ${sub.path} fetch origin ${defaultBranch}:${defaultBranch}`, { stdio: 'inherit' });
+              const latest = execSync(`git ls-remote ${urlWithToken} refs/heads/${defaultBranch} | awk '{print $1}'`, { encoding: 'utf8' }).trim();
+              const current = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
+
+              if (current !== latest) {
+                console.log(`⚠️ Resetting ${sub.repo} to ${latest}`);
+                execSync(`git -C ${sub.path} reset --hard ${latest}`, { stdio: 'inherit' });
+                execSync(`git add ${sub.path}`);
+                changed = true;
+              } else console.log(`✅ ${sub.repo} up-to-date`);
+            }
+
+            if (changed) {
+              execSync('git config user.name "github-actions[bot]"');
+              execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
+              execSync(`git commit -m "Bump submodules to latest default branch"`);
+              execSync(`git push origin ${process.env.BRANCH}`);
+            } else console.log('✅ All submodules already up-to-date');
 
   revert-base:
-    needs: revert-submodules
+    needs: bump-submodules
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
@@ -153,38 +224,23 @@ jobs:
             });
             if (!pr.merged) return;
 
-            // Get PR Node ID
-            const query = `
+            const prNodeResp = await github.graphql(`
               query($owner: String!, $repo: String!, $prNumber: Int!) {
                 repository(owner: $owner, name: $repo) {
-                  pullRequest(number: $prNumber) {
-                    id
-                  }
+                  pullRequest(number: $prNumber) { id }
                 }
               }
-            `;
-            const prNodeResp = await github.graphql(query, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              prNumber
-            });
-            const prNodeId = prNodeResp.repository.pullRequest.id;
+            `, { owner: context.repo.owner, repo: context.repo.repo, prNumber });
 
-            // Revert the base PR using GraphQL
             const revertResp = await github.graphql(`
               mutation($input: RevertPullRequestInput!) {
-                revertPullRequest(input: $input) {
-                  pullRequest {
-                    number
-                  }
-                }
+                revertPullRequest(input: $input) { pullRequest { number } }
               }
-            `, { input: { pullRequestId: prNodeId } });
+            `, { input: { pullRequestId: prNodeResp.repository.pullRequest.id } });
 
             const revertNumber = revertResp.revertPullRequest.pullRequest.number;
             core.info(`🔄 Created revert PR #${revertNumber} for base PR #${prNumber}`);
 
-            // Merge the revert PR
             await github.rest.pulls.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -192,20 +248,3 @@ jobs:
               merge_method: "squash"
             });
             core.info(`✅ Successfully merged base revert PR #${revertNumber}`);
-
-  bump-submodules:
-    needs: [aggregate, revert-base]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.CROSS_TOKEN }}
-          script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const workflowFileName = "bump.yml";
-            const ref = "main";
-
-            console.log(`🚀 Dispatching '${workflowFileName}' on ${ref}...`);
-            await github.rest.actions.createWorkflowDispatch({ owner, repo, workflow_id: workflowFileName, ref });
-            console.log("✅ Bump workflow dispatched successfully");
