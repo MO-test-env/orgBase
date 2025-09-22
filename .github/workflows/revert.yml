@@ -58,97 +58,95 @@ jobs:
             const url = new URL(sub.url);
             const [owner, repo] = url.pathname.replace(/^\/|\.git$/g,'').split('/');
             const prNumber = sub.pr_number;
-            try {
-              core.info(`🔍 Fetching original PR #${prNumber} in ${repo}`);
+            core.info(`🔍 Fetching original PR #${prNumber} in ${repo}`);
 
-              // Get PR node ID via GraphQL
-              const prQuery = `
-                query($owner: String!, $repo: String!, $prNumber: Int!) {
-                  repository(owner: $owner, name: $repo) {
-                    pullRequest(number: $prNumber) {
-                      id
-                    }
+            // Get PR node ID via GraphQL
+            const prQuery = `
+              query($owner: String!, $repo: String!, $prNumber: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $prNumber) {
+                    id
                   }
-                }
-              `;
-              core.info(`📡 PR Query: ${prQuery}`);
-              core.info(`📌 Query Variables: owner=${owner}, repo=${repo}, prNumber=${prNumber}`);
-
-              const prData = await github.graphql(prQuery, { owner, repo, prNumber });
-              core.info(`📥 PR Data Response: ${JSON.stringify(prData, null, 2)}`);
-
-              const prId = prData.repository.pullRequest.id;
-              core.info(`🆔 PR Node ID: ${prId}`);
-
-               // Revert PR mutation – include a unique branch name to avoid “already exists” errors
-              const revertBranchName = `revert-${prNumber}-${Date.now()}`;
-              const revertMutation = `
-                mutation($input: RevertPullRequestInput!) {
-                  revertPullRequest(input: $input) {
-                    pullRequest {
-                      number
-                      url
-                      headRefName
-                    }
-                  }
-                }
-              `;
-              core.info(`📡 Revert Mutation: ${revertMutation}`);
-              core.info(`📌 Revert Variables: pullRequestId=${prId}, revertBranchName=${revertBranchName}`);
-
-              let revertResponse;
-              try {
-                revertResponse = await github.graphql(revertMutation, {
-                  input: {
-                    pullRequestId: prId,
-                    revertBranchName: revertBranchName
-                  }
-                });
-              } catch (e) {
-                // If a revert PR already exists GitHub returns a validation error.
-                // Detect that case, locate the existing PR and continue with merging.
-                if (/already exists/.test(e.message)) {
-                  core.warning(`⚠️ Revert PR already exists for PR #${prNumber}. Attempting to locate it.`);
-                  const existingPRs = await github.rest.pulls.list({
-                    owner,
-                    repo,
-                    head: `${owner}:${revertBranchName.split('-').slice(0,2).join('-')}`, // e.g. revert-27
-                    state: "open"
-                  });
-                  if (existingPRs.data.length === 0) {
-                    core.setFailed(`❌ Could not find existing revert PR for #${prNumber}.`);
-                    return;
-                  }
-                  revertResponse = { revertPullRequest: { pullRequest: existingPRs.data[0] } };
-                } else {
-                  throw e; // re‑throw unexpected errors
                 }
               }
+            `;
+            core.info(`📡 PR Query: ${prQuery}`);
+            core.info(`📌 Query Variables: owner=${owner}, repo=${repo}, prNumber=${prNumber}`);
 
-              const revertBranch = revertResponse.revertPullRequest.pullRequest.headRefName;
-              core.info(`✅ Revert PR branch created/found: ${revertBranch}`);
+            const prData = await github.graphql(prQuery, { owner, repo, prNumber });
+            core.info(`📥 PR Data Response: ${JSON.stringify(prData, null, 2)}`);
 
-              // Get the new PR number (either freshly created or already existing)
-              const { data: pullRequests } = await github.rest.pulls.list({
-                owner,
-                repo,
-                head: `${owner}:${revertBranch}`,
-                state: "open"
+            const prId = prData.repository.pullRequest.id;
+            core.info(`🆔 PR Node ID: ${prId}`);
+
+              // Revert PR mutation – include a unique branch name to avoid “already exists” errors
+            const revertBranchName = `revert-${prNumber}-${Date.now()}`;
+            const revertMutation = `
+              mutation($input: RevertPullRequestInput!) {
+                revertPullRequest(input: $input) {
+                  pullRequest {
+                    number
+                    url
+                    headRefName
+                  }
+                }
+              }
+            `;
+            core.info(`📡 Revert Mutation: ${revertMutation}`);
+            core.info(`📌 Revert Variables: pullRequestId=${prId}, revertBranchName=${revertBranchName}`);
+
+            let revertResponse;
+            try {
+              revertResponse = await github.graphql(revertMutation, {
+                input: {
+                  pullRequestId: prId,
+                  revertBranchName: revertBranchName
+                }
               });
+            } catch (e) {
+              // If a revert PR already exists GitHub returns a validation error.
+              // Detect that case, locate the existing PR and continue with merging.
+              if (/already exists/.test(e.message)) {
+                core.warning(`⚠️ Revert PR already exists for PR #${prNumber}. Attempting to locate it.`);
+                const existingPRs = await github.rest.pulls.list({
+                  owner,
+                  repo,
+                  head: `${owner}:${revertBranchName.split('-').slice(0,2).join('-')}`, // e.g. revert-27
+                  state: "open"
+                });
+                if (existingPRs.data.length === 0) {
+                  core.setFailed(`❌ Could not find existing revert PR for #${prNumber}.`);
+                  return;
+                }
+                revertResponse = { revertPullRequest: { pullRequest: existingPRs.data[0] } };
+              } else {
+                throw e; // re‑throw unexpected errors
+              }
 
-              const newPR = pullRequests[0];
-              core.info(`✅ Using revert PR #${newPR.number} (reverting original PR #${prNumber}) at ${newPR.html_url}`);
+            const revertBranch = revertResponse.revertPullRequest.pullRequest.headRefName;
+            core.info(`✅ Revert PR branch created/found: ${revertBranch}`);
 
-              // Merge the revert PR
-              const mergeResponse = await github.rest.pulls.merge({
-                owner,
-                repo,
-                pull_number: newPR.number,
-                merge_method: "squash",
-              });
-              core.info(`📥 Merge Response: ${JSON.stringify(mergeResponse, null, 2)}`);
+            // Get the new PR number (either freshly created or already existing)
+            const { data: pullRequests } = await github.rest.pulls.list({
+              owner,
+              repo,
+              head: `${owner}:${revertBranch}`,
+              state: "open"
+            });
 
-              core.info(`✅ Successfully merged revert PR #${newPR.number}, undoing original PR #${prNumber}`);
+            const newPR = pullRequests[0];
+            core.info(`✅ Using revert PR #${newPR.number} (reverting original PR #${prNumber}) at ${newPR.html_url}`);
+
+            // Merge the revert PR
+            const mergeResponse = await github.rest.pulls.merge({
+              owner,
+              repo,
+              pull_number: newPR.number,
+              merge_method: "squash",
+            });
+            core.info(`📥 Merge Response: ${JSON.stringify(mergeResponse, null, 2)}`);
+
+            core.info(`✅ Successfully merged revert PR #${newPR.number}, undoing original PR #${prNumber}`);
 
 
   # # Revert base PR using GraphQL
