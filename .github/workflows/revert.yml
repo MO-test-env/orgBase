@@ -80,31 +80,55 @@ jobs:
               const prId = prData.repository.pullRequest.id;
               core.info(`🆔 PR Node ID: ${prId}`);
 
-              // Revert PR mutation
+               // Revert PR mutation – include a unique branch name to avoid “already exists” errors
+              const revertBranchName = `revert-${prNumber}-${Date.now()}`;
               const revertMutation = `
                 mutation($input: RevertPullRequestInput!) {
                   revertPullRequest(input: $input) {
                     pullRequest {
                       number
                       url
+                      headRefName
                     }
                   }
                 }
               `;
               core.info(`📡 Revert Mutation: ${revertMutation}`);
-              core.info(`📌 Revert Variables: pullRequestId=${prId}`);
+              core.info(`📌 Revert Variables: pullRequestId=${prId}, revertBranchName=${revertBranchName}`);
 
-              const revertResponse = await github.graphql(revertMutation, {
-                input: { pullRequestId: prId }
-              });
-              core.info(`📥 Revert Response: ${JSON.stringify(revertResponse, null, 2)}`);
+              let revertResponse;
+              try {
+                revertResponse = await github.graphql(revertMutation, {
+                  input: {
+                    pullRequestId: prId,
+                    revertBranchName: revertBranchName
+                  }
+                });
+              } catch (e) {
+                // If a revert PR already exists GitHub returns a validation error.
+                // Detect that case, locate the existing PR and continue with merging.
+                if (/already exists/.test(e.message)) {
+                  core.warning(`⚠️ Revert PR already exists for PR #${prNumber}. Attempting to locate it.`);
+                  const existingPRs = await github.rest.pulls.list({
+                    owner,
+                    repo,
+                    head: `${owner}:${revertBranchName.split('-').slice(0,2).join('-')}`, // e.g. revert-27
+                    state: "open"
+                  });
+                  if (existingPRs.data.length === 0) {
+                    core.setFailed(`❌ Could not find existing revert PR for #${prNumber}.`);
+                    return;
+                  }
+                  revertResponse = { revertPullRequest: { pullRequest: existingPRs.data[0] } };
+                } else {
+                  throw e; // re‑throw unexpected errors
+                }
+              }
 
-
-              
               const revertBranch = revertResponse.revertPullRequest.pullRequest.headRefName;
-              core.info(`✅ Revert PR branch created: ${revertBranch}`);
+              core.info(`✅ Revert PR branch created/found: ${revertBranch}`);
 
-              // Get the new PR number using REST
+              // Get the new PR number (either freshly created or already existing)
               const { data: pullRequests } = await github.rest.pulls.list({
                 owner,
                 repo,
@@ -113,10 +137,10 @@ jobs:
               });
 
               const newPR = pullRequests[0];
-              core.info(`✅ Created revert PR #${newPR.number} (reverting original PR #${prNumber}) at ${newPR.html_url}`);
+              core.info(`✅ Using revert PR #${newPR.number} (reverting original PR #${prNumber}) at ${newPR.html_url}`);
 
               // Merge the revert PR
-              await github.rest.pulls.merge({
+              const mergeResponse = await github.rest.pulls.merge({
                 owner,
                 repo,
                 pull_number: newPR.number,
@@ -125,10 +149,6 @@ jobs:
               core.info(`📥 Merge Response: ${JSON.stringify(mergeResponse, null, 2)}`);
 
               core.info(`✅ Successfully merged revert PR #${newPR.number}, undoing original PR #${prNumber}`);
-            } catch (err) {
-              core.error(`🔥 Failed to revert submodule PR #${prNumber} in ${repo}: ${err.message}`);
-              core.info(err.stack);
-            }
 
 
   # # Revert base PR using GraphQL
