@@ -131,6 +131,12 @@ jobs:
             });
             core.info(`✅ Successfully merged revert PR #${revertPR.number} for original PR #${prNumber}`);
 
+  aggregate:
+      needs: revert-submodules
+      runs-on: ubuntu-latest
+      steps:
+        - run: echo "Ensure ive waited for all matrix jobs to finish before bumping"
+
   revert-base:
     needs: revert-submodules
     runs-on: ubuntu-latest
@@ -147,28 +153,48 @@ jobs:
             });
             if (!pr.merged) return;
 
-            // Use the first submodule name (or all names concatenated) for base revert PR title
-            const submodules = JSON.parse(`${
-              process.env.SUBMODULES || '[]'
-            }`);
-            const baseName = submodules.length ? submodules.map(s => s.name).join(', ') : 'Base';
-
-            const { data: revert } = await github.request("POST /repos/{owner}/{repo}/pulls/{pull_number}/revert", {
+            // Get PR Node ID
+            const query = `
+              query($owner: String!, $repo: String!, $prNumber: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $prNumber) {
+                    id
+                  }
+                }
+              }
+            `;
+            const prNodeResp = await github.graphql(query, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: prNumber,
-              title: `Revert ${baseName}`
+              prNumber
             });
+            const prNodeId = prNodeResp.repository.pullRequest.id;
 
+            // Revert the base PR using GraphQL
+            const revertResp = await github.graphql(`
+              mutation($input: RevertPullRequestInput!) {
+                revertPullRequest(input: $input) {
+                  pullRequest {
+                    number
+                  }
+                }
+              }
+            `, { input: { pullRequestId: prNodeId } });
+
+            const revertNumber = revertResp.revertPullRequest.pullRequest.number;
+            core.info(`🔄 Created revert PR #${revertNumber} for base PR #${prNumber}`);
+
+            // Merge the revert PR
             await github.rest.pulls.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: revert.number,
+              pull_number: revertNumber,
               merge_method: "squash"
             });
+            core.info(`✅ Successfully merged base revert PR #${revertNumber}`);
 
   bump-submodules:
-    needs: [revert-submodules, revert-base]
+    needs: [aggregate, revert-base]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
