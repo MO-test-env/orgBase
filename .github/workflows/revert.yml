@@ -55,7 +55,31 @@ jobs:
             const url = new URL(sub.url);
             const [owner, repo] = url.pathname.replace(/^\/|\.git$/g,'').split('/');
             const prNumber = sub.pr_number;
+            // Get PR Node ID via GraphQL
+            const prNodeQuery = `
+              query($owner: String!, $repo: String!, $prNumber: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $prNumber) {
+                    id
+                    merged
+                  }
+                }
+              }
+            `;
+            const prNodeResp = await github.graphql(prNodeQuery, {
+              owner,
+              repo,
+              prNumber
+            });
 
+            const prNode = prNodeResp.repository.pullRequest;
+            if (!prNode.merged) {
+              core.info(`⚠️ PR #${prNumber} in ${repo} is not merged. Skipping.`);
+              return;
+            }
+            const prNodeId = prNode.id;
+            core.info(`PR Node ID for #${prNumber}: ${prNodeId}`);
+          
             // Revert PR via GraphQL
             const revertMutation = `
               mutation($input: RevertPullRequestInput!) {
