@@ -49,7 +49,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       revert_pr_number: ${{ steps.create.outputs.revert_pr_number }}
-      revert_branch:    ${{ steps.create.outputs.revert_branch }}
+      revert_branch_name: ${{ steps.create.outputs.revert_branch_name }}
+      revert_branch_ref: ${{ steps.create.outputs.revert_branch_ref }}
     steps:
       - name: Create revert PR via GraphQL
         id: create
@@ -70,26 +71,27 @@ jobs:
               return;
             }
 
-            // 1️⃣ Revert the merged PR
+            // Revert the merged PR
             const revertResp = await github.graphql(`
               mutation($input: RevertPullRequestInput!) {
                 revertPullRequest(input: $input) {
                   pullRequest {
                     number
-                    headRefName
+                    headRefName   
                   }
                 }
               }
-            `, {
-              input: { pullRequestId: pr.node_id }
-            });
+            `, { input: { pullRequestId: pr.node_id } });
 
             const revertPR = revertResp.revertPullRequest.pullRequest;
-            core.setOutput('revert_pr_number', revertPR.number);
-            core.setOutput('revert_branch', revertPR.headRefName);
-            core.info(`🔄 Created revert PR #${revertPR.number} (branch: ${revertPR.headRefName})`);
+            const branchName = revertPR.headRefName;
+            const fullRef    = `refs/heads/${branchName}`;   
 
-  
+            core.setOutput('revert_pr_number', revertPR.number);
+            core.setOutput('revert_branch_name', branchName);
+            core.setOutput('revert_branch_ref', fullRef);
+            core.info(`🔄 Created revert PR #${revertPR.number} (branch: ${branchName})`);
+
   revert-submodules:
     needs: detect-submodules
     if: needs.detect-submodules.outputs.submodules != '[]'
@@ -187,8 +189,7 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ env.CROSS_TOKEN }}
-          # Use the branch created by the revert‑PR job
-          ref: ${{ needs.create-revert-base.outputs.revert_branch }}
+          BRANCH: ${{ needs.create-revert-base.outputs.revert_branch_ref }}
 
       - name: Authenticate submodules
         run: |
@@ -201,10 +202,15 @@ jobs:
         env:
           SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
           TOKEN: ${{ env.CROSS_TOKEN }}
-          BRANCH: ${{ needs.create-revert-base.outputs.revert_branch }}
+          BRANCH: ${{ needs.create-revert-base.outputs.revert_branch_name }}
         with:
           script: |
             const { execSync } = require('child_process');
+            const branch = process.env.BRANCH;
+            if (!branch) {
+              core.setFailed('❌ No branch name supplied to bump‑submodules');
+              process.exit(1);
+            }
             const submodules = JSON.parse(process.env.SUBMODULES);
             let changed = false;
 
