@@ -1,4 +1,4 @@
-name: Auto-Revert Base + Submodules
+name: Auto-Revert Base + Submodules (Hybrid, Clean)
 
 on:
   issue_comment:
@@ -11,125 +11,151 @@ permissions:
   actions: write
 
 env:
-  CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
-
+  RW_PAT: ${{ secrets.WORKFLOWS }} # Personal Access Token with RW access to repo contents, PRs
 
 jobs:
   auto-revert:
     if: github.event.issue.pull_request && contains(github.event.comment.body, '/revert')
     runs-on: ubuntu-latest
+
     steps:
-      # ✅ Checkout with PAT (private repos + submodules)
-      - name: Checkout base repo
+      #  Checkout only the base branch, minimal depth
+      - name: Checkout PR base branch
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.CROSS_TOKEN }}
-          submodules: recursive
-          fetch-depth: 0
+          token: ${{ env.RW_PAT }}
+          fetch-depth: 2
+          ref: ${{ github.event.pull_request.base.ref }}
+          submodules: false
 
-      # 🔑 Configure Git for PAT
-      - name: Configure Git auth
-        run: |
-          git config --global url."https://${{ secrets.CROSS_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
-      # 📌 Use GraphQL to get base PR + commit info
-      - name: Fetch PR data via GraphQL
-        id: gql
+      #  Get PR head commit SHA via GraphQL
+      - name: Get PR commit info
+        id: prdata
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.CROSS_TOKEN }}
+          github-token: ${{ env.RW_PAT }}
           script: |
-            const query = `
-              query($owner: String!, $repo: String!, $prNumber: Int!) {
-                repository(owner: $owner, name: $repo) {
-                  pullRequest(number: $prNumber) {
-                    number
-                    mergeCommit {
-                      oid
+            const prNumber = context.issue.number;
+            const { repository } = await github.graphql(`
+              query($owner:String!, $repo:String!, $pr:Int!) {
+                repository(owner:$owner, name:$repo) {
+                  pullRequest(number:$pr) {
+                    headRefOid
+                    baseRefName
+                    files(first: 100) {
+                      nodes {
+                        path
+                        additions
+                        deletions
+                      }
                     }
                   }
                 }
               }
-            `;
-            const result = await github.graphql(query, {
+            `, {
               owner: context.repo.owner,
               repo: context.repo.repo,
-              prNumber: context.issue.number
+              pr: prNumber
             });
-            return { baseSha: result.repository.pullRequest.mergeCommit.oid };
 
-      # 1️⃣ Create base revert branch + PR using REST
-      - name: Create base revert PR
-        id: base_revert
+            const headSha = repository.pullRequest.headRefOid;
+            const baseRef = repository.pullRequest.baseRefName;
+
+            // Detect submodules in changed files (paths ending with submodule folder, e.g., "submod/")
+            const submodules = repository.pullRequest.files.nodes
+              .map(f => f.path.split('/')[0])
+              .filter((v, i, a) => a.indexOf(v) === i); // unique top-level dirs
+
+            core.setOutput("head_sha", headSha);
+            core.setOutput("base_ref", baseRef);
+            core.setOutput("submodules", JSON.stringify(submodules));
+
+      #  Revert the base PR commit
+      - name: Revert base PR commit
         run: |
-          branch="revert-base-${GITHUB_RUN_ID}"
-          git checkout -b "$branch" "${{ steps.gql.outputs.baseSha }}^"
-          git revert --no-edit "${{ steps.gql.outputs.baseSha }}"
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          branch="revert-${{ steps.prdata.outputs.head_sha }}"
+          git checkout -b "$branch"
+          git revert --no-edit ${{ steps.prdata.outputs.head_sha }}
           git push origin "$branch"
-
-          pr_number=$(curl -s -X POST \
-            -H "Authorization: token ${{ secrets.CROSS_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls \
-            -d "{\"head\":\"$branch\",\"base\":\"main\",\"title\":\"Revert base commit\",\"body\":\"Auto revert base commit\"}" \
-            | jq -r '.number')
-
-          echo "pr_number=$pr_number" >> $GITHUB_OUTPUT
-
-      # 2️⃣ Revert submodules
-      - name: Revert submodules
-        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.CROSS_TOKEN }}
-        run: |
-          for sub in $(git config --file .gitmodules --get-regexp path | awk '{ print $2 }'); do
-            echo "🔄 Processing $sub"
-            cd $sub
-            sha=$(git rev-parse HEAD)
+          GITHUB_TOKEN: ${{ env.RW_PAT }}
 
-            branch="revert-${sub}-${GITHUB_RUN_ID}"
-            git checkout -b "$branch" HEAD^
-            git revert --no-edit $sha || true
+      #  Create revert PR for base
+      - name: Create base revert PR
+        id: createpr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const branch = `revert-${{ steps.prdata.outputs.head_sha }}`;
+            const { data: pr } = await github.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Revert base commit ${{ steps.prdata.outputs.head_sha }}`,
+              head: branch,
+              base: "${{ steps.prdata.outputs.base_ref }}",
+              body: "Auto-generated revert for base PR"
+            });
+            core.setOutput("pr_number", pr.number);
+
+
+      #  Loop through submodules and revert/bump individually
+      - name: Revert and bump submodules
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          
+          submods=${{ steps.prdata.outputs.submodules }}
+          for sub in $(echo $submods | jq -r '.[]'); do
+            echo "Processing submodule: $sub"
+            # Minimal fetch for submodule repo
+            git clone --depth 1 --filter=blob:none "https://github.com/${{ github.repository_owner }}/$sub.git" "$sub"
+            cd "$sub"
+            # Get latest commit in submodule from PR (assuming PR SHA applies to submodule)
+            # Fallback: just revert last commit
+            last_sha=$(git rev-parse HEAD)
+            branch="revert-$last_sha"
+            git checkout -b "$branch"
+            git revert --no-edit $last_sha
             git push origin "$branch"
 
-            repo_url=$(git config --get remote.origin.url | sed 's#git@github.com:#https://github.com/#;s#.git$##')
-            owner=$(echo $repo_url | cut -d/ -f4)
-            repo=$(echo $repo_url | cut -d/ -f5)
+            # Create PR for submodule revert
+            pr=$(gh api repos/${{ github.repository_owner }}/$sub/pulls -X POST -F title="Revert $last_sha" -F head="$branch" -F base=main -F body="Auto-generated revert for submodule")
+            pr_number=$(echo $pr | jq -r '.number')
 
-            pr_number=$(curl -s -X POST \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              https://api.github.com/repos/$owner/$repo/pulls \
-              -d "{\"head\":\"$branch\",\"base\":\"main\",\"title\":\"Revert $sub commit\",\"body\":\"Auto revert\"}" \
-              | jq -r '.number')
-
-            curl -s -X PUT \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              https://api.github.com/repos/$owner/$repo/pulls/$pr_number/merge \
-              -d '{"merge_method":"merge"}'
+            # Merge submodule revert PR
+            gh api repos/${{ github.repository_owner }}/$sub/pulls/$pr_number/merge -X PUT -F merge_method=merge
 
             cd ..
+            # Update main repo submodule pointer
+            git add "$sub"
           done
 
-      # 3️⃣ Update submodule SHAs in base
-      - name: Update submodules in base
-        run: |
-          git submodule update --remote
-          git add .
-          git commit -m "Update submodules after revert" || echo "No changes to commit"
-          git push origin HEAD
+          # Commit updated submodule pointers in main repo
+          if [ -n "$(git status --porcelain)" ]; then
+            branch="update-submodules-${{ github.run_id }}"
+            git checkout -b "$branch"
+            git commit -m "Update submodule pointers after revert"
+            git push origin "$branch"
 
-      # 4️⃣ Merge base revert PR
-      - name: Merge base revert PR
-        run: |
-          pr_number=${{ steps.base_revert.outputs.pr_number }}
-          if [ -n "$pr_number" ]; then
-            curl -s -X PUT \
-              -H "Authorization: token ${{ secrets.CROSS_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/$pr_number/merge \
-              -d '{"merge_method":"merge"}'
-          else
-            echo "⚠️ Base revert PR not found"
+            # Create PR for updated submodules
+            gh api repos/${{ github.repository_owner }}/$GITHUB_REPOSITORY/pulls -X POST -F title="Update submodules after revert" -F head="$branch" -F base="${{ steps.prdata.outputs.base_ref }}" -F body="Auto-generated submodule pointer update after revert"
           fi
+        env:
+          GITHUB_TOKEN: ${{ env.RW_PAT }}
+          
+      #  Merge base revert PR
+      - name: Merge base revert PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const prNumber = ${{ steps.createpr.outputs.pr_number }};
+            await github.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              merge_method: "merge"
+            });
