@@ -15,17 +15,12 @@ env:
 
 jobs:
   auto-revert:
+    if: |
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/revert' &&
+      github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
-      # Checkout the base branch 
-      - name: Checkout base branch
-        uses: actions/checkout@v4
-        with:
-          token: ${{ env.RW_PAT }}
-          fetch-depth: 2
-          ref: ${{ github.event.pull_request.base.ref }}
-          submodules: false
-
       # Retrieve the cached submodule description 
       - name: Detect submodule JSON
         id: submod
