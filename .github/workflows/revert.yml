@@ -1,4 +1,4 @@
-name: Auto-Revert Base + Submodules
+name: Auto-Revert Submodules + Base PR
 
 on:
   issue_comment:
@@ -11,22 +11,22 @@ permissions:
   actions: write
 
 env:
-  RW_PAT: ${{ secrets.WORKFLOWS }}
+  CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
 
 jobs:
-  auto-revert:
+  detect-submodules:
     if: |
       github.event.issue.pull_request != null &&
       github.event.comment.body == '/revert' &&
       github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
+    outputs:
+      submodules: ${{ steps.extract.outputs.submodules }}
     steps:
-      # Retrieve the cached submodule description 
-      - name: Detect submodule JSON
-        id: submod
+      - id: extract
         uses: actions/github-script@v7
         with:
-          github-token: ${{ env.RW_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const prNumber = context.issue.number;
             const { data: comments } = await github.rest.issues.listComments({
@@ -35,116 +35,232 @@ jobs:
               issue_number: prNumber
             });
             const cache = comments.find(c => /<!-- SUBMODULES_JSON -->/.test(c.body));
-            if (!cache) throw new Error("No cached submodule comment found");
+            if (!cache) { core.setOutput("submodules", "[]"); return; }
             const jsonMatch = cache.body.match(/```json\s*([\s\S]*?)\s*```/);
-            if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
-            core.setOutput('submodules', jsonMatch[1]);
+            core.setOutput('submodules', jsonMatch ? jsonMatch[1] : "[]");
 
-      # Revert each submodule **in place** and push the revert directly to its
-      #     default branch (no PRs are created in the submodule repos)
-      - name: Revert submodules and capture new SHAs
-        id: revert-sm
+  # Create the revert PR for the *base* PR **as soon as possible**
+  create-revert-base:
+    needs: detect-submodules
+    if: |
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/revert' &&
+      github.event.comment.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    outputs:
+      revert_pr_number: ${{ steps.create.outputs.revert_pr_number }}
+      revert_branch:    ${{ steps.create.outputs.revert_branch }}
+    steps:
+      - name: Create revert PR via GraphQL
+        id: create
         uses: actions/github-script@v7
+        env:
+          CROSS_TOKEN: ${{ env.CROSS_TOKEN }}
         with:
-          github-token: ${{ env.RW_PAT }}
+          github-token: ${{ env.CROSS_TOKEN }}
           script: |
-            const subs = JSON.parse(`${{ steps.submod.outputs.submodules }}`);
-            const reverted = [];
-
-            for (const sm of subs) {
-              const { path, repo, url } = sm;
-              console.log(`⏳ Reverting submodule ${repo} → ${path}`);
-
-              // shallow clone of the submodule (no history, no blobs)
-              const { execSync } = require('child_process');
-              execSync(`git clone --depth 1 --filter=blob:none ${url} ${path}`, { stdio: 'inherit' });
-
-              // enter the submodule, revert its latest commit, and push directly
-              process.chdir(path);
-              const headSha = execSync('git rev-parse HEAD').toString().trim();
-
-              // create a temporary branch, revert, and push straight to main
-              const tmpBranch = `revert-${headSha}`;
-              execSync(`git checkout -b ${tmpBranch}`, { stdio: 'inherit' });
-              execSync(`git revert --no-edit ${headSha}`, { stdio: 'inherit' });
-              execSync(`git push https://x-access-token:${process.env.RW_PAT}@github.com/${process.env.GITHUB_REPOSITORY_OWNER}/${repo}.git ${tmpBranch}:main`, { stdio: 'inherit' });
-
-              // capture the new commit SHA that now sits on main
-              const newSha = execSync('git rev-parse HEAD').toString().trim();
-              reverted.push({ path, repo, newSha });
-
-              process.chdir('..');
-            }
-
-            // expose the array of reverted submodules for the next step
-            core.setOutput('reverted', JSON.stringify(reverted));
-
-      # Create a single branch in base that:
-      #     • updates each submodule pointer to the new SHA
-      #     • reverts the original PR commit
-      - name: Create single revert branch in super‑project
-        id: super-branch
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-
-          # Revert base
-          BASE_REF="${{ github.event.pull_request.base.ref }}"
-          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          git checkout "$BASE_REF"
-          REVERT_BRANCH="auto-revert-${{ github.run_id }}"
-          git checkout -b "$REVERT_BRANCH"
-          git revert --no-edit "$HEAD_SHA"
-
-          # Update submodule pointers
-          REVERTED='${{ steps.revert-sm.outputs.reverted }}'
-          echo "$REVERTED" | jq -c '.[]' | while read -r sm; do
-            path=$(echo "$sm" | jq -r '.path')
-            newsha=$(echo "$sm" | jq -r '.newSha')
-            echo "Updating submodule $path → $newsha"
-            git submodule update --init "$path"
-            cd "$path"
-            git checkout "$newsha"
-            cd -
-            git add "$path"
-          done
-
-          # Commit everything (submodule pointer updates + base revert)
-          git commit -m "Auto revert: submodules + base commit $HEAD_SHA"
-
-          # Push the branch
-          git push origin "$REVERT_BRANCH"
-
-          # expose branch name for the next step
-          echo "branch=$REVERT_BRANCH" >> $GITHUB_OUTPUT
-
-      # Open PR in the base and merge it automatically
-      - name: Create & merge single base revert PR
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const branch = '${{ steps.super-branch.outputs.branch }}';
-            const base   = '${{ github.event.pull_request.base.ref }}';
-            const title  = `Auto revert: submodules + base commit ${{ github.event.pull_request.head.sha }}`;
-            const body   = `This PR reverts the original PR #${{ github.event.pull_request.number }} and updates all submodule pointers to the reverted commits.`;
-
-            // create the PR
-            const { data: pr } = await github.rest.pulls.create({
+            const prNumber = context.issue.number;
+            const { data: pr } = await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title,
-              head: branch,
-              base,
-              body
+              pull_number: prNumber
             });
-            console.log(`✅ PR created: ${pr.html_url}`);
+            if (!pr.merged) {
+              core.setFailed('Base PR is not merged – nothing to revert.');
+              return;
+            }
 
-            // merge it
+            // 1️⃣ Revert the merged PR
+            const revertResp = await github.graphql(`
+              mutation($input: RevertPullRequestInput!) {
+                revertPullRequest(input: $input) {
+                  pullRequest {
+                    number
+                    headRefName
+                  }
+                }
+              }
+            `, {
+              input: { pullRequestId: pr.node_id }
+            });
+
+            const revertPR = revertResp.revertPullRequest.pullRequest;
+            core.setOutput('revert_pr_number', revertPR.number);
+            core.setOutput('revert_branch', revertPR.headRefName);
+            core.info(`🔄 Created revert PR #${revertPR.number} (branch: ${revertPR.headRefName})`);
+
+  
+  revert-submodules:
+    needs: detect-submodules
+    if: needs.detect-submodules.outputs.submodules != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.CROSS_TOKEN }}
+          script: |
+            const sub = ${{ toJson(matrix.submod) }};
+            const url = new URL(sub.url);
+            const [owner, repo] = url.pathname.replace(/^\/|\.git$/g,'').split('/');
+            const prNumber = sub.pr_number;
+            core.info(`🔍 Processing PR #${prNumber} in ${repo}`);
+            // Get PR Node ID via GraphQL
+            const prNodeQuery = `
+              query($owner: String!, $repo: String!, $prNumber: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $prNumber) {
+                    id
+                    merged
+                  }
+                }
+              }
+            `;
+            const prNodeResp = await github.graphql(prNodeQuery, { owner, repo, prNumber });
+            const prNode = prNodeResp.repository.pullRequest;
+            if (!prNode.merged) {
+              core.info(`⚠️ PR #${prNumber} in ${repo} is not merged. Skipping.`);
+              return;
+            }
+            const prNodeId = prNode.id;
+            const { data: openPRs } = await github.rest.pulls.list({
+              owner, repo, state: 'open', sort: 'created', direction: 'desc', per_page: 20
+            });
+            let revertPR = openPRs.find(p =>
+              p.title.includes(`Revert ${sub.name}`) || p.body?.includes(`#${prNumber}`)
+            );
+            // If no existing revert PR, create it via GraphQL
+            if (!revertPR) {
+              core.info(`No existing revert PR found for #${prNumber}, creating...`);
+              try {
+                await github.graphql(`
+                  mutation($input: RevertPullRequestInput!) {
+                    revertPullRequest(input: $input) {
+                      pullRequest { id }
+                    }
+                  }
+                `, { input: { pullRequestId: prNodeId } });
+                const { data: recentPRs } = await github.rest.pulls.list({
+                  owner, repo, state: 'open', sort: 'created', direction: 'desc', per_page: 5
+                });
+                revertPR = recentPRs.find(p =>
+                  p.title.includes(`Revert "${prNumber}"`) || p.body?.includes(`#${prNumber}`)
+                );
+                if (!revertPR) throw new Error(`❌ Could not find revert PR after creating it for PR #${prNumber}`);
+                core.info(`🔄 Created revert PR #${revertPR.number}`);
+              } catch (err) {
+                // Handle race condition where GitHub already created a revert PR
+                if (err.message.includes('Validation failed: A pull request already exists')) {
+                  core.info(`⚠️ A revert PR already exists for #${prNumber}, using existing PR`);
+                  revertPR = openPRs.find(p =>
+                    p.title.includes(`Revert "${prNumber}"`) || p.body?.includes(`#${prNumber}`)
+                  );
+                } else {
+                  throw err;
+                }
+              }
+            } else {
+              core.info(`⚠️ Existing revert PR found #${revertPR.number}, skipping creation`);
+            }
+            // Merge the revert PR
+            await github.rest.pulls.merge({
+              owner, repo, pull_number: revertPR.number, merge_method: "squash"
+            });
+            core.info(`✅ Successfully merged revert PR #${revertPR.number} for original PR #${prNumber}`);
+  aggregate:
+    needs: revert-submodules
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All submodule reverts completed. Ready to bump."
+  
+  bump-submodules:
+    needs:
+      - detect-submodules
+      - create-revert-base
+      - aggregate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout revert branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ env.CROSS_TOKEN }}
+          # Use the branch created by the revert‑PR job
+          ref: ${{ needs.create-revert-base.outputs.revert_branch }}
+
+      - name: Authenticate submodules
+        run: |
+          git config --global url."https://${{ env.CROSS_TOKEN }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
+          git submodule sync --recursive
+          git submodule update --init --recursive
+
+      - name: Bump submodules
+        uses: actions/github-script@v7
+        env:
+          SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
+          TOKEN: ${{ env.CROSS_TOKEN }}
+          BRANCH: ${{ needs.create-revert-base.outputs.revert_branch }}
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const submodules = JSON.parse(process.env.SUBMODULES);
+            let changed = false;
+
+            for (const sub of submodules) {
+              console.log(`🔧 Updating submodule ${sub.repo} at ${sub.path}`);
+              const urlWithToken = sub.url.replace(/^https:\/\//, `https://${process.env.TOKEN}@`);
+              execSync(`git submodule update --init ${sub.path}`, { stdio: 'inherit' });
+
+              const defaultBranch = execSync(
+                `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
+                { encoding: 'utf8' }
+              ).trim();
+
+              execSync(`git -C ${sub.path} fetch origin ${defaultBranch}:${defaultBranch}`, { stdio: 'inherit' });
+              const latest = execSync(`git ls-remote ${urlWithToken} refs/heads/${defaultBranch} | awk '{print $1}'`, { encoding: 'utf8' }).trim();
+              const current = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
+
+              if (current !== latest) {
+                console.log(`⚠️ Resetting ${sub.repo} to ${latest}`);
+                execSync(`git -C ${sub.path} reset --hard ${latest}`, { stdio: 'inherit' });
+                execSync(`git add ${sub.path}`);
+                changed = true;
+              } else {
+                console.log(`✅ ${sub.repo} up-to-date`);
+              }
+            }
+
+            if (changed) {
+              execSync('git config user.name "github-actions[bot]"');
+              execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
+              execSync(`git commit -m "Bump submodules to latest default branch"`);
+              execSync(`git push origin ${process.env.BRANCH}`);
+            } else {
+              console.log('✅ All submodules already up-to-date');
+            }
+
+  # Merge the base revert‑PR that was created first
+  merge-revert-base:
+    needs:
+      - bump-submodules
+      - create-revert-base
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge revert PR
+        uses: actions/github-script@v7
+        env:
+          CROSS_TOKEN: ${{ env.CROSS_TOKEN }}
+        with:
+          github-token: ${{ env.CROSS_TOKEN }}
+          script: |
+            const revertNumber = ${{ needs.create-revert-base.outputs.revert_pr_number }};
+            core.info(`🔄 Merging revert PR #${revertNumber}`);
             await github.rest.pulls.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: pr.number,
-              merge_method: 'squash'   // keep history clean
+              pull_number: revertNumber,
+              merge_method: "squash"
             });
-            console.log('✅ PR merged');
+            core.info(`✅ Successfully merged revert PR #${revertNumber}`);
