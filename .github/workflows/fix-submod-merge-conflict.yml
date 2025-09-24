@@ -1,0 +1,56 @@
+name: Auto-Resolve Submodule Conflicts
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  resolve-submodule-conflicts:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch minimally
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 2
+          submodules: false
+
+      - name: Fetch base branch
+        run: |
+          git fetch origin ${{ github.base_ref }} --depth=2
+          git checkout ${{ github.base_ref }}
+
+      - name: Attempt merge (no commit)
+        run: |
+          git merge --no-commit --no-ff ${{ github.head_ref }} || true
+
+      - name: Auto-resolve all submodule conflicts
+        run: |
+          submodules=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+          for sub in $submodules; do
+            if git ls-files -u | grep -q "^$sub"; then
+              echo "Resolving submodule conflict: $sub"
+              git checkout --ours $sub
+              git add $sub
+            fi
+          done
+
+      - name: Commit resolved submodules (force)
+        run: |
+          # Commit only staged submodules, even if other conflicts exist
+          if ! git diff --cached --quiet; then
+            git commit --only -m "Auto-resolve submodule pointer conflicts"
+          else
+            echo "No submodule conflicts to commit."
+          fi
+
+      - name: Push resolved submodules back to PR branch
+        run: git push origin HEAD:${{ github.head_ref }}
+
+      - name: Summary
+        run: |
+          echo "All submodule pointer conflicts have been resolved and pushed."
+          echo "Other file conflicts (if any) remain for manual resolution."
