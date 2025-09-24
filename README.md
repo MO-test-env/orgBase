@@ -13,6 +13,4 @@
 
 ### Stable code is tagged
 
-Monday revert
-another one 
-923
+Wed revert
