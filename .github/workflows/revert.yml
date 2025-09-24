@@ -39,7 +39,6 @@ jobs:
             const jsonMatch = cache.body.match(/```json\s*([\s\S]*?)\s*```/);
             core.setOutput('submodules', jsonMatch ? jsonMatch[1] : "[]");
 
-  # Create the revert PR for the *base* PR **as soon as possible**
   create-revert-base:
     needs: detect-submodules
     if: |
@@ -170,6 +169,8 @@ jobs:
       - create-revert-base
       - aggregate
     runs-on: ubuntu-latest
+    outputs:
+      revert_number: ${{ steps.find-base.outputs.number }}
     env:
       ORIG_PR: ${{ github.event.issue.number }}
     steps:
@@ -335,7 +336,7 @@ jobs:
         with:
           github-token: ${{ env.CROSS_TOKEN }}
           script: |
-            const revertNumber = parseInt('${{ steps.find-base.outputs.number }}', 10);
+            const revertNumber = parseInt('${{ needs.bump-base-revert-pr.outputs.revert_number }}', 10);
             if (!revertNumber) {
               core.setFailed('❌ No revert PR number found to merge.');
               return;
@@ -345,6 +346,6 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: revertNumber,
-              merge_method: "squash"
+              merge_method: 'squash'
             });
             core.info(`✅ Successfully merged revert PR #${revertNumber}`);
