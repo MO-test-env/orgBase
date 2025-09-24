@@ -167,7 +167,7 @@ jobs:
     steps:
       - run: echo "All submodule reverts completed. Ready to bump."
 
-  bump-and-merge-base:
+  bump-base-revert-pr:
     needs:
       - detect-submodules
       - create-revert-base
@@ -328,6 +328,11 @@ jobs:
               console.log('✅ All submodules already up-to-date');
             }
 
+  merge-base-revert-pr:
+    needs:
+      - bump-base-revert-pr
+    runs-on: ubuntu-latest
+    steps:
       - name: Merge base revert PR
         uses: actions/github-script@v7
         with:
