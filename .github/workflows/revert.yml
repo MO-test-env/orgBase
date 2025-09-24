@@ -47,10 +47,6 @@ jobs:
       github.event.comment.body == '/revert' &&
       github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
-    outputs:
-      revert_pr_number: ${{ steps.create.outputs.revert_pr_number }}
-      revert_branch_name: ${{ steps.create.outputs.revert_branch_name }}
-      revert_branch_ref: ${{ steps.create.outputs.revert_branch_ref }}
     steps:
       - name: Create revert PR via GraphQL
         id: create
@@ -82,15 +78,6 @@ jobs:
                 }
               }
             `, { input: { pullRequestId: pr.node_id } });
-
-            const revertPR = revertResp.revertPullRequest.pullRequest;
-            const branchName = revertPR.headRefName;
-            const fullRef    = `refs/heads/${branchName}`;   
-
-            core.setOutput('revert_pr_number', revertPR.number);
-            core.setOutput('revert_branch_name', branchName);
-            core.setOutput('revert_branch_ref', fullRef);
-            core.info(`🔄 Created revert PR #${revertPR.number} (branch: ${branchName})`);
 
   revert-submodules:
     needs: detect-submodules
@@ -176,20 +163,111 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo "All submodule reverts completed. Ready to bump."
-  
-  bump-submodules:
+
+  bump-and-merge-base:
     needs:
       - detect-submodules
       - create-revert-base
       - aggregate
     runs-on: ubuntu-latest
+    env:
+      ORIG_PR: ${{ github.event.issue.number }}
     steps:
+      - name: Find base revert PR (REST search)
+        id: find-base
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.CROSS_TOKEN }}
+          script: |
+            const origPrNumber = parseInt(process.env.ORIG_PR, 10);
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const perPage = 100;
+
+            core.info(`Searching repository ${owner}/${repo} for a revert PR referencing #${origPrNumber}...`);
+
+            // Helper function: try to find a matching PR in a paginated list
+            async function findInList(state, maxPages = 5) {
+              for (let page = 1; page <= maxPages; page++) {
+                const { data: prs } = await github.rest.pulls.list({
+                  owner, repo, state, per_page: perPage, page
+                });
+                if (!prs || prs.length === 0) break;
+
+                // prefer PRs that explicitly reference the original PR number in the body/title,
+                // or whose branch name contains "revert-<origPrNumber>"
+                const candidate = prs.find(p => {
+                  const title = (p.title||'').toLowerCase();
+                  const body = (p.body||'').toLowerCase();
+                  const headRef = (p.head && p.head.ref) ? p.head.ref.toLowerCase() : '';
+
+                  if (body.includes(`#${origPrNumber}`)) return true;
+                  if (title.includes(`#${origPrNumber}`)) return true;
+                  if (title.includes('revert') && body.includes(String(origPrNumber))) return true;
+                  if (headRef.includes(`revert-${origPrNumber}`) || headRef.includes(`revert/${origPrNumber}`)) return true;
+                  // sometimes GraphHub uses "revert-<repo>-<pr>" or similar; basic "revert" + number heuristics:
+                  if (title.includes('revert') && (body.includes(String(origPrNumber)) || title.includes(String(origPrNumber)))) return true;
+
+                  return false;
+                });
+
+                if (candidate) return candidate;
+              }
+              return null;
+            }
+
+            // Search open PRs first 
+            let found = await findInList('open', 5);
+
+            // Fallback: use the global search API (search bodies/titles for the original PR number)
+            if (!found) {
+              core.info('Fallback: using search API for references to the original PR number...');
+              const q = `repo:${owner}/${repo} type:pr ${origPrNumber} in:body,code`;
+              const searchResp = await github.rest.search.issuesAndPullRequests({ q, per_page: 10 });
+              if (searchResp && searchResp.data && Array.isArray(searchResp.data.items)) {
+                // prefer open results, then any
+                const items = searchResp.data.items;
+                const match = items.find(i => i.pull_request && i.body && i.body.includes(`#${origPrNumber}`))
+                          || items.find(i => i.pull_request);
+                if (match) {
+                  // match.number is the PR number
+                  const { data: pr } = await github.rest.pulls.get({
+                    owner, repo, pull_number: match.number
+                  });
+                  found = pr;
+                }
+              }
+            }
+
+            if (!found) {
+              core.setFailed(`Could not locate a revert PR referencing original PR #${origPrNumber}.`);
+              return;
+            }
+
+            // If search returned a lightweight item (from list), ensure we have full PR object
+            let fullPR = found;
+            if (!fullPR.head || !fullPR.title) {
+              const { data: pr } = await github.rest.pulls.get({
+                owner, repo, pull_number: found.number
+              });
+              fullPR = pr;
+            }
+
+            core.info(`Found revert PR #${fullPR.number} (branch: ${fullPR.head.ref})`);
+
+            core.setOutput('number', String(fullPR.number));
+            core.setOutput('head_ref', fullPR.head.ref);
+            core.setOutput('head_sha', fullPR.head.sha || '');
+            core.setOutput('title', fullPR.title || '');
+            core.setOutput('body', fullPR.body || '');
+
       - name: Checkout revert branch
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
           token: ${{ env.CROSS_TOKEN }}
-          BRANCH: ${{ needs.create-revert-base.outputs.revert_branch_ref }}
+          fetch-depth: 1
+          submodules: false
+          ref: ${{ steps.find-base.outputs.head_ref }}
 
       - name: Authenticate submodules
         run: |
@@ -202,16 +280,16 @@ jobs:
         env:
           SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
           TOKEN: ${{ env.CROSS_TOKEN }}
-          BRANCH: ${{ needs.create-revert-base.outputs.revert_branch_name }}
+          BRANCH: ${{ steps.find-base.outputs.head_ref }}
         with:
           script: |
             const { execSync } = require('child_process');
             const branch = process.env.BRANCH;
             if (!branch) {
-              core.setFailed('❌ No branch name supplied to bump‑submodules');
+              core.setFailed('❌ No branch name supplied to bump-submodules');
               process.exit(1);
             }
-            const submodules = JSON.parse(process.env.SUBMODULES);
+            const submodules = JSON.parse(process.env.SUBMODULES || '[]');
             let changed = false;
 
             for (const sub of submodules) {
@@ -242,26 +320,21 @@ jobs:
               execSync('git config user.name "github-actions[bot]"');
               execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
               execSync(`git commit -m "Bump submodules to latest default branch"`);
-              execSync(`git push origin ${process.env.BRANCH}`);
+              execSync(`git push origin ${branch}`);
             } else {
               console.log('✅ All submodules already up-to-date');
             }
 
-  # Merge the base revert‑PR that was created first
-  merge-revert-base:
-    needs:
-      - bump-submodules
-      - create-revert-base
-    runs-on: ubuntu-latest
-    steps:
-      - name: Merge revert PR
+      - name: Merge base revert PR
         uses: actions/github-script@v7
-        env:
-          CROSS_TOKEN: ${{ env.CROSS_TOKEN }}
         with:
           github-token: ${{ env.CROSS_TOKEN }}
           script: |
-            const revertNumber = ${{ needs.create-revert-base.outputs.revert_pr_number }};
+            const revertNumber = parseInt('${{ steps.find-base.outputs.number }}', 10);
+            if (!revertNumber) {
+              core.setFailed('❌ No revert PR number found to merge.');
+              return;
+            }
             core.info(`🔄 Merging revert PR #${revertNumber}`);
             await github.rest.pulls.merge({
               owner: context.repo.owner,
