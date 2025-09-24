@@ -120,9 +120,6 @@ jobs:
             let revertPR = openPRs.find(p =>
               p.title.includes(`Revert ${sub.name}`) || p.body?.includes(`#${prNumber}`)
             );
-
-            //add if no diff then skip
-            
             // If no existing revert PR, create it via GraphQL
             if (!revertPR) {
               core.info(`No existing revert PR found for #${prNumber}, creating...`);
