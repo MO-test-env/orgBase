@@ -13,7 +13,7 @@ permissions:
   pull-requests: write
 
 env:
-  REPO_PAT: ${{ secrets.WORKFLOWS_PAT }} # PAT with 'repo' access to private repos
+  RW_PAT: ${{ secrets.WORKFLOWS }} # PAT with 'repo' access to private repos
 
 jobs:
   rebase:
@@ -23,7 +23,7 @@ jobs:
       - name: Checkout repository with private submodules
         uses: actions/checkout@v4
         with:
-          token: ${{ env.REPO_PAT }}
+          token: ${{ env.RW_PAT }}
           submodules: recursive
           fetch-depth: 0
 
@@ -51,7 +51,7 @@ jobs:
             echo "Rebasing submodule: $sub"
             pushd "$sub" > /dev/null
             # Ensure authentication for private submodule
-            git remote set-url origin https://x-access-token:${REPO_PAT}@github.com/$(git remote get-url origin | sed -E 's/.*github.com\/(.*)/\1/')
+            git remote set-url origin https://x-access-token:${RW_PAT}@github.com/$(git remote get-url origin | sed -E 's/.*github.com\/(.*)/\1/')
             SUB_BRANCH=$(git rev-parse --abbrev-ref HEAD)
             git fetch origin
             if ! git rebase "origin/$SUB_BRANCH"; then
