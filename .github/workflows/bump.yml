@@ -2,27 +2,35 @@ name: Check and Bump Submodules
 
 on:
   workflow_dispatch: # or change to pull_request / push triggers as needed
+    inputs:
+      branch:
+        description: "Branch to check for outdated submodules and commit update if needed "
+        required: true
+        default: main
 
 permissions:
   contents: write
 
 env:
-  CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
+  RW_PAT: ${{ secrets.WORKFLOWS }}
 
 jobs:
   check-and-bump-submodules:
     runs-on: ubuntu-latest
     steps:
-      - name: Echo workflow start
-        run: echo "🚀 Starting submodule bump workflow"
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive
-          fetch-depth: 0
-          token: ${{ env.CROSS_TOKEN }}
-
+          submodules: false
+          fetch-depth: 1
+          ref: ${{ github.event.inputs.branch  || github.ref_name }}
+          token: ${{ env.RW_PAT }}
+      - name: Authenticate submodules
+        run: |
+          git config --global url."https://${{ env.RW_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
+          sed -i -E 's|\.\./([^/]+)\.git|https://github.com/MO-test-env/\1|g' .gitmodules
+          git submodule sync --recursive
+          git submodule update --init --recursive
       - name: Determine current branch
         id: branch
         run: |
@@ -69,7 +77,7 @@ jobs:
 
               let urlWithToken = sub.url;
               if (sub.url.startsWith('https://')) {
-                urlWithToken = sub.url.replace('https://', `https://${process.env.CROSS_TOKEN}@`);
+                urlWithToken = sub.url.replace('https://', `https://${process.env.RW_PAT}@`);
               } else {
                 throw new Error(`Unsupported submodule URL: ${sub.url}`);
               }
@@ -110,7 +118,7 @@ jobs:
             if (changed) {
               console.log('Committing updated submodules...');
               execSync('git config user.name "github-actions[bot]"');
-              execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
+              execSync('git config user.email "github-actions[bot]@users.noreply.dell.com"');
               execSync(`git commit -m "Bump submodules to latest default branch"`);
               execSync(`git push origin ${process.env.GITHUB_REF_NAME}`);
             } else {
@@ -118,7 +126,3 @@ jobs:
             }
 
             console.log('🔧 Submodule inspection completed');
-
-      - name: Echo workflow end
-        if: always()
-        run: echo "✅ Submodule bump workflow finished"

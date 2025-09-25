@@ -1,46 +1,49 @@
-name: Link and Validate Submodule PR
+name: Create/ Link PR
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, reopened, synchronize]
+
 env:
-  CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
-  GH_TOKEN: ${{ secrets.WORKFLOWS }}
+  RW_PAT: ${{ secrets.WORKFLOWS }} # Personal Access Token with RW access to repo contents, PRs
 
 jobs:
   # Job 1: Checkout once and discover all submodules
   discover-submodules:
     name: Discover Submodules
-    runs-on: ubuntu-latest
+    runs-on: isg-ocp-x86-small
     outputs:
       matrix: ${{ steps.submodule.outputs.matrix }}
       has-submodules: ${{ steps.submodule.outputs.has-submodules }}
+      submodules-json: ${{ steps.submodule.outputs.submodules-json }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          submodules: false
+          # Only checkout the main repo, not submodules yet
+          submodules: true #maybe false idk
           fetch-depth: 0
-          token: ${{ env.CROSS_TOKEN }}
+          token: ${{ env.RW_PAT }}
 
       - name: Get changed submodules
         id: submodule
         run: |
-          set -x  
-          BASE_SHA="${{ github.event.pull_request.base.sha }}"
-
-          echo "Comparing against base: $BASE_SHA"
-
+          # Figure out the base ref (for PRs, use the PR base; otherwise fallback to main)
+          if [[ -n "${{ github.event.pull_request.base.sha }}" ]]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE_SHA="origin/main"
+          fi
+          echo "# 🔍 Discover Submodules" >> $GITHUB_STEP_SUMMARY
+          echo "### Comparing against base: $BASE_SHA"
           # Get list of actual submodules from .gitmodules
-          SUBMODULES_JSON=$(jq -c \
-              --arg path "$SUB_PATH" \
-              --arg repo "$SUB_REPO" \
-              '. += [{"path": $path, "repo": $repo}]' <<< "$SUBMODULES_JSON")
-
-          if [[ -z "$SUBMODULES_JSON" ]]; then
+          ACTUAL_SUBMODULES=$(git config --file .gitmodules --get-regexp "submodule\..*\.path" | awk '{print $2}' || true)
+          
+          if [[ -z "$ACTUAL_SUBMODULES" ]]; then
             echo "No submodules found in .gitmodules"
             echo "has-submodules=false" >> $GITHUB_OUTPUT
             echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            echo "submodules-json=[]" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -49,32 +52,36 @@ jobs:
           
           # Filter to only include actual submodules that have changes
           CHANGED_SUBMODULES=""
-          for submodule_path in $SUBMODULES_JSON; do
+          for submodule_path in $ACTUAL_SUBMODULES; do
             if echo "$ALL_CHANGED_FILES" | grep -q "^$submodule_path$"; then
               CHANGED_SUBMODULES="$CHANGED_SUBMODULES $submodule_path"
             fi
           done
 
           if [[ -z "$CHANGED_SUBMODULES" ]]; then
-            echo "No submodule changes detected"
+            echo "### ✅ No submodule changes detected" >> $GITHUB_STEP_SUMMARY
             echo "has-submodules=false" >> $GITHUB_OUTPUT
             echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
+            echo "submodules-json=[]" >> $GITHUB_OUTPUT
             exit 0
           fi
 
           MATRIX_JSON="{\"include\":["
+          SUBMODULES_ARRAY="["
           FIRST=true
+          FIRST_ARRAY=true
           COUNT=0
 
           for SUBMODULE_PATH in $CHANGED_SUBMODULES; do
-            echo "Processing changed submodule: $SUBMODULE_PATH"
+            echo "---" >> $GITHUB_STEP_SUMMARY
+            echo "### 📂 Processing changed submodule: $SUBMODULE_PATH" >> $GITHUB_STEP_SUMMARY
 
             # Extract name from .gitmodules
             submodule_name=$(git config --file .gitmodules --get-regexp "submodule\..*\.path" | \
                             awk -v p="$SUBMODULE_PATH" '$2==p {print $1}' | sed 's/submodule\.//; s/\.path//')
 
             SUBMODULE_URL=$(git config --file .gitmodules --get "submodule.$submodule_name.url")
-
+            echo "testing:  $SUBMODULE_PATH"
             if [[ -z "$SUBMODULE_URL" ]]; then
               echo "  Skipping $SUBMODULE_PATH (no URL)"
               continue
@@ -84,43 +91,173 @@ jobs:
               SUBMODULE_REPO=$(echo $SUBMODULE_URL | sed 's/git@github.com://' | sed 's/.git$//')
             elif [[ $SUBMODULE_URL == https://github.com/* ]]; then
               SUBMODULE_REPO=$(echo $SUBMODULE_URL | sed 's/https:\/\/github.com\///' | sed 's/.git$//')
+            elif [[ $SUBMODULE_URL == ../* ]]; then
+              # Handle relative URLs - convert to full URL
+              SUBMODULE_REPO=$(echo $SUBMODULE_URL | sed 's|^\.\./||' | sed 's/.git$//')
+              SUBMODULE_URL="https://github.com/MO-test-env/$SUBMODULE_REPO"
             else
-              echo "  Skipping non-GitHub submodule: $SUBMODULE_URL"
+              echo "  Skipping submodule: $SUBMODULE_URL"
               continue
             fi
 
             IFS='/' read -r owner repo <<< "$SUBMODULE_REPO"
 
+            # Build matrix entry
             if [[ $FIRST == true ]]; then
               FIRST=false
             else
               MATRIX_JSON="$MATRIX_JSON,"
             fi
 
+            # Build array entry for the creation step
+            if [[ $FIRST_ARRAY == true ]]; then
+              FIRST_ARRAY=false
+            else
+              SUBMODULES_ARRAY="$SUBMODULES_ARRAY,"
+            fi
+            SUBMODULES_ARRAY="$SUBMODULES_ARRAY{\"name\":\"$submodule_name\",\"path\":\"$SUBMODULE_PATH\",\"url\":\"$SUBMODULE_URL\"}"
+
+            # Extract owner and repo from URL
+            url_path="${SUBMODULE_URL#https://github.com/}"
+            owner="${url_path%/*}"
+            repo="${url_path##*/}"
+
             MATRIX_JSON="$MATRIX_JSON{\"path\":\"$SUBMODULE_PATH\",\"repo\":\"$SUBMODULE_REPO\",\"owner\":\"$owner\",\"repo_name\":\"$repo\",\"name\":\"$submodule_name\"}"
             COUNT=$((COUNT + 1))
           done
 
           MATRIX_JSON="$MATRIX_JSON]}"
+          SUBMODULES_ARRAY="$SUBMODULES_ARRAY]"
+          
           echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
+          echo "submodules-json=$SUBMODULES_ARRAY" >> $GITHUB_OUTPUT
 
           if [[ $COUNT -gt 0 ]]; then
             echo "has-submodules=true" >> $GITHUB_OUTPUT
           else
             echo "has-submodules=false" >> $GITHUB_OUTPUT
           fi
-
-          echo "Found $COUNT changed submodules"
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "### Found $COUNT changed submodules" >> $GITHUB_STEP_SUMMARY
           echo "Matrix JSON: $MATRIX_JSON"
+          echo "Submodules JSON: $SUBMODULES_ARRAY"
 
+      # Create branches and PRs in submodules via REST API
+      - name: Create submodule PRs
+        id: create
+        if: ${{ steps.submodule.outputs.has-submodules == 'true' && github.event.actions.event_name == 'opened' || github.event.actions.event_name =='reopened' || github.event.actions.event_name != 'synchronize' }} 
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const branchName = context.payload.pull_request.head.ref;
+            const codes = /(cbdit|cdc|cpse)-\d+/i;
+            const match = branchName.match(codes);
+            const ticketNum = match ? match[0].toUpperCase() : "NO-TICKET";
+
+            const submodules = JSON.parse('${{ steps.submodule.outputs.submodules-json }}' || '[]');
+            console.log(submodules)
+            const basePRNumber = context.payload.pull_request.number;
+
+            for (const sub of submodules) {
+              const [owner, repo] = sub.url.replace("https://github.com/", "").split("/");
+              const branch = context.payload.pull_request.head.ref;
+
+              // Get default branch SHA
+              const { data: repoData } = await github.rest.repos.get({ owner, repo });
+              const defaultBranch = repoData.default_branch;
+
+              const { data: refData } = await github.rest.git.getRef({
+                owner,
+                repo,
+                ref: `heads/${defaultBranch}`
+              });
+
+              // Create branch if it doesn't exist
+              try {
+                await github.rest.repos.getBranch({ owner, repo, branch });
+              } catch {
+                await github.rest.git.createRef({
+                  owner,
+                  repo,
+                  ref: `refs/heads/${branch}`,
+                  sha: refData.object.sha
+                });
+              }
+
+              // Check for existing PR
+              const { data: prs } = await github.rest.pulls.list({
+                owner,
+                repo,
+                head: `${owner}:${branch}`,
+                base: defaultBranch
+              });
+
+              let prNumber = prs.length ? prs[0].number : null;
+
+              if (!prNumber) {
+                const { data: newPR } = await github.rest.pulls.create({
+                  owner,
+                  repo,
+                  title: `${ticketNum}: Linked Submodule PR for Base PR #${basePRNumber} (AUTOGEN)`,
+                  body: `This PR was automatically created from ${context.repo.owner}/${context.repo.repo}#${basePRNumber}`,
+                  head: branch,
+                  base: defaultBranch
+                });
+                prNumber = newPR.number;
+              }
+
+              sub.pr_number = prNumber;
+            }
+
+            core.setOutput("final_json", JSON.stringify(submodules));
+
+      - name: Post submodule list as PR comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const json = `${{ steps.create.outputs.final_json }}`;
+            const body = [
+              "🔎 **Detected submodules** (cached for downstream workflows):",
+              "<!-- SUBMODULES_JSON -->",
+              "```json",
+              json,
+              "```",
+              "<!-- /SUBMODULES_JSON -->"
+            ].join("\n");
+
+            // Look for existing cache comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            const cacheComment = comments.find(c => c.body.includes('<!-- SUBMODULES_JSON -->'));
+
+            if (cacheComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: cacheComment.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }
 
   # Job 2: Process each submodule in parallel (PR linking, etc.)      
   link-and-validate:
     name: "PR Status: ${{ matrix.repo_name }}"
     needs: discover-submodules
-    if: needs.discover-submodules.outputs.has-submodules == 'true' && startsWith(github.head_ref, 'users/')
+    if: needs.discover-submodules.outputs.has-submodules == 'true'
 
-    runs-on: ubuntu-latest
+    runs-on: isg-ocp-x86-small
     permissions:
       contents: write
       pull-requests: write
@@ -140,12 +277,17 @@ jobs:
           echo "Processing submodule: ${{ matrix.owner }}/${{ matrix.repo_name }}"
           echo "Path: ${{ matrix.path }}"
           echo "Full repo: ${{ matrix.repo }}"
-          
+
       - name: Extract ticket number
         id: extract
         run: |
           BRANCH_NAME="${{ github.head_ref }}"
-          TICKET_NUM=$(echo "$BRANCH_NAME" | sed 's/users\///')
+
+          # Allowed codes
+          CODES="cbdit|cdc|cpse"
+
+          TICKET_NUM=$(echo "$BRANCH_NAME" | grep -Eo "($CODES)-[0-9]+" | head -n1)
+
           echo "ticket_num=$TICKET_NUM" >> $GITHUB_OUTPUT
           echo "Branch: $BRANCH_NAME, Ticket: $TICKET_NUM"
       
@@ -153,9 +295,10 @@ jobs:
         id: check_pr
         uses: actions/github-script@v7
         with:
-          github-token: ${{ env.CROSS_TOKEN }}
+          github-token: ${{ env.RW_PAT }}
           script: |
-            const branchName = 'users/${{ steps.extract.outputs.ticket_num }}';
+            // const branchName = 'users/${{ steps.extract.outputs.ticket_num }}';
+            const branchName = '${{ github.head_ref }}'
             const owner = '${{ matrix.owner }}';
             const repo = '${{ matrix.repo_name }}';
             const path = '${{ matrix.path }}';
@@ -178,18 +321,18 @@ jobs:
             core.setOutput('found', 'true');
             core.setOutput('pr_url', pr.html_url);
             core.setOutput('pr_number', pr.number.toString());
-            core.setOutput('pr_state', pr.state);
 
       - name: Create check run for submodule PR status
         id: antman
         uses: actions/github-script@v7
         with:
-          github-token: ${{ env.CROSS_TOKEN }}
+          github-token: ${{ env.RW_PAT }}
           script: |
             const found = '${{ steps.check_pr.outputs.found }}' === 'true';
             const prUrl = '${{ steps.check_pr.outputs.pr_url }}';
             const submodulePrUrl = '${{ steps.check_pr.outputs.pr_url }}';
             core.setOutput('is_approved', 'false');
+            core.setOutput('is_mergeable','false')
             
             // Check if submodules were updated in this PR
             const { data: files } = await github.rest.pulls.listFiles({
@@ -238,30 +381,20 @@ jobs:
               if (submodule_updated) {
                 status = 'completed';
                 conclusion = 'failure';
-                title = 'Submodule PR Not Found';
-                summary = `Submodule was updated but no open PR found in submodule repository for branch users/${{ steps.extract.outputs.ticket_num }}`;
-                console.error("❌ Failed");
                 process.exit(1);
               } else {
                 // No submodule updated, skip this check entirely
                 status = 'completed';
                 conclusion = 'success';
-                title = 'Submodule Check Skipped';
-                //summary = `No submodules were updated in this PR, skipping submodule PR check. Submodule updated: ${submodule_updated}`;
-                //console.error("✅ Skipping submodule");
                 process.exit(0);
               }
             } else {
               // PR found - now check if it's open and approved
               
-              // Extract PR number and repo info from the PR URL
-              // Assuming prUrl format: https://github.com/owner/repo/pull/123
-              const urlParts = prUrl.match(/github\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/);
+              const urlParts = prUrl.match(/eos2git.cec.lab.emc\.com\/([^\/]+)\/([^\/]+)\/pull\/(\d+)/);
               if (!urlParts) {
                 status = 'completed';
                 conclusion = 'failure';
-                title = 'Invalid PR URL';
-                summary = `Could not parse submodule PR URL: ${prUrl}`;
               } else {
                 const [, submoduleOwner, submoduleRepo, prNumber] = urlParts;
                 
@@ -272,16 +405,11 @@ jobs:
                     repo: submoduleRepo,
                     pull_number: parseInt(prNumber)
                   });
-                  
-                  console.log(`PR State: ${pr.state}`);
-                  console.log(`PR Mergeable State: ${pr.mergeable_state}`);
-                  
+                                    
                   // Check if PR is open
                   if (pr.state !== 'open') {
                     status = 'completed';
                     conclusion = 'failure';
-                    title = 'Submodule PR Closed';
-                    summary = `Linked submodule PR is ${pr.state}: ${prUrl}`;
                   } else {
                     // PR is open, now check approval status
                     const { data: reviews } = await github.rest.pulls.listReviews({
@@ -305,27 +433,16 @@ jobs:
                     console.log(`Approvals: ${approvals.length}, Change Requests: ${changeRequests.length}`);
                     
                     // Check if PR is ready to merge
-                    const isApproved = approvals.length > 0 && changeRequests.length === 0;
-                    
+                    const isApproved = approvals.length > 1 && changeRequests.length === 0;
+                    core.setOutput('approvals_count', approvals.length);
+                    core.setOutput('change_requests_count', changeRequests.length);
                     if (isApproved) {
                       core.setOutput('is_approved', 'true');
-                      status = 'completed';
-                      conclusion = 'success';
-                      title = 'Submodule PR Approved';
-                      summary = `Submodule PR is open and approved: ${prUrl}\n\nApprovals: ${approvals.length}\nReady for coordinated merge.`;
-                    } else {
-                      status = 'in_progress';
-                      conclusion = undefined;
-                      title = 'Submodule PR Awaiting Approval';
-                      summary = `Linked to submodule PR: ${prUrl}\n\nStatus: Open but not yet approved\nApprovals: ${approvals.length}\nChange Requests: ${changeRequests.length}\n\nWaiting for approval before allowing merge.`;
+                      core.setOutput('is_mergeable','true');
                     }
                   }
                 } catch (error) {
                   console.error('Error checking PR status:', error);
-                  status = 'completed';
-                  conclusion = 'failure';
-                  title = 'Error Checking Submodule PR';
-                  summary = `Failed to check status of submodule PR: ${prUrl}\nError: ${error.message}`;
                 }
               }
             }
@@ -356,205 +473,175 @@ jobs:
                 labels: ['ready-to-merge']
               });  
             };
-
-      - name: Add comment with submodule PR link
+      - name: Add Comment, Summarize & Validate PR Status
         if: steps.check_pr.outputs.found == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const prNumber = context.issue.number;
-            const submodulePrUrl = '${{ steps.check_pr.outputs.pr_url }}';
-            const submoduleRepo = '${{ matrix.repo_name }}';
-            const isApproved = '${{ steps.antman.outputs.is_approved }}' === 'true';
-            console.log(`Submodule PR Status: ${isApproved}`);
-            let approval_comment;
-            if (isApproved) {
-              approval_comment = "✅ submodule PR approved!";
-            } else {
-              approval_comment = "⏳ Waiting for submodule PR to be approved";
-            }
-            const comment = `🔗 Linked Submodule PR: [\`${submoduleRepo}\`](${submodulePrUrl})\nStatus = ${approval_comment}`;
+            const fs = require('fs');  
+            const summaryPath = process.env.GITHUB_STEP_SUMMARY;  
+
+            let mergeable_display = '${{ steps.check_pr.outputs.is_mergeable }}' === "true"
+            ? "🟢 Mergeable"
+            : "⛔ Blocked";
+
+            let pr_state_display = '${{ steps.check_pr.outputs.found }}' === "true"
+            ? "📂 Open"
+            : "❓ Not Found";
+
+            let approval_display = '${{ steps.antman.outputs.is_approved }}' === "true"
+            ? "✅ Approved"
+            : `⚠️ Pending (${{ steps.antman.outputs.approvals_count }}/2)`;
             
-            // Check if we already commented
+            let result_display = (
+            '${{ steps.antman.outputs.is_approved }}' === "true" &&
+            '${{ steps.check_pr.outputs.found }}' === "true"
+            )
+            ? "## 🎉 Result\nThe PR check **succeeded**. The Submodule PR is mergeable and approved."
+            : "## ❌ Result\nThe PR check **failed**. One or more conditions are not satisfied.";
+
+            // Get all existing comments first
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: prNumber
+              issue_number: context.issue.number
             });
+
             console.log("number of comments: " + comments.length);
-            
-            const botComment = comments.find(comment => 
+
+            // Look for our consolidated comment
+            const consolidatedComment = comments.find(comment => 
               comment.user.type === 'Bot' && 
-              comment.body.includes(`🔗 Linked Submodule PR: [\`${submoduleRepo}\`]`)
+              comment.body.includes('🔗 Linked Submodule PRs Summary')
             );
-            
-            if (botComment) {
-              console.log('Comment already exists');
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: botComment.id,
-                body: comment
-              });
+
+            // Build the current repo section
+            const currentRepoSection = 
+              `### [\`${{ matrix.repo }}\`](${{ steps.check_pr.outputs.pr_url }})\n\n` +
+              `| Field | Value |\n` +
+              `|-------|-------|\n` +
+              `| **Directory** | \`${{ matrix.path }}\` |\n` +
+              `| **Ticket** | \`${{ steps.extract.outputs.ticket_num }}\` |\n` +
+              `| **PR State** | ${pr_state_display} |\n` +
+              `| **Approvals** | ${approval_display} |\n` +
+              `| **Change Requests** | \`${{ steps.check_pr.outputs.change_requests_count }}\` |\n\n` +
+              `${result_display}\n\n` +
+              `---\n\n`;
+
+            if (consolidatedComment) {
+              // Update existing consolidated comment
+              console.log('Consolidated comment exists, checking if this repo is already included...');
+              
+              const repoMarker = `### [\`${{ matrix.repo }}\`]`;
+              
+              if (consolidatedComment.body.includes(repoMarker)) {
+                // Replace the existing section for this repo
+                console.log('Updating existing repo section...');
+                
+                // Find the start and end of this repo's section
+                const lines = consolidatedComment.body.split('\n');
+                const startIndex = lines.findIndex(line => line.includes(repoMarker));
+                
+                if (startIndex !== -1) {
+                  // Find the next repo section or end of content
+                  let endIndex = lines.length;
+                  for (let i = startIndex + 1; i < lines.length; i++) {
+                    if (lines[i].startsWith('### [') || lines[i] === '<!-- END_REPOS -->') {
+                      endIndex = i;
+                      break;
+                    }
+                  }
+                  
+                  // Replace the section
+                  const beforeSection = lines.slice(0, startIndex).join('\n');
+                  const afterSection = lines.slice(endIndex).join('\n');
+                  const updatedBody = beforeSection + '\n' + currentRepoSection + afterSection;
+                  
+                  await github.rest.issues.updateComment({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    comment_id: consolidatedComment.id,
+                    body: updatedBody
+                  });
+                }
+              } else {
+                // Add new repo section before the end marker
+                console.log('Adding new repo section...');
+                
+                let updatedBody;
+                if (consolidatedComment.body.includes('<!-- END_REPOS -->')) {
+                  // Insert before the end marker
+                  updatedBody = consolidatedComment.body.replace(
+                    '<!-- END_REPOS -->',
+                    currentRepoSection + '<!-- END_REPOS -->'
+                  );
+                } else {
+                  // Just append to the end
+                  updatedBody = consolidatedComment.body + currentRepoSection;
+                }
+                
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: consolidatedComment.id,
+                  body: updatedBody
+                });
+              }
             } else {
-              console.log('Comment does not exist');
+              // Create new consolidated comment
+              console.log('Creating new consolidated comment...');
+              
+              const newComment = 
+                "# 🔗 Linked Submodule PRs Summary\n\n" +
+                "## 📊 Overview\n" +
+                "This comment tracks all linked submodule PRs for this change.\n\n" +
+                currentRepoSection +
+                "<!-- END_REPOS -->";
+              
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                issue_number: prNumber,
-                body: comment
+                issue_number: context.issue.number,
+                body: newComment
               });
             }
-      - name: Status Report
-        if: steps.check_pr.outputs.found == 'true'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const isFound = '${{ steps.check_pr.outputs.found }}' === 'true';
-            const isApproved = '${{ steps.antman.outputs.is_approved }}' === 'true';
-            console.log(isFound);
-            console.log(isApproved);
-            if (isFound === true && isApproved === true) {
-              console.log("✅ Success");
-              process.exit(0);
-            } else {
-              console.error("❌ Failed");
-              process.exit(1);
-            }
+            fs.appendFileSync(summaryPath, currentRepoSection);
+            process.exit(('${{ steps.antman.outputs.is_approved }}' === "true" && '${{ steps.check_pr.outputs.found }}' === "true") ? 0 : 1);
+
   workflow-status:
     name: "Link PR"
-    runs-on: ubuntu-latest  
+    runs-on: isg-ocp-x86-small  
     needs: [discover-submodules, link-and-validate]
     if: always()  # Always run this job
     steps:
       - name: Check results
         run: |
           if [[ "${{ needs.discover-submodules.outputs.has-submodules }}" == "false" ]]; then
-            echo "No submodules found - check passes ✅"
+            echo "## No submodules found - check passes ✅" >> $GITHUB_STEP_SUMMARY
             exit 0
           elif [[ "${{ needs.link-and-validate.result }}" == "success" ]]; then
-            echo "All submodule checks passed ✅"  
+            echo "## 🎉 Result" >> $GITHUB_STEP_SUMMARY
+            echo "All submodule checks passed! Ready to merge with \`/merge\` command" >> $GITHUB_STEP_SUMMARY
             exit 0
           else
-            echo "Submodule checks failed ❌"
+            echo "## ❌ Result" >> $GITHUB_STEP_SUMMARY
+            echo "💥 Required submodules check failed" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### To fix submodule conflicts: Rebase base repo branch and rebase submodule repo branch" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Commands to rebase submodule:" >> $GITHUB_STEP_SUMMARY
+            echo "  \`cd <submodule-path>\`" >> $GITHUB_STEP_SUMMARY
+            echo "  \`git checkout <your-branch>\`" >> $GITHUB_STEP_SUMMARY
+            echo "  \`git pull --rebase origin main\`" >> $GITHUB_STEP_SUMMARY
+            echo "  \`git push origin test_branch\`" >> $GITHUB_STEP_SUMMARY
+            echo "  (If you pushed your branch already you need to use \`git push --force-with-lease\` flag)" >> $GITHUB_STEP_SUMMARY
+            echo "  \`cd ..\`" >> $GITHUB_STEP_SUMMARY
+            echo "  \`git add <submodule-path>\`" >> $GITHUB_STEP_SUMMARY
+            echo "  \`git commit -m 'Bump submodule to latest main\`" >> $GITHUB_STEP_SUMMARY
+            echo "  \`git push\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### If there are no conflicts, get 2 approvals and re run this job for ✅" >> $GITHUB_STEP_SUMMARY
+
             exit 1
           fi
-
-  #Job 3: Check Submodule Pointers
-  check-submodule-pointers:
-    runs-on: ubuntu-latest
-    name: Validate Submodule Pointers
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        submodules: false  # Don't initialize submodules yet
-        fetch-depth: 0     # Get full history
-        
-    - name: Check submodule pointers
-      id: check-pointers
-      run: |
-        #!/bin/bash
-        set -e
-        
-        echo "Checking submodule pointers..."
-        
-        # Get list of submodules
-        if [ ! -f .gitmodules ]; then
-          echo "No .gitmodules file found - no submodules to check"
-          exit 0
-        fi
-        
-        # Parse .gitmodules to get submodule info
-        submodules=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
-        
-        if [ -z "$submodules" ]; then
-          echo "No submodules found in .gitmodules"
-          exit 0
-        fi
-        
-        exit_code=0
-        
-        for submodule_path in $submodules; do
-          echo "Checking submodule: $submodule_path"
-          
-          # Get the submodule URL and current commit SHA
-          submodule_url=$(git config --file .gitmodules --get submodule.$submodule_path.url)
-          current_sha=$(git ls-tree HEAD $submodule_path | awk '{print $3}')
-          
-          if [ -z "$current_sha" ]; then
-            echo "❌ Could not find SHA for submodule $submodule_path"
-            exit_code=1
-            continue
-          fi
-          
-          echo "  Current SHA: $current_sha"
-          echo "  URL: $submodule_url"
-          
-          # Clone the submodule repository to a temp directory
-          temp_dir=$(mktemp -d)
-          echo "  Cloning submodule to check branches..."
-          
-          if ! git clone "$submodule_url" "$temp_dir" --quiet; then
-            echo "❌ Failed to clone submodule repository: $submodule_url"
-            exit_code=1
-            continue
-          fi
-          
-          cd "$temp_dir"
-          
-          # Fetch all branches
-          git fetch origin --quiet
-          
-          # Check if the SHA exists on main branch
-          if git merge-base --is-ancestor "$current_sha" origin/main 2>/dev/null; then
-            echo "✅ SHA $current_sha is reachable from main branch"
-          else
-            echo "❌ SHA $current_sha is NOT reachable from main branch"
-            echo "  This commit may be on a feature branch only"
-            
-            # Show which branches contain this commit for debugging
-            branches_with_commit=$(git branch -r --contains "$current_sha" 2>/dev/null | grep -v "HEAD" | sed 's/origin\///' | tr '\n' ' ' || echo "none")
-            echo "  Branches containing this commit: $branches_with_commit"
-            
-            exit_code=1
-          fi
-          
-          # Cleanup
-          cd - > /dev/null
-          rm -rf "$temp_dir"
-          echo ""
-        done
-        
-        if [ $exit_code -eq 0 ]; then
-          echo "🎉 All submodule pointers are valid (pointing to commits on main branch)"
-        else
-          echo "💥 One or more submodule pointers are invalid"
-          echo ""
-          echo "To fix this issue:"
-          echo "1. Update the submodule to point to a commit that exists on the main branch"
-          echo "2. Or merge the feature branch containing the commit into main first"
-          echo ""
-          echo "Commands to update submodule:"
-          echo "  cd <submodule-path>"
-          echo "  git checkout main"
-          echo "  git pull origin main"
-          echo "  cd .."
-          echo "  git add <submodule-path>"
-          echo "  git commit -m 'Update submodule to latest main'"
-        fi
-        exit 0
-        # exit $exit_code
-        # force success for now
-        
-    - name: Report status
-      if: always()
-      run: |
-        if [ ${{ steps.check-pointers.outcome }} == 'success' ]; then
-          echo "✅ Submodule pointer check: PASSED"
-        else
-          echo "❌ Submodule pointer check: FAILED"
-        fi

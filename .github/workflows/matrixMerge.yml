@@ -13,6 +13,7 @@ env:
   RW_PAT: ${{ secrets.WORKFLOWS }}
 
 jobs:
+  # Detect /merge comment and get cached submodules
   detect-submodules:
     if: |
       github.event.issue.pull_request != null &&
@@ -39,13 +40,16 @@ jobs:
             if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
             core.setOutput('submodules', jsonMatch[1]);
 
+
+  # Merge submodule PRs in parallel
   process-submodules:
     needs: detect-submodules
-    if: ${{ needs.detect-submodules.outputs.submodules != '[]' }}
-    runs-on: ubuntu-latest
+    runs-on: isg-ocp-x86-small
+    env:
+      GITHUB_API_URL: https://eos2git.cec.lab.emc.com/api/v3
     strategy:
       matrix:
-        submod: ${{ fromJSON(needs.detect-submodules.outputs.submodules) }}
+        submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
       max-parallel: 4
     steps:
       - name: Merge submodule PR
@@ -55,53 +59,63 @@ jobs:
           github-token: ${{ env.RW_PAT }}
           script: |
             const sub = ${{ toJson(matrix.submod) }};
+            console.info(`🔎 Processing submodule: ${JSON.stringify(sub)}`);
+            
             const url = new URL(sub.url);
+            console.info(`🛤️  Resolved URL -> ${url.href}`);
+            
             const [owner, repo] = url.pathname.replace(/^\//,'').replace(/\.git$/,'').split('/');
+            console.info(`🗂️  Owner: ${owner}, Repo: ${repo}`);
+            
             const pr = sub.pr_number;
+            console.info(`📄 PR number: ${pr ?? 'none (skip)'}`);
 
-            if (!pr) {
-              core.info(`Skipping ${sub.path}`);
-            } else {
-              try {
-                await github.rest.pulls.merge({
-                  owner,
-                  repo,
-                  pull_number: pr,
-                  merge_method: "squash",
-                });
-                core.info(`Merged ${sub.path}`);
-              } catch (err) {
-                core.setFailed(`Failed to merge ${sub.path}: ${err.message}`);
+            try {
+              const { data: prInfo } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: pr,
+              });
+              if(prInfo.state !== "open") {
+                console.info("PR not open");
+              }
+              if(!prInfo.mergeable){
+                console.info("PR not mergeable");
               }
             }
+            catch(error) {
+              console.error(`Failed to get info PR for ${sub.path}`);
+              return;
+            }
 
-  cleanup-on-failure:
-    runs-on: ubuntu-latest
-    needs: process-submodules
-    if: ${{ failure() }}
-    steps:
-      - name: Checkout base repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ env.RW_PAT }}
-
-      - name: Revert merged submodules
-        run: |
-          echo "⚠️ Reverting any submodules that might have been merged"
-          echo " TODO "
+            let result;
+            if (!pr) {
+              result = { path: sub.path, repo: `${owner}/${repo}`, result: "skipped" };
+            } else {
+              const res = await github.rest.pulls.merge({
+                owner,
+                repo,
+                pull_number: pr,
+                merge_method: "squash",
+              });
+              result = { path: sub.path, repo: `${owner}/${repo}`, result: "merged", sha: res.data.sha };
+              console.info(`✅ Merge succeeded for ${sub.path} (sha: ${res.data.sha})`);
+            }
+            console.info(`🔎 RESULT: ${JSON.stringify(result)}`);
+          # The above could be wrapped in a try catch block to fail more gracefully- but I want it to clearly show the user if the merge does not work
   aggregate:
     needs: process-submodules
-    runs-on: ubuntu-latest
+    runs-on: isg-ocp-x86-small
     steps:
       - run: echo "Ensure ive waited for all matrix jobs to finish before bumping"
-      
+
   bump-submodules:
     needs:
       - detect-submodules
       - aggregate
-    runs-on: ubuntu-latest
+    runs-on: isg-ocp-x86-small
     steps:
+      # Get PR details from issue_comment
       - name: Get PR details
         id: pr
         uses: actions/github-script@v7
@@ -113,7 +127,7 @@ jobs:
               pull_number: context.payload.issue.number,
             });
             core.setOutput("head_ref", pr.data.head.ref);
-      
+
       - name: Checkout base repo
         uses: actions/checkout@v4
         with:
@@ -126,7 +140,7 @@ jobs:
           git config --global url."https://${{ env.RW_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
           git submodule sync --recursive
           git submodule update --init --recursive
-      
+
       - name: Bump submodules
         uses: actions/github-script@v7
         env:
