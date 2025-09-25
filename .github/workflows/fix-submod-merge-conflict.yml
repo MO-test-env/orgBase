@@ -1,4 +1,4 @@
-name: Submodule Conflict Resolver (Private Repos)
+name: Submodule Conflict Resolver
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
         with:
           submodules: recursive
           token: ${{ secrets.WORKFLOWS }}
-          fetch-depth: 0  # fetch full history to allow rebases
+          fetch-depth: 0  # fetch full history
 
       - name: Setup Git
         run: |
@@ -35,52 +35,54 @@ jobs:
             AUTH_URL=${URL/https:\/\/github.com\//https:\/\/${GITHUB_ACTOR}:${{ secrets.WORKFLOWS }}@github.com/}
             git config submodule.$sub.url $AUTH_URL
           done
-      
+
       # Save original submodule SHAs 
       - name: Save original submodule SHAs
         id: save-shas
         run: |
-          declare -A ORIG_SHAS
           for sub in $SUBMODULES; do
-            ORIG_SHAS[$sub]=$(git rev-parse HEAD:$sub)
-            echo "$sub=${ORIG_SHAS[$sub]}" >> shas.txt
+            SHA=$(git rev-parse HEAD:$sub)
+            echo "$sub=$SHA" >> shas.txt
           done
           echo "ORIG_SHAS_FILE=shas.txt" >> $GITHUB_ENV
 
+      # Update submodules to latest for conflict resolution
       - name: Update submodules to latest
         run: |
           for sub in $SUBMODULES; do
-            echo "Updating $sub..."
+            echo "Updating $sub to latest..."
             git submodule update --init --remote $sub
           done
 
-      - name: Resolve submodule conflicts
+      - name: Resolve submodule conflicts (reset to base branch)
         run: |
           for sub in $SUBMODULES; do
-            echo "Resetting submodule $sub to base branch..."
-            BASE_BRANCH=main  # adjust if your default branch is different
+            echo "Resetting $sub to base branch main..."
+            BASE_BRANCH=main
             git fetch origin $BASE_BRANCH
             BASE_COMMIT=$(git merge-base HEAD origin/$BASE_BRANCH)
             git checkout $BASE_COMMIT -- $sub
             git add $sub
           done
 
-      - name: Commit resolved submodules
+      - name: Commit resolved submodules (base branch)
         run: |
           if ! git diff --cached --quiet; then
-            git commit -m "Automated submodule conflict resolution (private repos)"
+            git commit -m "Automated submodule conflict resolution (reset to main)"
             git push origin HEAD
           else
-            echo "No submodule conflicts to resolve."
+            echo "No conflicts to resolve for base branch."
           fi
-      
+
       # Reset submodules to their original SHAs
       - name: Reset submodules to original SHAs
         run: |
-          echo "Resetting submodules to their original SHAs..."
+          echo "Resetting submodules to original SHAs..."
           while IFS='=' read -r sub sha; do
-            echo "Resetting $sub to $sha"
-            git checkout $sha -- $sub
+            echo "Fetching exact commit for $sub: $sha"
+            # Ensure the SHA exists locally
+            git -C $sub fetch origin +$sha:refs/tmp-reset
+            git -C $sub checkout $sha
             git add $sub
           done < $ORIG_SHAS_FILE
 
@@ -91,12 +93,4 @@ jobs:
             git push origin HEAD
           else
             echo "Submodules already at original SHAs."
-          fi
-      - name: Commit resolved submodules
-        run: |
-          if ! git diff --cached --quiet; then
-            git commit -m "Automated submodule conflict resolution (private repos)"
-            git push origin HEAD
-          else
-            echo "No submodule conflicts to resolve."
           fi
