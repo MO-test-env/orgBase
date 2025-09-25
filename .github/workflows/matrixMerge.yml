@@ -10,10 +10,9 @@ permissions:
   contents: write
 
 env:
-  RW_PAT: ${{ secrets.WORKFLOWS}}
+  RW_PAT: ${{ secrets.WORKFLOWS }}
 
 jobs:
-  # 1️⃣ Detect /merge comment and get cached submodules
   detect-submodules:
     if: |
       github.event.issue.pull_request != null &&
@@ -39,14 +38,13 @@ jobs:
             const jsonMatch = cache.body.match(/```json\s*([\s\S]*?)\s*```/);
             if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
             core.setOutput('submodules', jsonMatch[1]);
-
-  # 2️⃣ Merge submodule PRs in parallel
   process-submodules:
     needs: detect-submodules
+    if: ${{ needs.detect-submodules.outputs.submodules != '{}' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
+        submod: ${{ fromJSON(needs.detect-submodules.outputs.submodules) }}
       max-parallel: 4
     steps:
       - name: Merge submodule PR
@@ -60,70 +58,51 @@ jobs:
             const [owner, repo] = url.pathname.replace(/^\//,'').replace(/\.git$/,'').split('/');
             const pr = sub.pr_number;
 
-            let result;
             if (!pr) {
-              result = { path: sub.path, repo: `${owner}/${repo}`, result: "skipped" };
+              core.info(`Skipping ${sub.path}`);
             } else {
               try {
-                const res = await github.rest.pulls.merge({
+                await github.rest.pulls.merge({
                   owner,
                   repo,
                   pull_number: pr,
                   merge_method: "squash",
                 });
-                result = { path: sub.path, repo: `${owner}/${repo}`, result: "merged", sha: res.data.sha };
+                core.info(`Merged ${sub.path}`);
               } catch (err) {
-                result = { path: sub.path, repo: `${owner}/${repo}`, result: "failed", error: err.message };
+                core.setFailed(`Failed to merge ${sub.path}: ${err.message}`);
               }
             }
-  
-  aggregate:
+
+  cleanup-on-failure:
+    runs-on: ubuntu-latest
     needs: process-submodules
-    runs-on: ubuntu-latest
+    if: ${{ failure() }}
     steps:
-      - run: echo "Ensure ive waited for all matrix jobs to finish before bumping"
-
-  bump-submodules:
-    needs:
-      - detect-submodules
-      - aggregate
-    runs-on: ubuntu-latest
-    steps:
-      # 1️⃣ Get PR details from issue_comment
-      - name: Get PR details
-        id: pr
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const pr = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.issue.number,
-            });
-            core.setOutput("head_ref", pr.data.head.ref);
-
-      # 2️⃣ Checkout only the pr branch of the base repo (no submodules)
       - name: Checkout base repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ env.RW_PAT }}
-          ref: ${{ steps.pr.outputs.head_ref }}
-      
-      - name: Authenticate submodules
-        run: |
-          git config --global url."https://${{ env.RW_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
-          git submodule sync --recursive
-          git submodule update --init --recursive
 
-      # 3️⃣ Bump submodules manually (no recursive checkout)
+      - name: Revert merged submodules
+        run: |
+          echo "⚠️ Reverting any submodules that might have been merged"
+          git submodule foreach --recursive 'git reset --hard HEAD'
+          git reset --hard HEAD
+
+  bump-submodules:
+    needs: 
+      - detect-submodules
+      - process-submodules
+    if: ${{ needs.detect-submodules.outputs.submodules != '{}' }}
+    runs-on: ubuntu-latest
+    steps:
+      # existing bump-submodules steps
       - name: Bump submodules
         uses: actions/github-script@v7
-        env:
-          SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
-          TOKEN: ${{ env.RW_PAT }}
-          BRANCH: ${{ steps.pr.outputs.head_ref }}
         with:
+          github-token: ${{ env.RW_PAT }}
           script: |
             const { execSync } = require('child_process');
 
@@ -183,7 +162,7 @@ jobs:
 
   # 4️⃣ Merge base PR (after bump)
   merge-base:
-    needs: bump-submodules
+    needs: [detect-submodules, process-submodules, bump-submodules]
     runs-on: ubuntu-latest
     steps:
       - name: Merge base PR
@@ -198,6 +177,3 @@ jobs:
               pull_number: prNumber,
               merge_method: 'squash'
             });
-
-#if bump or merge base fails revert each submodule
-#
