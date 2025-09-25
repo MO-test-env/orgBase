@@ -1,8 +1,8 @@
 [submodule "submod"]
 	path = submod
-	url = https://github.com/MOvenshire/submod.git
+	url = ../orgSubmod.git
 	branch = main
 [submodule "submod2"]
 	path = submod2
-	url = https://github.com/MOvenshire/submod2.git
+	url = ../orgSubmod2.git
 	branch = main
