@@ -41,7 +41,7 @@ jobs:
 
   process-submodules:
     needs: detect-submodules
-    if: ${{ needs.detect-submodules.outputs.submodules != '{}' }}
+    if: ${{ needs.detect-submodules.outputs.submodules != '[]' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -95,7 +95,7 @@ jobs:
     needs: 
       - detect-submodules
       - process-submodules
-    if: ${{ needs.detect-submodules.outputs.submodules != '{}' }}
+    if: ${{ needs.detect-submodules.outputs.submodules != '[]' }}
     runs-on: ubuntu-latest
     steps:
       # existing bump-submodules steps
@@ -162,7 +162,7 @@ jobs:
 
   merge-base-no-submodules:
     needs: detect-submodules
-    if: ${{ needs.detect-submodules.outputs.submodules == '{}' }}
+    if: ${{ needs.detect-submodules.outputs.submodules == '[]' }}
     runs-on: ubuntu-latest
     steps:
       - name: Merge base PR (no submodules)
