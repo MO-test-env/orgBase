@@ -90,57 +90,79 @@ jobs:
         run: |
           echo "⚠️ Reverting any submodules that might have been merged"
           echo " TODO "
-
-  bump-submodules:
-    needs: 
-      - detect-submodules
-      - process-submodules
-    if: ${{ needs.detect-submodules.outputs.submodules != '[]' }}
+  aggregate:
+    needs: process-submodules
     runs-on: ubuntu-latest
     steps:
-      # existing bump-submodules steps
-      - name: Bump submodules
+      - run: echo "Ensure ive waited for all matrix jobs to finish before bumping"
+      
+  bump-submodules:
+    needs:
+      - detect-submodules
+      - aggregate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get PR details
+        id: pr
         uses: actions/github-script@v7
         with:
-          github-token: ${{ env.RW_PAT }}
+          script: |
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.issue.number,
+            });
+            core.setOutput("head_ref", pr.data.head.ref);
+      
+      - name: Checkout base repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ env.RW_PAT }}
+          ref: ${{ steps.pr.outputs.head_ref }}
+      
+      - name: Authenticate submodules
+        run: |
+          git config --global url."https://${{ env.RW_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
+          git submodule sync --recursive
+          git submodule update --init --recursive
+      
+      - name: Bump submodules
+        uses: actions/github-script@v7
+        env:
+          SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
+          TOKEN: ${{ env.RW_PAT }}
+          BRANCH: ${{ steps.pr.outputs.head_ref }}
+        with:
           script: |
             const { execSync } = require('child_process');
-
             let submoduleJson;
             try {
               submoduleJson = JSON.parse(process.env.SUBMODULES);
             } catch (e) {
               throw new Error("Failed to parse submodules JSON: " + e.message);
             }
-
             let changed = false;
-
             for (const sub of submoduleJson) {
               console.log(`🔧 Updating submodule ${sub.repo} at ${sub.path}`);
-
               let urlWithToken = sub.url;
               if (sub.url.startsWith('https://')) {
                 urlWithToken = sub.url.replace('https://', `https://${process.env.TOKEN}@`);
               }
-
               // Initialize submodule if needed
               execSync(`git submodule update --init ${sub.path}`, { stdio: 'inherit' });
-
               // Get submodule default branch
               const defaultBranch = execSync(
                 `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
                 { encoding: 'utf8' }
               ).trim();
-
               // Fetch and update only default branch
               execSync(`git -C ${sub.path} fetch origin ${defaultBranch}:${defaultBranch}`, { stdio: 'inherit' });
               const latestCommit = execSync(
                 `git ls-remote ${urlWithToken} refs/heads/${defaultBranch} | awk '{print $1}'`,
                 { encoding: 'utf8' }
               ).trim();
-
               const currentCommit = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
-
               if (currentCommit !== latestCommit) {
                 console.log(`⚠️  ${sub.repo} is outdated. Resetting to ${latestCommit}`);
                 execSync(`git -C ${sub.path} reset --hard ${latestCommit}`, { stdio: 'inherit' });
@@ -150,7 +172,6 @@ jobs:
                 console.log(`✅ ${sub.repo} is already up-to-date`);
               }
             }
-
             if (changed) {
               execSync('git config user.name "github-actions[bot]"');
               execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
