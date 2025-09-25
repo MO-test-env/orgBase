@@ -10,3 +10,12 @@
     - I didnt manually do any of these but I did briefly read over them. 
 - **GraphQL ref** - <https://docs.github.com/en/graphql/reference/mutations#revertpullrequest>
 - **Octokit** - <https://github.com/octokit>
+
+
+Things to test 
+- 0 submod (create runs with no errors, merge works)
+- 1 submod (merge nice into non main branch )
+- 2 submod (merge nice)
+- 1 submod (conflict in 1, can fix?)
+- 1 submod (conflict outside submod?)
+
