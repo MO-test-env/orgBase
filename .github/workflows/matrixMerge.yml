@@ -127,6 +127,7 @@ jobs:
               pull_number: context.payload.issue.number,
             });
             core.setOutput("head_ref", pr.data.head.ref);
+            core.setOutput("base_ref", pr.data.base.ref);
 
       - name: Checkout base repo
         uses: actions/checkout@v4
@@ -147,36 +148,32 @@ jobs:
           SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
           TOKEN: ${{ env.RW_PAT }}
           BRANCH: ${{ steps.pr.outputs.head_ref }}
+          BASE_BRANCH: ${{ steps.pr.outputs.base_ref }}
         with:
           script: |
             const { execSync } = require('child_process');
-            let submoduleJson;
-            try {
-              submoduleJson = JSON.parse(process.env.SUBMODULES);
-            } catch (e) {
-              throw new Error("Failed to parse submodules JSON: " + e.message);
-            }
+            const submoduleJson = JSON.parse(process.env.SUBMODULES);
             let changed = false;
+
             for (const sub of submoduleJson) {
               console.log(`🔧 Updating submodule ${sub.repo} at ${sub.path}`);
-              let urlWithToken = sub.url;
-              if (sub.url.startsWith('https://')) {
-                urlWithToken = sub.url.replace('https://', `https://${process.env.TOKEN}@`);
-              }
-              // Initialize submodule if needed
-              execSync(`git submodule update --init ${sub.path}`, { stdio: 'inherit' });
-              // Get submodule default branch
+              let urlWithToken = sub.url.startsWith('https://')
+                ? sub.url.replace('https://', `https://${process.env.TOKEN}@`)
+                : sub.url;
+
+              // Get default branch of submodule
               const defaultBranch = execSync(
                 `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
                 { encoding: 'utf8' }
               ).trim();
-              // Fetch and update only default branch
+
               execSync(`git -C ${sub.path} fetch origin ${defaultBranch}:${defaultBranch}`, { stdio: 'inherit' });
               const latestCommit = execSync(
                 `git ls-remote ${urlWithToken} refs/heads/${defaultBranch} | awk '{print $1}'`,
                 { encoding: 'utf8' }
               ).trim();
               const currentCommit = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
+
               if (currentCommit !== latestCommit) {
                 console.log(`⚠️  ${sub.repo} is outdated. Resetting to ${latestCommit}`);
                 execSync(`git -C ${sub.path} reset --hard ${latestCommit}`, { stdio: 'inherit' });
@@ -186,6 +183,7 @@ jobs:
                 console.log(`✅ ${sub.repo} is already up-to-date`);
               }
             }
+
             if (changed) {
               execSync('git config user.name "github-actions[bot]"');
               execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
@@ -194,6 +192,7 @@ jobs:
             } else {
               console.log('✅ All submodules already up-to-date.');
             }
+
 
   merge-base-no-submodules:
     needs: detect-submodules
