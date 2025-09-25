@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           # Only checkout the main repo, not submodules yet
-          submodules: true #maybe false idk
+          submodules: true 
           fetch-depth: 0
           token: ${{ env.RW_PAT }}
 
