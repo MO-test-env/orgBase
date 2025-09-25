@@ -11,7 +11,7 @@ jobs:
   # Job 1: Checkout once and discover all submodules
   discover-submodules:
     name: Discover Submodules
-    runs-on: isg-ocp-x86-small
+    runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.submodule.outputs.matrix }}
       has-submodules: ${{ steps.submodule.outputs.has-submodules }}
@@ -257,7 +257,7 @@ jobs:
     needs: discover-submodules
     if: needs.discover-submodules.outputs.has-submodules == 'true'
 
-    runs-on: isg-ocp-x86-small
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
@@ -611,7 +611,7 @@ jobs:
 
   workflow-status:
     name: "Link PR"
-    runs-on: isg-ocp-x86-small  
+    runs-on: ubuntu-latest  
     needs: [discover-submodules, link-and-validate]
     if: always()  # Always run this job
     steps:
