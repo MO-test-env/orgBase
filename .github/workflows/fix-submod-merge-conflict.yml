@@ -1,96 +1,71 @@
-name: Submodule Conflict Resolver
+name: Rebase Base Branch & Submodules 
 
 on:
   workflow_dispatch:
+    inputs:
+      base_branch:
+        description: 'Branch to rebase onto'
+        default: 'main'
+        required: true
 
 permissions:
   contents: write
+  pull-requests: write
+
+env:
+  REPO_PAT: ${{ secrets.WORKFLOWS_PAT }} # PAT with 'repo' access to private repos
 
 jobs:
-  resolve-submodule-conflicts:
+  rebase:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
-      - name: Checkout the repository
+      - name: Checkout repository with private submodules
         uses: actions/checkout@v4
         with:
+          token: ${{ env.REPO_PAT }}
           submodules: recursive
-          token: ${{ secrets.WORKFLOWS }}
-          fetch-depth: 0  # fetch full history
+          fetch-depth: 0
 
-      - name: Setup Git
+      - name: Set up Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Determine submodules
-        id: submodules
+      - name: Rebase main branch
         run: |
-          git config --file .gitmodules --get-regexp path | awk '{print $2}' > submodules.txt
-          echo "SUBMODULES=$(cat submodules.txt | tr '\n' ' ')" >> $GITHUB_ENV
-
-      - name: Configure submodule authentication
-        run: |
-          for sub in $SUBMODULES; do
-            URL=$(git config --file .gitmodules submodule.$sub.url)
-            AUTH_URL=${URL/https:\/\/github.com\//https:\/\/${GITHUB_ACTOR}:${{ secrets.WORKFLOWS }}@github.com/}
-            git config submodule.$sub.url $AUTH_URL
-          done
-
-      # Save original submodule SHAs 
-      - name: Save original submodule SHAs
-        id: save-shas
-        run: |
-          for sub in $SUBMODULES; do
-            SHA=$(git rev-parse HEAD:$sub)
-            echo "$sub=$SHA" >> shas.txt
-          done
-          echo "ORIG_SHAS_FILE=shas.txt" >> $GITHUB_ENV
-
-      # Update submodules to latest for conflict resolution
-      - name: Update submodules to latest
-        run: |
-          for sub in $SUBMODULES; do
-            echo "Updating $sub to latest..."
-            git submodule update --init --remote $sub
-          done
-
-      - name: Resolve submodule conflicts (reset to base branch)
-        run: |
-          for sub in $SUBMODULES; do
-            echo "Resetting $sub to base branch main..."
-            BASE_BRANCH=main
-            git fetch origin $BASE_BRANCH
-            BASE_COMMIT=$(git merge-base HEAD origin/$BASE_BRANCH)
-            git checkout $BASE_COMMIT -- $sub
-            git add $sub
-          done
-
-      - name: Commit resolved submodules (base branch)
-        run: |
-          if ! git diff --cached --quiet; then
-            git commit -m "Automated submodule conflict resolution (reset to main)"
-            git push origin HEAD
-          else
-            echo "No conflicts to resolve for base branch."
+          BASE_BRANCH="${{ github.event.inputs.base_branch }}"
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "Rebasing $CURRENT_BRANCH onto $BASE_BRANCH"
+          git fetch origin "$BASE_BRANCH"
+          git checkout "$CURRENT_BRANCH"
+          if ! git rebase "origin/$BASE_BRANCH"; then
+            echo "::error::Merge conflicts detected in main repo. Resolve manually."
+            exit 1
           fi
 
-      # Reset submodules to their original SHAs
-      - name: Reset submodules to original SHAs
+      - name: Rebase Submodules
         run: |
-          echo "Resetting submodules to original SHAs..."
-          while IFS='=' read -r sub sha; do
-            echo "Fetching exact commit for $sub: $sha"
-            # Ensure the SHA exists locally
-            git -C $sub fetch origin +$sha:refs/tmp-reset
-            git -C $sub checkout $sha
-            git add $sub
-          done < $ORIG_SHAS_FILE
+          SUBMODULES=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+          for sub in $SUBMODULES; do
+            echo "Rebasing submodule: $sub"
+            pushd "$sub" > /dev/null
+            # Ensure authentication for private submodule
+            git remote set-url origin https://x-access-token:${REPO_PAT}@github.com/$(git remote get-url origin | sed -E 's/.*github.com\/(.*)/\1/')
+            SUB_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+            git fetch origin
+            if ! git rebase "origin/$SUB_BRANCH"; then
+              echo "::error::Merge conflicts detected in submodule $sub. Resolve manually."
+              exit 1
+            fi
+            popd > /dev/null
+          done
 
-      - name: Commit submodules back to original SHAs
+      - name: Push changes if no conflicts
         run: |
-          if ! git diff --cached --quiet; then
-            git commit -m "Reset submodules to original SHAs"
-            git push origin HEAD
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No changes to push"
           else
-            echo "Submodules already at original SHAs."
-          fi
+            echo "Pushing rebased branches"
+            git push origin HEAD --force
+            git submodule foreach --recursive 'git push origin HEAD --force'
