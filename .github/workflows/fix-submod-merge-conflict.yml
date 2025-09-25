@@ -36,33 +36,82 @@ jobs:
             git config submodule.$sub.url $AUTH_URL
           done
 
+      - name: Update submodules safely
+        run: |
+          for sub in $SUBMODULES; do
+            echo "Processing submodule $sub..."
+            
+            # Get the original SHA of this submodule
+            ORIG_SHA=$(git rev-parse HEAD:$sub)
+            
+            # Go into the submodule directory
+            cd $sub
+            
+            # Fetch only the exact SHA needed
+            git fetch origin $ORIG_SHA --depth=1
+            
+            # Checkout that SHA explicitly
+            git checkout $ORIG_SHA
+            
+            # Go back to main repo
+            cd -
+          done
+      
+      - name: Update submodules to latest
+        run: |
+          for sub in $SUBMODULES; do
+            echo "Updating $sub..."
+            git submodule update --init --remote $sub
+          done
+      
       - name: Reset submodules to base and reapply original SHAs safely
         run: |
-          BASE_BRANCH=main
-          git fetch origin $BASE_BRANCH --depth=50
-          BASE_COMMIT=$(git merge-base HEAD origin/$BASE_BRANCH)
+          set -euo pipefail
+          set -x  # Bash debug mode
 
+          BASE_BRANCH=main
+          echo "Fetching base branch '$BASE_BRANCH' with depth 50..."
+          git fetch origin $BASE_BRANCH --depth=50
+
+          BASE_COMMIT=$(git merge-base HEAD origin/$BASE_BRANCH)
+          echo "Computed merge base commit: $BASE_COMMIT"
+
+          echo "Submodules to process: ${SUBMODULES[@]}"
+
+          # Save original SHAs
           declare -A ORIG_SHAS
-          for sub in $SUBMODULES; do
+          for sub in "${SUBMODULES[@]}"; do
             ORIG_SHAS[$sub]=$(git rev-parse HEAD:$sub)
+            echo "Saved original SHA for submodule '$sub': ${ORIG_SHAS[$sub]}"
           done
 
-          # Reset all submodules to base branch
+          echo "Step 1: Reset all submodules to base branch"
           git checkout $BASE_COMMIT -- "${SUBMODULES[@]}"
           git add "${SUBMODULES[@]}"
+
           if ! git diff --cached --quiet; then
+            echo "Changes detected after resetting submodules. Committing..."
             git commit -m "Reset all submodules to base branch ($BASE_BRANCH)"
+          else
+            echo "No changes detected after resetting submodules."
           fi
 
-          # Reapply original SHAs safely
+          echo "Step 2: Reapply original SHAs safely"
           for sub in "${SUBMODULES[@]}"; do
-            git -C $sub fetch origin ${ORIG_SHAS[$sub]} --depth=1
-            git -C $sub checkout ${ORIG_SHAS[$sub]}
+            echo "Fetching original SHA ${ORIG_SHAS[$sub]} for submodule '$sub'..."
+            git -C "$sub" fetch origin ${ORIG_SHAS[$sub]} --depth=1 || echo "Warning: fetch failed for $sub"
+            echo "Checking out original SHA ${ORIG_SHAS[$sub]} in submodule '$sub'..."
+            git -C "$sub" checkout ${ORIG_SHAS[$sub]} || echo "Warning: checkout failed for $sub"
           done
-          git add "${SUBMODULES[@]}"
 
+          git add "${SUBMODULES[@]}"
           if ! git diff --cached --quiet; then
+            echo "Changes detected after reapplying SHAs. Committing..."
             git commit -m "Reapply original submodule SHAs"
+          else
+            echo "No changes detected after reapplying SHAs."
           fi
 
+          echo "Final step: push changes to origin"
           git push origin HEAD
+          echo "Push complete."
