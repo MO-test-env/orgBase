@@ -39,36 +39,34 @@ jobs:
       - name: Reset all submodules to base and reapply original SHAs
         run: |
           BASE_BRANCH=main
-          git fetch origin $BASE_BRANCH --depth=1  # shallow fetch only base commit
 
-          # Capture all original SHAs in one batch
+          # Fetch enough history for the base branch
+          git fetch origin $BASE_BRANCH:refs/remotes/origin/$BASE_BRANCH --depth=50
+
+          # Save original SHAs
           declare -A ORIG_SHAS
           for sub in $SUBMODULES; do
             ORIG_SHAS[$sub]=$(git rev-parse HEAD:$sub)
           done
 
-          # Determine base commit for reset
+          # Determine base commit
           BASE_COMMIT=$(git merge-base HEAD origin/$BASE_BRANCH)
 
-          # --- Step 1: Reset all submodules to base branch ---
+          # Reset submodules to base
           git checkout $BASE_COMMIT -- "${SUBMODULES[@]}"
           git add "${SUBMODULES[@]}"
           if ! git diff --cached --quiet; then
             git commit -m "Reset all submodules to base branch ($BASE_BRANCH)"
-          else
-            echo "No changes when resetting submodules to base."
           fi
 
-          # --- Step 2: Reapply original SHAs ---
+          # Reapply original SHAs
           for sub in "${SUBMODULES[@]}"; do
             git checkout ${ORIG_SHAS[$sub]} -- $sub
           done
           git add "${SUBMODULES[@]}"
           if ! git diff --cached --quiet; then
             git commit -m "Reapply original submodule SHAs"
-          else
-            echo "No changes when reapplying original SHAs."
           fi
 
-          # --- Push all changes at once ---
+          # Push once
           git push origin HEAD
