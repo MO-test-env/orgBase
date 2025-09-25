@@ -20,13 +20,15 @@ jobs:
           ref: ${{ github.ref_name }}
           token: ${{ env.RW_PAT }}
 
-      - name: Authenticate submodules 
+      - name: Authenticate submodules
         run: |
-          # Make sure relative paths (../repo) resolve through GitHub with a token
-          git config --global url."https://${{ env.RW_PAT }}:x-oauth-basic@github.com/MO-test-env/".insteadOf "../"
-          
+          # Rewrite relative URLs (../repo.git) to absolute GitHub URLs with token
+          git config --global url."https://${RW_PAT}@github.com/MO-test-env/".insteadOf "../"
+
           git submodule sync --recursive
           git submodule update --init --recursive
+        env:
+          RW_PAT: ${{ env.RW_PAT }}
 
 
       - name: Current branch
