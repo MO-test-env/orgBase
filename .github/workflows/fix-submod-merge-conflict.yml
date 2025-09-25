@@ -1,9 +1,7 @@
-name: Auto-Resolve Submodule Conflicts
+name: Submodule Conflict Resolver (Private Repos)
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, reopened, synchronize]
 
 permissions:
   contents: write
@@ -12,46 +10,55 @@ jobs:
   resolve-submodule-conflicts:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PR branch minimally
+      - name: Checkout the repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 2
-          submodules: false
+          submodules: recursive
+          token: ${{ secrets.WORKFLOWS }}
+          fetch-depth: 0  # fetch full history to allow rebases
 
-      - name: Fetch base branch
+      - name: Setup Git
         run: |
-          git fetch origin ${{ github.base_ref }} --depth=2
-          git checkout ${{ github.base_ref }}
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Attempt merge (no commit)
+      - name: Determine submodules
+        id: submodules
         run: |
-          git merge --no-commit --no-ff ${{ github.head_ref }} || true
+          git config --file .gitmodules --get-regexp path | awk '{print $2}' > submodules.txt
+          echo "SUBMODULES=$(cat submodules.txt | tr '\n' ' ')" >> $GITHUB_ENV
 
-      - name: Auto-resolve all submodule conflicts
+      - name: Configure submodule authentication
         run: |
-          submodules=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
-          for sub in $submodules; do
-            if git ls-files -u | grep -q "^$sub"; then
-              echo "Resolving submodule conflict: $sub"
-              git checkout --ours $sub
-              git add $sub
-            fi
+          for sub in $SUBMODULES; do
+            URL=$(git config --file .gitmodules submodule.$sub.url)
+            AUTH_URL=${URL/https:\/\/github.com\//https:\/\/${GITHUB_ACTOR}:${{ secrets.WORKFLOWS }}@github.com/}
+            git config submodule.$sub.url $AUTH_URL
           done
 
-      - name: Commit resolved submodules (force)
+      - name: Update submodules to latest
         run: |
-          # Commit only staged submodules, even if other conflicts exist
+          for sub in $SUBMODULES; do
+            echo "Updating $sub..."
+            git submodule update --init --remote $sub
+          done
+
+      - name: Resolve submodule conflicts
+        run: |
+          for sub in $SUBMODULES; do
+            echo "Resetting submodule $sub to base branch..."
+            BASE_BRANCH=main  # adjust if your default branch is different
+            git fetch origin $BASE_BRANCH
+            BASE_COMMIT=$(git merge-base HEAD origin/$BASE_BRANCH)
+            git checkout $BASE_COMMIT -- $sub
+            git add $sub
+          done
+
+      - name: Commit resolved submodules
+        run: |
           if ! git diff --cached --quiet; then
-            git commit --only -m "Auto-resolve submodule pointer conflicts"
+            git commit -m "Automated submodule conflict resolution (private repos)"
+            git push origin HEAD
           else
-            echo "No submodule conflicts to commit."
+            echo "No submodule conflicts to resolve."
           fi
-
-      - name: Push resolved submodules back to PR branch
-        run: git push origin HEAD:${{ github.head_ref }}
-
-      - name: Summary
-        run: |
-          echo "All submodule pointer conflicts have been resolved and pushed."
-          echo "Other file conflicts (if any) remain for manual resolution."
