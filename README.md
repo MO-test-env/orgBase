@@ -10,9 +10,3 @@
     - I didnt manually do any of these but I did briefly read over them. 
 - **GraphQL ref** - <https://docs.github.com/en/graphql/reference/mutations#revertpullrequest>
 - **Octokit** - <https://github.com/octokit>
-
-### Stable code is tagged
-
-Monday revert
-another one 
-923
