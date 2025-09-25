@@ -44,9 +44,8 @@ jobs:
   # Merge submodule PRs in parallel
   process-submodules:
     needs: detect-submodules
-    runs-on: isg-ocp-x86-small
-    env:
-      GITHUB_API_URL: https://eos2git.cec.lab.emc.com/api/v3
+    if: ${{ needs.detect-submodules.outputs.submodules != '[]' }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
@@ -103,9 +102,10 @@ jobs:
             }
             console.info(`🔎 RESULT: ${JSON.stringify(result)}`);
           # The above could be wrapped in a try catch block to fail more gracefully- but I want it to clearly show the user if the merge does not work
+          
   aggregate:
     needs: process-submodules
-    runs-on: isg-ocp-x86-small
+    runs-on: ubuntu-latest
     steps:
       - run: echo "Ensure ive waited for all matrix jobs to finish before bumping"
 
@@ -113,7 +113,7 @@ jobs:
     needs:
       - detect-submodules
       - aggregate
-    runs-on: isg-ocp-x86-small
+    runs-on: ubuntu-latest
     steps:
       # Get PR details from issue_comment
       - name: Get PR details
