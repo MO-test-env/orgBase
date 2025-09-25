@@ -20,10 +20,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Only checkout the main repo, not submodules yet
-          submodules: true 
+          submodules: false
           fetch-depth: 0
           token: ${{ env.RW_PAT }}
+
+      - name: Authenticate submodules
+        run: |
+          # Rewrite relative URLs (../repo.git) to absolute GitHub URLs with token
+          git config --global url."https://${RW_PAT}@github.com/".insteadOf "https://github.com/"
+          git config --global url."https://${RW_PAT}@github.com/MO-test-env/".insteadOf "../"
+
+          git submodule sync --recursive
+          git submodule update --init --recursive
+        env:
+          RW_PAT: ${{ env.RW_PAT }}
+
 
       - name: Get changed submodules
         id: submodule
