@@ -38,6 +38,7 @@ jobs:
             const jsonMatch = cache.body.match(/```json\s*([\s\S]*?)\s*```/);
             if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
             core.setOutput('submodules', jsonMatch[1]);
+
   process-submodules:
     needs: detect-submodules
     if: ${{ needs.detect-submodules.outputs.submodules != '{}' }}
@@ -88,8 +89,7 @@ jobs:
       - name: Revert merged submodules
         run: |
           echo "⚠️ Reverting any submodules that might have been merged"
-          git submodule foreach --recursive 'git reset --hard HEAD'
-          git reset --hard HEAD
+          echo " TODO "
 
   bump-submodules:
     needs: 
@@ -160,12 +160,29 @@ jobs:
               console.log('✅ All submodules already up-to-date.');
             }
 
-  # 4️⃣ Merge base PR (after bump)
+  merge-base-no-submodules:
+    needs: detect-submodules
+    if: ${{ needs.detect-submodules.outputs.submodules == '{}' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge base PR (no submodules)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.issue.number;
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              merge_method: 'squash'
+            });
+
   merge-base:
     needs: [detect-submodules, process-submodules, bump-submodules]
     runs-on: ubuntu-latest
     steps:
-      - name: Merge base PR
+      - name: Merge base PR (after submodule)
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
