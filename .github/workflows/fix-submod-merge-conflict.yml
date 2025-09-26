@@ -2,13 +2,21 @@ name: Resolve Submodule Conflicts in PR
 
 on:
   workflow_dispatch:
+    inputs:
+      base_branch:
+        description: 'Base branch to merge from'
+        required: true
+        default: 'main'
+      pr_branch:
+        description: 'PR branch to merge into'
+        required: true
 
 permissions:
   contents: write
   pull-requests: write
 
 env:
-  GITHUB_TOKEN: ${{ secrets.WORKFLOWS }}
+  RW_PAT: ${{ secrets.WORKFLOWS }}
 
 jobs:
   resolve-submodules:
@@ -21,6 +29,7 @@ jobs:
           fetch-depth: 0
           submodules: false
 
+      ## ok this is working based on wkflow 15
       - name: Detect submodules
         id: detect
         run: |
@@ -30,35 +39,30 @@ jobs:
             SUBMODULES=()
           fi
 
-          if [ ${#SUBMODULES[@]} -eq 0 ]; then
-            echo "no_submodules=true" >> $GITHUB_OUTPUT
-          else
-            echo "no_submodules=false" >> $GITHUB_OUTPUT
-            echo "submodules=${SUBMODULES[*]}" >> $GITHUB_OUTPUT
-          fi
-
+          if [ ${#SUBMODULES[@]} -eq 0 ]; thenname: Resolve Submodule Conflicts in PR
+          
+      ## ok also solid see log 15
       - name: Stop if no submodules
         if: steps.detect.outputs.no_submodules == 'true'
         run: echo "No submodules detected. Exiting."
-
+      
       - name: Fetch base branch
         if: steps.detect.outputs.no_submodules == 'false'
         run: |
-          BASE_BRANCH=$(gh pr view ${{ github.event.pull_request.number }} --json baseRefName -q .baseRefName --repo ${{ github.repository }} --github-token $GITHUB_TOKEN)
+          BASE_BRANCH="${{ github.event.inputs.base_branch }}"
           echo "BASE_BRANCH=$BASE_BRANCH" >> $GITHUB_ENV
           git fetch origin $BASE_BRANCH
 
       - name: Checkout PR branch
         if: steps.detect.outputs.no_submodules == 'false'
         run: |
-          PR_BRANCH=${{ github.head_ref || github.ref_name }}
+          PR_BRANCH="${{ github.event.inputs.pr_branch }}"
           echo "PR_BRANCH=$PR_BRANCH" >> $GITHUB_ENV
           git checkout $PR_BRANCH
 
       - name: Update submodules
         if: steps.detect.outputs.no_submodules == 'false'
-        run: |
-          git submodule update --init --recursive --jobs 8
+        run: git submodule update --init --recursive --jobs 8
 
       - name: Merge base branch into PR branch
         if: steps.detect.outputs.no_submodules == 'false'
@@ -74,7 +78,6 @@ jobs:
         run: |
           echo "Merge conflicts detected. Checking if only submodules are conflicted..."
           
-          # Conflicted files
           CONFLICTS=$(git diff --name-only --diff-filter=U)
           echo "Conflicted files:"
           echo "$CONFLICTS"
@@ -90,14 +93,31 @@ jobs:
           done
 
           if [ ${#NON_SUBMODULE_CONFLICTS[@]} -gt 0 ]; then
-            echo "Non-submodule conflicts detected, posting PR comment..."
-            COMMENT="⚠️ Merge has conflicts in files that are not submodules:\n\`\`\`\n${NON_SUBMODULE_CONFLICTS[*]}\n\`\`\`\nPlease resolve them manually."
-            gh pr comment ${{ github.event.pull_request.number }} --body "$COMMENT" --repo ${{ github.repository }} --github-token $GITHUB_TOKEN
+            echo "Non-submodule conflicts detected, posting PR comment via REST API..."
+            echo "COMMENT_BODY<<EOF" >> $GITHUB_ENV
+⚠️ Merge has conflicts in files that are not submodules:
+\`\`\`
+${NON_SUBMODULE_CONFLICTS[*]}
+\`\`\`
+Please resolve them manually.
+EOF
             exit 1
           fi
 
           git commit -m "Auto-resolve submodule conflicts"
 
+      - name: Comment on PR for manual conflict resolution
+        if: steps.detect.outputs.no_submodules == 'false' && env.COMMENT_BODY
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: process.env.COMMENT_BODY
+            });
       - name: Push back to PR branch
         if: steps.detect.outputs.no_submodules == 'false' && (env.MERGE_EXIT == '0' || success())
         run: git push origin HEAD:$PR_BRANCH
