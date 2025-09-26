@@ -10,6 +10,7 @@ on:
       pr_branch:
         description: 'PR branch to merge into'
         required: true
+        default: 'mo/updatePRCreate'
 
 permissions:
   contents: write
@@ -22,12 +23,12 @@ jobs:
   resolve-submodules:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.WORKFLOWS }}
-          fetch-depth: 0
           submodules: false
+          fetch-depth: 1
+          token: ${{ env.RW_PAT }}
 
       - name: Detect submodules
         id: detect
@@ -65,14 +66,14 @@ jobs:
 
       - name: Authenticate submodules
         run: |
-          # Rewrite relative URLs (../repo.git) to absolute GitHub URLs with token
-          git config --global url."https://${RW_PAT}@github.com/MO-test-env/".insteadOf "../"
+          # Rewrite relative URLs to absolute URLs with token
+          git config --global url."https://${RW_PAT}:x-oauth-basic@github.com/MO-test-env/".insteadOf "../"
 
           git submodule sync --recursive
           git submodule update --init --recursive
         env:
           RW_PAT: ${{ env.RW_PAT }}
-
+          
       - name: Merge base branch into PR branch
         if: steps.detect.outputs.no_submodules == 'false'
         run: |
