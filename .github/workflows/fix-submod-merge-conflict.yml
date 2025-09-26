@@ -93,17 +93,19 @@ jobs:
           done
 
           if [ ${#NON_SUBMODULE_CONFLICTS[@]} -gt 0 ]; then
-            echo "Non-submodule conflicts detected, posting PR comment via REST API..."
-            echo "COMMENT_BODY<<EOF" >> $GITHUB_ENV
-⚠️ Merge has conflicts in files that are not submodules:
+  echo "Non-submodule conflicts detected, posting PR comment via REST API..."
+
+  # Correctly write multiline variable to GITHUB_ENV
+  cat <<EOF >> $GITHUB_ENV
+COMMENT_BODY=⚠️ Merge has conflicts in files that are not submodules:
 \`\`\`
 ${NON_SUBMODULE_CONFLICTS[*]}
 \`\`\`
 Please resolve them manually.
 EOF
-            exit 1
-          fi
 
+  exit 1
+fi
           git commit -m "Auto-resolve submodule conflicts"
 
       - name: Comment on PR for manual conflict resolution
