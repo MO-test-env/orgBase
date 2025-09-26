@@ -66,14 +66,14 @@ jobs:
 
       - name: Authenticate submodules
         run: |
-          # Rewrite relative URLs to absolute URLs with token
-          git config --global url."https://${RW_PAT}:x-oauth-basic@github.com/MO-test-env/".insteadOf "../"
+          echo "Setting up GitHub token for submodules"
+          git config --global url."https://${RW_PAT}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
 
           git submodule sync --recursive
-          git submodule update --init --recursive
+          git submodule update --init --recursive --depth 0
         env:
           RW_PAT: ${{ env.RW_PAT }}
-          
+
       - name: Merge base branch into PR branch
         if: steps.detect.outputs.no_submodules == 'false'
         run: |
