@@ -1,53 +1,103 @@
-name: Auto-resolve submodule pointer conflicts
+name: Resolve Submodule Conflicts in PR
 
 on:
   workflow_dispatch:
-  pull_request:
-    types: [opened, reopened, synchronize]
 
 permissions:
   contents: write
+  pull-requests: write
+
+env:
+  GITHUB_TOKEN: ${{ secrets.WORKFLOWS }}
 
 jobs:
   resolve-submodules:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PR branch
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          token: ${{ secrets.WORKFLOWS }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          submodules: false
 
-      - name: Setup git user
+      - name: Detect submodules
+        id: detect
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -f .gitmodules ]; then
+            mapfile -t SUBMODULES < <(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+          else
+            SUBMODULES=()
+          fi
+
+          if [ ${#SUBMODULES[@]} -eq 0 ]; then
+            echo "no_submodules=true" >> $GITHUB_OUTPUT
+          else
+            echo "no_submodules=false" >> $GITHUB_OUTPUT
+            echo "submodules=${SUBMODULES[*]}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Stop if no submodules
+        if: steps.detect.outputs.no_submodules == 'true'
+        run: echo "No submodules detected. Exiting."
 
       - name: Fetch base branch
+        if: steps.detect.outputs.no_submodules == 'false'
         run: |
-          git fetch origin ${{ github.base_ref }} --depth=1
+          BASE_BRANCH=$(gh pr view ${{ github.event.pull_request.number }} --json baseRefName -q .baseRefName --repo ${{ github.repository }} --github-token $GITHUB_TOKEN)
+          echo "BASE_BRANCH=$BASE_BRANCH" >> $GITHUB_ENV
+          git fetch origin $BASE_BRANCH
 
-      - name: Attempt merge of base into PR
+      - name: Checkout PR branch
+        if: steps.detect.outputs.no_submodules == 'false'
         run: |
-          git merge --no-edit origin/${{ github.base_ref }} || true
+          PR_BRANCH=${{ github.head_ref || github.ref_name }}
+          echo "PR_BRANCH=$PR_BRANCH" >> $GITHUB_ENV
+          git checkout $PR_BRANCH
 
-      - name: Auto-resolve submodule conflicts as ours
+      - name: Update submodules
+        if: steps.detect.outputs.no_submodules == 'false'
         run: |
-          mapfile -t SUBS < <(git config --file .gitmodules --get-regexp path | awk '{print $2}')
-          for sub in "${SUBS[@]}"; do
-            if git ls-files --unmerged "$sub" >/dev/null 2>&1; then
-              echo "Resolving submodule $sub as ours"
-              ours_sha=$(git rev-parse HEAD:"$sub")
-              git update-index --cacheinfo 160000 $ours_sha "$sub"
-              git add "$sub"
+          git submodule update --init --recursive --jobs 8
+
+      - name: Merge base branch into PR branch
+        if: steps.detect.outputs.no_submodules == 'false'
+        run: |
+          set +e
+          git merge origin/$BASE_BRANCH
+          MERGE_EXIT=$?
+          set -e
+          echo "MERGE_EXIT=$MERGE_EXIT" >> $GITHUB_ENV
+
+      - name: Resolve submodule conflicts only
+        if: steps.detect.outputs.no_submodules == 'false' && env.MERGE_EXIT != '0'
+        run: |
+          echo "Merge conflicts detected. Checking if only submodules are conflicted..."
+          
+          # Conflicted files
+          CONFLICTS=$(git diff --name-only --diff-filter=U)
+          echo "Conflicted files:"
+          echo "$CONFLICTS"
+
+          NON_SUBMODULE_CONFLICTS=()
+          for f in $CONFLICTS; do
+            if [[ " ${SUBMODULES[*]} " =~ " $f " ]]; then
+              echo "Submodule conflict: $f"
+              git add "$f"
+            else
+              NON_SUBMODULE_CONFLICTS+=("$f")
             fi
           done
 
-      - name: Commit and push if needed
-        run: |
-          if ! git diff --cached --quiet; then
-            git commit -m "ci: auto-resolve submodule pointer conflicts (ours)"
-            git push origin HEAD:${{ github.head_ref }}
-          else
-            echo "No submodule pointer conflicts to fix."
+          if [ ${#NON_SUBMODULE_CONFLICTS[@]} -gt 0 ]; then
+            echo "Non-submodule conflicts detected, posting PR comment..."
+            COMMENT="⚠️ Merge has conflicts in files that are not submodules:\n\`\`\`\n${NON_SUBMODULE_CONFLICTS[*]}\n\`\`\`\nPlease resolve them manually."
+            gh pr comment ${{ github.event.pull_request.number }} --body "$COMMENT" --repo ${{ github.repository }} --github-token $GITHUB_TOKEN
+            exit 1
           fi
+
+          git commit -m "Auto-resolve submodule conflicts"
+
+      - name: Push back to PR branch
+        if: steps.detect.outputs.no_submodules == 'false' && (env.MERGE_EXIT == '0' || success())
+        run: git push origin HEAD:$PR_BRANCH
