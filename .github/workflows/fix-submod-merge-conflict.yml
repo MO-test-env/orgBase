@@ -82,7 +82,8 @@ jobs:
           set +e
           git merge origin/$BASE_BRANCH
           git add submod 
-          git commit -m "commit"
+          git add submod2
+          git commit -m "Auto-resolve submodule conflicts"
           git push origin HEAD:$PR_BRANCH
           MERGE_EXIT=$?
           set -e
