@@ -95,7 +95,6 @@ jobs:
           if [ ${#NON_SUBMODULE_CONFLICTS[@]} -gt 0 ]; then
   echo "Non-submodule conflicts detected, posting PR comment via REST API..."
 
-  # Correctly write multiline variable to GITHUB_ENV
   cat <<EOF >> $GITHUB_ENV
 COMMENT_BODY=⚠️ Merge has conflicts in files that are not submodules:
 \`\`\`
