@@ -1,64 +1,132 @@
-name: Submodule Conflict Resolver (Private Repos)
+name: Resolve Submodule Conflicts in PR
 
 on:
   workflow_dispatch:
+    inputs:
+      base_branch:
+        description: 'Base branch to merge from'
+        required: true
+        default: 'main'
+      pr_branch:
+        description: 'PR branch to merge into'
+        required: true
+        default: 'mo/updatePRCreate'
 
 permissions:
   contents: write
+  pull-requests: write
+
+env:
+  RW_PAT: ${{ secrets.WORKFLOWS }}
 
 jobs:
-  resolve-submodule-conflicts:
+  resolve-submodules:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout the repository
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          submodules: recursive
-          token: ${{ secrets.WORKFLOWS }}
-          fetch-depth: 0  # fetch full history to allow rebases
+          submodules: false
+          fetch-depth: 0
+          token: ${{ env.RW_PAT }}
 
-      - name: Setup Git
+      - name: Detect submodules
+        id: detect
+        run: |
+          if [ -f .gitmodules ]; then
+            mapfile -t SUBMODULES < <(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+          else
+            SUBMODULES=()
+          fi
+
+          if [ ${#SUBMODULES[@]} -eq 0 ]; then
+            echo "no_submodules=true" >> $GITHUB_OUTPUT
+          else
+            echo "no_submodules=false" >> $GITHUB_OUTPUT
+            echo "submodules=${SUBMODULES[*]}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Stop if no submodules
+        if: steps.detect.outputs.no_submodules == 'true'
+        run: echo "No submodules detected. Exiting."
+
+      - name: Fetch base branch
+        if: steps.detect.outputs.no_submodules == 'false'
+        run: |
+          BASE_BRANCH="${{ github.event.inputs.base_branch }}"
+          echo "BASE_BRANCH=$BASE_BRANCH" >> $GITHUB_ENV
+          git fetch origin $BASE_BRANCH
+
+      - name: Checkout PR branch
+        if: steps.detect.outputs.no_submodules == 'false'
+        run: |
+          PR_BRANCH="${{ github.event.inputs.pr_branch }}"
+          echo "PR_BRANCH=$PR_BRANCH" >> $GITHUB_ENV
+          git checkout $PR_BRANCH
+
+      - name: Authenticate submodules
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "Setting up GitHub token for submodules"
+          git config --global url."https://${RW_PAT}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
 
-      - name: Determine submodules
-        id: submodules
-        run: |
-          git config --file .gitmodules --get-regexp path | awk '{print $2}' > submodules.txt
-          echo "SUBMODULES=$(cat submodules.txt | tr '\n' ' ')" >> $GITHUB_ENV
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth 0
+        env:
+          RW_PAT: ${{ env.RW_PAT }}
 
-      - name: Configure submodule authentication
+      - name: Merge base branch into PR branch
+        if: steps.detect.outputs.no_submodules == 'false'
         run: |
-          for sub in $SUBMODULES; do
-            URL=$(git config --file .gitmodules submodule.$sub.url)
-            AUTH_URL=${URL/https:\/\/github.com\//https:\/\/${GITHUB_ACTOR}:${{ secrets.WORKFLOWS }}@github.com/}
-            git config submodule.$sub.url $AUTH_URL
-          done
+          set +e
+          git merge origin/$BASE_BRANCH
+          git add submod 
+          git commit -m "commit"
+          git push origin HEAD:$PR_BRANCH
+          MERGE_EXIT=$?
+          set -e
+          echo "MERGE_EXIT=$MERGE_EXIT" >> $GITHUB_ENV
 
-      - name: Update submodules to latest
-        run: |
-          for sub in $SUBMODULES; do
-            echo "Updating $sub..."
-            git submodule update --init --remote $sub
-          done
+      # - name: Resolve submodule conflicts only
+      #   if: steps.detect.outputs.no_submodules == 'false' && env.MERGE_EXIT != '0'
+      #   run: |
+      #     echo "Merge conflicts detected. Checking if only submodules are conflicted..."
 
-      - name: Resolve submodule conflicts
-        run: |
-          for sub in $SUBMODULES; do
-            echo "Resetting submodule $sub to base branch..."
-            BASE_BRANCH=main  # adjust if your default branch is different
-            git fetch origin $BASE_BRANCH
-            BASE_COMMIT=$(git merge-base HEAD origin/$BASE_BRANCH)
-            git checkout $BASE_COMMIT -- $sub
-            git add $sub
-          done
+      #     CONFLICTS=$(git diff --name-only --diff-filter=U)
+      #     echo "Conflicted files:"
+      #     echo "$CONFLICTS"
 
-      - name: Commit resolved submodules
-        run: |
-          if ! git diff --cached --quiet; then
-            git commit -m "Automated submodule conflict resolution (private repos)"
-            git push origin HEAD
-          else
-            echo "No submodule conflicts to resolve."
-          fi
+      #     for f in $CONFLICTS; do
+      #       if [[ " ${SUBMODULES[*]} " =~ " $f " ]]; then
+      #         echo "Submodule conflict: $f"
+      #         git add "$f"
+      #       else
+      #         NON_SUBMODULE_CONFLICTS+=("$f")
+      #       fi
+      #     done
+
+
+      #    git commit -m "Auto-resolve submodule conflicts"
+
+      # - name: Comment on PR
+      #   if: steps.detect.outputs.no_submodules == 'false' && env.NON_SUBMODULE_CONFLICTS != ''
+      #   run: |
+      #     node -e "
+      #       const { Octokit } = require('@octokit/rest');
+      #       const octokit = new Octokit({ auth: process.env.RW_PAT });
+      #       const body = \`⚠️ Merge has conflicts in files that are not submodules:\n${NON_SUBMODULE_CONFLICTS}\nPlease resolve manually.\`;
+      #       octokit.rest.issues.createComment({
+      #         owner: process.env.GITHUB_REPOSITORY.split('/')[0],
+      #         repo: process.env.GITHUB_REPOSITORY.split('/')[1],
+      #         issue_number: process.env.GITHUB_REF.split('/')[2],
+      #         body: body
+      #       });
+      #     "
+      #   env:
+      #     RW_PAT: ${{ env.RW_PAT }}
+      #     NON_SUBMODULE_CONFLICTS: ${{ steps.detect.outputs.non_submodule_conflicts }}
+
+      # - name: Push back to PR branch
+      #   if: steps.detect.outputs.no_submodules == 'false' && (env.MERGE_EXIT == '0' || success())
+      #   run: git push origin HEAD:$PR_BRANCH
