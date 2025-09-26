@@ -1,6 +1,7 @@
 name: Auto-resolve submodule pointer conflicts
 
 on:
+  workflow_dispatch:
   pull_request:
     types: [opened, reopened, synchronize]
 
