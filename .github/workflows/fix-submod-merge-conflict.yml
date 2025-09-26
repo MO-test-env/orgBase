@@ -32,18 +32,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Rebase main branch
-        run: |
-          BASE_BRANCH="${{ github.event.inputs.base_branch }}"
-          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          echo "Rebasing $CURRENT_BRANCH onto $BASE_BRANCH"
-          git fetch origin "$BASE_BRANCH"
-          git checkout "$CURRENT_BRANCH"
-          if ! git rebase "origin/$BASE_BRANCH"; then
-            echo "::error::Merge conflicts detected in main repo. Resolve manually."
-            exit 1
-          fi
-
       - name: Rebase Submodules
         run: |
           SUBMODULES=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
@@ -60,6 +48,43 @@ jobs:
             fi
             popd > /dev/null
           done
+
+      - name: Rebase main branch with submodule auto-resolve
+        run: |
+          BASE_BRANCH="${{ github.event.inputs.base_branch }}"
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+          echo "Rebasing $CURRENT_BRANCH onto $BASE_BRANCH..."
+          git fetch origin "$BASE_BRANCH"
+          git checkout "$CURRENT_BRANCH"
+
+          # Try rebase, auto-resolve submodule conflicts
+          if ! git rebase "origin/$BASE_BRANCH"; then
+            echo "Submodule conflicts detected. Attempting auto-resolve..."
+
+            # Detect submodule conflicts
+            for sub in $(git diff --name-only --diff-filter=U | grep -E '^[^/]+$'); do
+              echo "Resolving submodule conflict: $sub"
+
+              pushd "$sub" > /dev/null
+              git fetch origin
+              # Try to merge base submodule commit into current
+              BASE_SHA=$(git ls-tree origin/$BASE_BRANCH ../$sub | awk '{print $3}')
+              if ! git merge --no-edit "$BASE_SHA"; then
+                echo "::error::Could not auto-merge submodule $sub. Manual resolution required."
+                exit 1
+              fi
+              popd > /dev/null
+
+              # Record resolved SHA in superproject
+              git add "$sub"
+            done
+
+            git rebase --continue || {
+              echo "::error::Failed to continue rebase after submodule conflict resolution."
+              exit 1
+            }
+          fi
 
       - name: Push changes if no conflicts
         run: |
