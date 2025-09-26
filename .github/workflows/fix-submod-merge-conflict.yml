@@ -63,9 +63,15 @@ jobs:
           echo "PR_BRANCH=$PR_BRANCH" >> $GITHUB_ENV
           git checkout $PR_BRANCH
 
-      - name: Update submodules
-        if: steps.detect.outputs.no_submodules == 'false'
-        run: git submodule update --init --recursive --jobs 8
+      - name: Authenticate submodules
+        run: |
+          # Rewrite relative URLs (../repo.git) to absolute GitHub URLs with token
+          git config --global url."https://${RW_PAT}@github.com/MO-test-env/".insteadOf "../"
+
+          git submodule sync --recursive
+          git submodule update --init --recursive
+        env:
+          RW_PAT: ${{ env.RW_PAT }}
 
       - name: Merge base branch into PR branch
         if: steps.detect.outputs.no_submodules == 'false'
