@@ -127,6 +127,6 @@ jobs:
       #     RW_PAT: ${{ env.RW_PAT }}
       #     NON_SUBMODULE_CONFLICTS: ${{ steps.detect.outputs.non_submodule_conflicts }}
 
-      - name: Push back to PR branch
-        if: steps.detect.outputs.no_submodules == 'false' && (env.MERGE_EXIT == '0' || success())
-        run: git push origin HEAD:$PR_BRANCH
+      # - name: Push back to PR branch
+      #   if: steps.detect.outputs.no_submodules == 'false' && (env.MERGE_EXIT == '0' || success())
+      #   run: git push origin HEAD:$PR_BRANCH
