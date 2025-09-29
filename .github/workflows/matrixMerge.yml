@@ -115,7 +115,6 @@ jobs:
       - aggregate
     runs-on: ubuntu-latest
     steps:
-      # Get PR details from issue_comment
       - name: Get PR details
         id: pr
         uses: actions/github-script@v7
@@ -129,13 +128,13 @@ jobs:
             core.setOutput("head_ref", pr.data.head.ref);
             core.setOutput("base_ref", pr.data.base.ref);
 
-      - name: Checkout base repo
+      - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ env.RW_PAT }}
           ref: ${{ steps.pr.outputs.head_ref }}
-      
+
       - name: Authenticate submodules
         run: |
           git config --global url."https://${{ env.RW_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
@@ -148,7 +147,6 @@ jobs:
           SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
           TOKEN: ${{ env.RW_PAT }}
           BRANCH: ${{ steps.pr.outputs.head_ref }}
-          BASE_BRANCH: ${{ steps.pr.outputs.base_ref }}
         with:
           script: |
             const { execSync } = require('child_process');
@@ -161,7 +159,7 @@ jobs:
                 ? sub.url.replace('https://', `https://${process.env.TOKEN}@`)
                 : sub.url;
 
-              // Get default branch of submodule
+              // Get default branch
               const defaultBranch = execSync(
                 `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
                 { encoding: 'utf8' }
@@ -175,7 +173,7 @@ jobs:
               const currentCommit = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
 
               if (currentCommit !== latestCommit) {
-                console.log(`⚠️  ${sub.repo} is outdated. Resetting to ${latestCommit}`);
+                console.log(`⚠️ ${sub.repo} is outdated. Resetting to ${latestCommit}`);
                 execSync(`git -C ${sub.path} reset --hard ${latestCommit}`, { stdio: 'inherit' });
                 execSync(`git add ${sub.path}`);
                 changed = true;
@@ -193,6 +191,21 @@ jobs:
               console.log('✅ All submodules already up-to-date.');
             }
 
+      - name: Merge base branch into PR branch
+        env:
+          BASE_BRANCH: ${{ steps.pr.outputs.base_ref }}
+          PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
+        run: |
+          set +e
+          git fetch origin $BASE_BRANCH
+          git merge origin/$BASE_BRANCH
+          git add submod || true
+          git add submod2 || true
+          git commit -m "Auto-resolve submodule conflicts" || true
+          git push origin HEAD:$PR_BRANCH
+          MERGE_EXIT=$?
+          set -e
+          echo "MERGE_EXIT=$MERGE_EXIT" >> $GITHUB_ENV
 
   merge-base-no-submodules:
     needs: detect-submodules
@@ -216,13 +229,6 @@ jobs:
     needs: [detect-submodules, process-submodules, bump-submodules]
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve submod merge conflicts 
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            // dispatch fix-submod-merge-conflicts.yml 
-            // ensure that workflow has finished before running next step
       - name: Merge base PR (after submodule)
         uses: actions/github-script@v7
         with:
