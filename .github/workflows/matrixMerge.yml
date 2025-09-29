@@ -192,20 +192,50 @@ jobs:
             }
 
       - name: Merge base branch into PR branch
+        uses: actions/github-script@v7
         env:
           BASE_BRANCH: ${{ steps.pr.outputs.base_ref }}
           PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
-        run: |
-          set +e
-          git fetch origin $BASE_BRANCH
-          git merge origin/$BASE_BRANCH
-          git add submod || true
-          git add submod2 || true
-          git commit -m "Auto-resolve submodule conflicts" || true
-          git push origin HEAD:$PR_BRANCH
-          MERGE_EXIT=$?
-          set -e
-          echo "MERGE_EXIT=$MERGE_EXIT" >> $GITHUB_ENV
+        with:
+          script: |
+            const { execSync } = require("child_process");
+
+            try {
+              // Fetch & merge base branch
+              execSync(`git fetch origin ${process.env.BASE_BRANCH}`, { stdio: "inherit" });
+              execSync(`git merge origin/${process.env.BASE_BRANCH}`, { stdio: "inherit" });
+
+              // Collect submodule paths dynamically from .gitmodules
+              const submodulePaths = execSync(
+                "git config --file .gitmodules --get-regexp path | awk '{ print $2 }'",
+                { encoding: "utf8" }
+              )
+                .trim()
+                .split("\n")
+                .filter(Boolean);
+
+              for (const path of submodulePaths) {
+                console.log(`📂 Adding submodule path: ${path}`);
+                try {
+                  execSync(`git add ${path}`, { stdio: "inherit" });
+                } catch (err) {
+                  console.log(`⚠️ Failed to add submodule path ${path}, skipping...`);
+                }
+              }
+
+              // Commit if needed
+              try {
+                execSync('git commit -m "Auto-resolve submodule conflicts"', { stdio: "inherit" });
+              } catch {
+                console.log("✅ No changes to commit.");
+              }
+
+              // Push back to PR branch
+              execSync(`git push origin HEAD:${process.env.PR_BRANCH}`, { stdio: "inherit" });
+            } catch (err) {
+              console.error("❌ Merge step failed:", err.message);
+              process.exit(1);
+            }
 
   merge-base-no-submodules:
     needs: detect-submodules
