@@ -216,6 +216,13 @@ jobs:
     needs: [detect-submodules, process-submodules, bump-submodules]
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve submod merge conflicts 
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // dispatch fix-submod-merge-conflicts.yml 
+            // ensure that workflow has finished before running next step
       - name: Merge base PR (after submodule)
         uses: actions/github-script@v7
         with:
