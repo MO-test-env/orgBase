@@ -19,3 +19,4 @@ Things to test
 - 1 submod (conflict in 1, can fix?)
 - 1 submod (conflict outside submod?)
 
+create conflicts and see if auto resolve works 
