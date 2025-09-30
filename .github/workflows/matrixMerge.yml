@@ -233,35 +233,6 @@ jobs:
             console.info(`🔎 RESULT: ${JSON.stringify(result)}`);
             core.setOutput('result', JSON.stringify(result));
 
-      - name: Comment submodule merge result
-        uses: actions/github-script@v7
-        env:
-          SUB_RESULT: ${{ steps.merge.outputs.result }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const res = JSON.parse(process.env.SUB_RESULT);
-            let body;
-            if (res.result === 'merged') {
-              body = `✅ **Submodule \`${res.path}\` merged** (sha: \`${res.sha}\`).`;
-            } else if (res.result === 'skipped') {
-              body = `⚠️ **Submodule \`${res.path}\` has no PR** – skipping merge.`;
-            } else if (res.result === 'not_mergeable') {
-              body = `❌ **Submodule \`${res.path}\` PR is not mergeable** – workflow will abort.`;
-            } else {
-              body = `❗ **Submodule \`${res.path}\` merge failed** – ${res.message}`;
-            }
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body,
-            });
-            if (res.result !== 'merged' && res.result !== 'skipped') {
-              core.setFailed(`Submodule ${res.path} did not merge successfully.`);
-            }
-
-
   # Aggregate results (placeholder for future rollback logic)
   aggregate:
     needs: process-submodules
