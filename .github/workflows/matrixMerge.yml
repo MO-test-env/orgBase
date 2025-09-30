@@ -199,16 +199,6 @@ jobs:
               }
             }
             console.log(msg);
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: Number(process.env.COMMENT_ID),
-              body: (await github.rest.issues.getComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: Number(process.env.COMMENT_ID)
-              })).data.body.replace("<!-- WORKFLOW_COMMENT -->", msg + "\n\n<!-- WORKFLOW_COMMENT -->")
-            });
 
   bump-submodules:
     needs: [process-submodules, precheck-conflicts]
