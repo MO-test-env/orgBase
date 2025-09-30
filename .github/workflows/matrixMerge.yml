@@ -200,8 +200,37 @@ jobs:
             }
             console.log(msg);
 
+  aggregate:
+    needs: [process-submodules, get-pr] 
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update PR comment – submodules processed
+        uses: actions/github-script@v7
+        env:
+          COMMENT_ID: ${{ needs.get-pr.outputs.comment_id }}  # now safe because we need get-pr
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const msg = "✅ All submodules have been processed.";
+            const comment_id = Number(process.env.COMMENT_ID);
+
+            // Fetch current comment
+            const comment = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id
+            });
+
+            // Update comment with message
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id,
+              body: comment.data.body.replace("<!-- WORKFLOW_COMMENT -->", msg + "\n\n<!-- WORKFLOW_COMMENT -->")
+            });
+
   bump-submodules:
-    needs: [process-submodules, precheck-conflicts]
+    needs: [aggregate, precheck-conflicts, get-pr]
     if: ${{ needs.precheck-conflicts.outputs.dirty == 'false' }}
     runs-on: ubuntu-latest
     steps:
@@ -299,7 +328,7 @@ jobs:
 
 
   merge-base:
-    needs: [bump-submodules, precheck-conflicts]
+    needs: [bump-submodules, precheck-conflicts, get-pr]
     if: ${{ needs.precheck-conflicts.outputs.dirty == 'false' }}
     runs-on: ubuntu-latest
     steps:
