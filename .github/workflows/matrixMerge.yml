@@ -201,7 +201,14 @@ jobs:
             console.log(msg);
 
   aggregate:
-    needs: [process-submodules, get-pr] 
+    needs: [process-submodules] 
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Ensure ive waited for all matrix jobs to finish before bumping"
+
+  bump-submodules:
+    needs: [aggregate, precheck-conflicts, detect-submodules, get-pr]
+    if: ${{ needs.precheck-conflicts.outputs.dirty == 'false' }}
     runs-on: ubuntu-latest
     steps:
       - name: Update PR comment – submodules processed
@@ -228,12 +235,6 @@ jobs:
               comment_id,
               body: comment.data.body.replace("<!-- WORKFLOW_COMMENT -->", msg + "\n\n<!-- WORKFLOW_COMMENT -->")
             });
-
-  bump-submodules:
-    needs: [aggregate, precheck-conflicts, detect-submodules, get-pr]
-    if: ${{ needs.precheck-conflicts.outputs.dirty == 'false' }}
-    runs-on: ubuntu-latest
-    steps:
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
