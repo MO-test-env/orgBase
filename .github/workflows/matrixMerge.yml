@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 env:
-  RW_PAT: ${{ secrets.WORKFLOWS }} # Personal Access Token with RW access to repo contents, PRs
+  RW_PAT: ${{ secrets.WORKFLOWS }}
 
 concurrency:
   group: ${{ github.workflow }}
@@ -44,8 +44,6 @@ jobs:
             core.setOutput("base_ref", pr.data.base.ref);
             core.setOutput("pr_number", pr.data.number);
 
-
-  # Announce that the workflow has started and fetch PR mergeability info
   check-mergeability:
     if: |
       github.event.issue.pull_request != null &&
@@ -55,6 +53,7 @@ jobs:
     outputs:
       mergeable: ${{ steps.pr-info.outputs.mergeable }}
       dirty: ${{ steps.pr-info.outputs.dirty }}
+      comment_id: ${{ steps.add-start-comment.outputs.comment_id }}
     steps:
       - name: Add start comment
         id: add-start-comment 
@@ -66,7 +65,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: "🔧 **Merge workflow started** – checking PR state..."
+              body: "🔧 **Merge workflow started** – checking PR state...\n\n*(all updates will append here)*\n\n<!-- WORKFLOW_COMMENT -->"
             });
             core.setOutput('comment_id', comment.data.id);
 
@@ -88,26 +87,28 @@ jobs:
 
       - name: Update start comment with PR state
         uses: actions/github-script@v7
-        env:
-          COMMENT_ID: ${{ steps.add-start-comment.outputs.comment_id }}
-          MERGEABLE: ${{ steps.pr-info.outputs.mergeable }}
-          DIRTY: ${{ steps.pr-info.outputs.dirty }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const stateMsg = (process.env.MERGEABLE === 'true' && process.env.DIRTY === 'false')
+            const comment_id = Number("${{ steps.add-start-comment.outputs.comment_id }}");
+            const mergeable = "${{ steps.pr-info.outputs.mergeable }}";
+            const dirty = "${{ steps.pr-info.outputs.dirty }}";
+            const msg = (mergeable === 'true' && dirty === 'false')
               ? "✅ PR is **mergeable** and **clean** – proceeding."
               : "❌ PR is not mergeable or is dirty – aborting the workflow.";
+            const comment = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id
+            });
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              comment_id: Number(process.env.COMMENT_ID),
-              body: `🔧 **Merge workflow started** – ${stateMsg}`
+              comment_id,
+              body: comment.data.body.replace('<!-- WORKFLOW_COMMENT -->', msg + '\n\n<!-- WORKFLOW_COMMENT -->')
             });
-            if (process.env.MERGEABLE !== 'true' || process.env.DIRTY !== 'false') {
-              core.setFailed("PR not ready for merge.");
-            }
-  
+            if (mergeable !== 'true' || dirty !== 'false') core.setFailed("PR not ready for merge.");
+
   precheck-conflicts:
     needs: [get-pr, check-mergeability]
     if: ${{ needs.check-mergeability.outputs.mergeable == 'true' && needs.check-mergeability.outputs.dirty == 'false' }}
@@ -157,7 +158,6 @@ jobs:
           fi
         shell: bash
 
-  # Detect /merge comment and retrieve cached submodule JSON
   detect-submodules:
     needs: check-mergeability
     if: ${{ needs.check-mergeability.outputs.mergeable == 'true' && needs.check-mergeability.outputs.dirty == 'false' }}
@@ -182,8 +182,6 @@ jobs:
             if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
             core.setOutput('submodules', jsonMatch[1]);
 
-
-  # Merge submodule PRs in parallel (only if submodules exist)
   process-submodules:
     needs: [detect-submodules, check-mergeability]
     if: ${{ needs.detect-submodules.outputs.submodules != '[]' && needs.check-mergeability.outputs.mergeable == 'true' && needs.check-mergeability.outputs.dirty == 'false' }}
@@ -203,11 +201,9 @@ jobs:
           script: |
             const sub = ${{ toJson(matrix.submod) }};
             console.info(`🔎 Processing submodule: ${JSON.stringify(sub)}`);
-
             const url = new URL(sub.url);
             const [owner, repo] = url.pathname.replace(/^\//,'').replace(/\.git$/,'').split('/');
             const pr = sub.pr_number;
-
             let result;
             if (!pr) {
               result = { path: sub.path, repo: `${owner}/${repo}`, result: "skipped" };
@@ -233,15 +229,12 @@ jobs:
             console.info(`🔎 RESULT: ${JSON.stringify(result)}`);
             core.setOutput('result', JSON.stringify(result));
 
-  # Aggregate results (placeholder for future rollback logic)
   aggregate:
     needs: process-submodules
     runs-on: ubuntu-latest
     steps:
       - run: echo "All matrix jobs finished – proceeding to bump submodules."
 
-
-  # Bump submodules & resolve conflicts
   bump-submodules:
     needs:
       - detect-submodules
@@ -277,18 +270,25 @@ jobs:
           git submodule sync --recursive
           git submodule update --init --recursive
 
-      - name: Bump submodules and auto resolve submodule conflicts if needed
+      - name: Bump submodules and auto resolve submodule conflicts
         uses: actions/github-script@v7
         env:
           SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
           TOKEN: ${{ env.RW_PAT }}
           BRANCH: ${{ steps.pr.outputs.head_ref }}
           BASE_BRANCH: ${{ steps.pr.outputs.base_ref }}
+          COMMENT_ID: ${{ needs.check-mergeability.outputs.comment_id }}
         with:
           script: |
             const { execSync } = require('child_process');
             const submoduleJson = JSON.parse(process.env.SUBMODULES);
             let changed = false;
+
+            const comment = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: Number(process.env.COMMENT_ID)
+            });
 
             for (const sub of submoduleJson) {
               console.log(`🔧 Updating submodule ${sub.repo} at ${sub.path}`);
@@ -296,7 +296,6 @@ jobs:
                 ? sub.url.replace('https://', `https://${process.env.TOKEN}@`)
                 : sub.url;
 
-              // Get default branch of submodule
               const defaultBranch = execSync(
                 `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
                 { encoding: 'utf8' }
@@ -324,66 +323,20 @@ jobs:
               execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
               execSync(`git commit -m "Bump submodules to latest default branch"`);
               execSync(`git push origin ${process.env.BRANCH}`);
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: Number(process.env.COMMENT_ID),
+                body: comment.data.body.replace('<!-- WORKFLOW_COMMENT -->', "🔀 **Submodule bump step completed** – changes pushed.\n\n<!-- WORKFLOW_COMMENT -->")
+              });
             } else {
-              console.log('✅ All submodules already up-to-date.');
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: Number(process.env.COMMENT_ID),
+                body: comment.data.body.replace('<!-- WORKFLOW_COMMENT -->', "✅ All submodules already up-to-date.\n\n<!-- WORKFLOW_COMMENT -->")
+              });
             }
-
-      - name: Comment bump result
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: "🔀 **Submodule bump step completed** – any changes have been pushed."
-            });
-      
-      - name: Comment base merge result
-        uses: actions/github-script@v7
-        if: ${{ steps.pr.outputs.status == 'dirty' }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: "🔀 **Base branch merged into PR** – conflicts resolved and pushed."
-            });
-
-
-  # Merge base PR when there are no submodules
-  merge-base-no-submodules:
-    needs: detect-submodules
-    if: ${{ needs.detect-submodules.outputs.submodules == '[]' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Merge base PR (no submodules)
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const prNumber = context.issue.number;
-            await github.rest.pulls.merge({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-              merge_method: 'squash'
-            });
-      - name: Comment final merge (no submodules)
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: "✅ **Base PR merged** – no submodules were involved."
-            });
-      
       - name: Merge base branch into PR branch
         uses: actions/github-script@v7
         if: ${{ steps.pr.outputs.status == 'dirty' }}
@@ -431,14 +384,14 @@ jobs:
               process.exit(1);
             }
 
-
-  # Merge base PR after submodules have been processed
-  merge-base:
-    needs: [detect-submodules, process-submodules, bump-submodules, check-mergeability]
-    if: ${{ needs.check-mergeability.outputs.mergeable == 'true' && needs.check-mergeability.outputs.dirty == 'false' }}
+  
+  
+  merge-base-no-submodules:
+    needs: detect-submodules
+    if: ${{ needs.detect-submodules.outputs.submodules == '[]' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Merge base PR (after submodule)
+      - name: Merge base PR (no submodules)
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -450,14 +403,35 @@ jobs:
               pull_number: prNumber,
               merge_method: 'squash'
             });
-      - name: Comment final merge (with submodules)
+
+
+  merge-base:
+    needs: [detect-submodules, process-submodules, bump-submodules, check-mergeability]
+    if: ${{ needs.check-mergeability.outputs.mergeable == 'true' && needs.check-mergeability.outputs.dirty == 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge base PR
         uses: actions/github-script@v7
+        env:
+          COMMENT_ID: ${{ needs.check-mergeability.outputs.comment_id }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            await github.rest.issues.createComment({
+            const prNumber = context.issue.number;
+            const comment = await github.rest.issues.getComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: "✅ **Base PR merged** – all submodule merges completed successfully."
+              comment_id: Number(process.env.COMMENT_ID)
+            });
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              merge_method: 'squash'
+            });
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: Number(process.env.COMMENT_ID),
+              body: comment.data.body.replace('<!-- WORKFLOW_COMMENT -->', "✅ **Base PR merged** – all submodule merges completed successfully.\n\n<!-- WORKFLOW_COMMENT -->")
             });
