@@ -248,24 +248,49 @@ jobs:
           git submodule update --init --recursive
 
       - name: Bump submodules
-        run: |
-          changed=false
-          for sub in $(git config --file .gitmodules --get-regexp path | awk '{print $2}'); do
-            latest=$(git ls-remote origin HEAD | awk '{print $1}')
-            current=$(git -C $sub rev-parse HEAD)
-            if [ "$latest" != "$current" ]; then
-              git -C $sub fetch origin
-              git -C $sub reset --hard $latest
-              git add $sub
-              changed=true
-            fi
-          done
-          if [ "$changed" = true ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git commit -m "Bump submodules"
-            git push origin HEAD:${{ needs.get-pr.outputs.head_ref }}
-
+        uses: actions/github-script@v7
+        env:
+          SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
+          TOKEN: ${{ env.RW_PAT }}
+          BRANCH: ${{ steps.pr.outputs.head_ref }}
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const submoduleJson = JSON.parse(process.env.SUBMODULES);
+            let changed = false;
+            for (const sub of submoduleJson) {
+              console.log(`🔧 Updating submodule ${sub.repo} at ${sub.path}`);
+              let urlWithToken = sub.url.startsWith('https://')
+                ? sub.url.replace('https://', `https://${process.env.TOKEN}@`)
+                : sub.url;
+              // Get default branch
+              const defaultBranch = execSync(
+                `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
+                { encoding: 'utf8' }
+              ).trim();
+              execSync(`git -C ${sub.path} fetch origin ${defaultBranch}:${defaultBranch}`, { stdio: 'inherit' });
+              const latestCommit = execSync(
+                `git ls-remote ${urlWithToken} refs/heads/${defaultBranch} | awk '{print $1}'`,
+                { encoding: 'utf8' }
+              ).trim();
+              const currentCommit = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
+              if (currentCommit !== latestCommit) {
+                console.log(`⚠️ ${sub.repo} is outdated. Resetting to ${latestCommit}`);
+                execSync(`git -C ${sub.path} reset --hard ${latestCommit}`, { stdio: 'inherit' });
+                execSync(`git add ${sub.path}`);
+                changed = true;
+              } else {
+                console.log(`✅ ${sub.repo} is already up-to-date`);
+              }
+            }
+            if (changed) {
+              execSync('git config user.name "github-actions[bot]"');
+              execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
+              execSync(`git commit -m "Bump submodules to latest default branch"`);
+              execSync(`git push origin ${process.env.BRANCH}`);
+            } else {
+              console.log('✅ All submodules already up-to-date.');
+            }
       - name: Update PR comment after submodule bump
         uses: actions/github-script@v7
         with:
@@ -279,54 +304,64 @@ jobs:
               comment_id,
               body: comment.data.body.replace("<!-- WORKFLOW_COMMENT -->", "🔀 Submodules bumped (if needed).\n\n<!-- WORKFLOW_COMMENT -->")
             });
-      - name: Fetch base branch
-        run: git fetch origin ${{ needs.get-pr.outputs.base_ref }}
-
-      - name: Attempt merge and resolve submodule conflicts
-        run: |
-          set -e
-          git merge --no-commit --no-ff origin/${{ needs.get-pr.outputs.base_ref }} || true
-
-          # Collect submodule paths
-          submodules=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
-
-          # Automatically add submodules if there are conflicts
-          for sub in $submodules; do
-            if git diff --name-only --diff-filter=U | grep -q "^$sub"; then
-              echo "⚡ Auto-resolving submodule conflict: $sub"
-              git add "$sub"
-            fi
-          done
-
-          # Commit if any changes (submodule conflict resolution)
-          if git diff --cached --quiet; then
-            echo "✅ No submodule conflicts to commit."
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git commit -m "Auto-resolve submodule conflicts"
-            git push origin HEAD:${{ needs.get-pr.outputs.head_ref }}
-          fi
-
-      - name: Update PR comment after submodule conflict resolution
+      - name: Merge base branch into PR branch
+        uses: actions/github-script@v7
+        env:
+          BASE_BRANCH: ${{ steps.pr.outputs.base_ref }}
+          PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
+        with:
+          script: |
+            const { execSync } = require("child_process");
+            try {
+              // Fetch & merge base branch
+              execSync(`git fetch origin ${process.env.BASE_BRANCH}`, { stdio: "inherit" });
+              execSync(`git merge origin/${process.env.BASE_BRANCH}`, { stdio: "inherit" });
+              // Collect submodule paths dynamically from .gitmodules
+              const submodulePaths = execSync(
+                "git config --file .gitmodules --get-regexp path | awk '{ print $2 }'",
+                { encoding: "utf8" }
+              )
+                .trim()
+                .split("\n")
+                .filter(Boolean);
+              for (const path of submodulePaths) {
+                console.log(`📂 Adding submodule path: ${path}`);
+                try {
+                  execSync(`git add ${path}`, { stdio: "inherit" });
+                } catch (err) {
+                  console.log(`⚠️ Failed to add submodule path ${path}, skipping...`);
+                }
+              }
+              // Commit if needed
+              try {
+                execSync('git commit -m "Auto-resolve submodule conflicts"', { stdio: "inherit" });
+              } catch {
+                console.log("✅ No changes to commit.");
+              }
+              // Push back to PR branch
+              execSync(`git push origin HEAD:${process.env.PR_BRANCH}`, { stdio: "inherit" });
+            } catch (err) {
+              console.error("❌ Merge step failed:", err.message);
+              process.exit(1);
+            }
+              
+  merge-base-no-submodules:
+    needs: detect-submodules
+    if: ${{ needs.detect-submodules.outputs.submodules == '[]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge base PR (no submodules)
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const comment_id = Number("${{ needs.get-pr.outputs.comment_id }}");
-            const comment = await github.rest.issues.getComment({
+            const prNumber = context.issue.number;
+            await github.rest.pulls.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              comment_id
+              pull_number: prNumber,
+              merge_method: 'squash'
             });
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id,
-              body: comment.data.body.replace("<!-- WORKFLOW_COMMENT -->", "🛠 Auto-resolved submodule conflicts (if any).\n\n<!-- WORKFLOW_COMMENT -->")
-            });
-
-
   merge-base:
     needs: [bump-submodules, precheck-conflicts, get-pr]
     if: ${{ needs.precheck-conflicts.outputs.dirty == 'false' }}
