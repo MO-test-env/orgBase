@@ -156,7 +156,10 @@ jobs:
       # Create branches and PRs in submodules via REST API
       - name: Create submodule PRs
         id: create
-        if: ${{ steps.submodule.outputs.has-submodules == 'true' && github.event.actions.event_name == 'opened' || github.event.actions.event_name =='reopened' || github.event.actions.event_name != 'synchronize' }} 
+        if: >
+          steps.submodule.outputs.has-submodules == 'true' &&
+          (github.event_name == 'pull_request' &&
+          (github.event.action == 'opened' || github.event.action == 'reopened'))
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
@@ -167,14 +170,12 @@ jobs:
             const ticketNum = match ? match[0].toUpperCase() : "NO-TICKET";
 
             const submodules = JSON.parse('${{ steps.submodule.outputs.submodules-json }}' || '[]');
-            console.log(submodules)
             const basePRNumber = context.payload.pull_request.number;
 
             for (const sub of submodules) {
               const [owner, repo] = sub.url.replace("https://github.com/", "").split("/");
               const branch = context.payload.pull_request.head.ref;
 
-              // Get default branch SHA
               const { data: repoData } = await github.rest.repos.get({ owner, repo });
               const defaultBranch = repoData.default_branch;
 
@@ -196,10 +197,10 @@ jobs:
                 });
               }
 
-              // Check for existing PR
               const { data: prs } = await github.rest.pulls.list({
                 owner,
                 repo,
+                state: 'open',
                 head: `${owner}:${branch}`,
                 base: defaultBranch
               });
