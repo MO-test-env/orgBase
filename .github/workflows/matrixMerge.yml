@@ -17,15 +17,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  get-pr:
+    if: |
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/merge' &&
+      github.event.comment.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    outputs:
+      head_ref: ${{ steps.pr.outputs.head_ref }}
+      base_ref: ${{ steps.pr.outputs.base_ref }}
+      pr_number: ${{ steps.pr.outputs.pr_number }}
+    steps:
+      - name: Get PR details
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.issue.number;
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            core.setOutput("head_ref", pr.data.head.ref);
+            core.setOutput("base_ref", pr.data.base.ref);
+            core.setOutput("pr_number", pr.data.number);
+
 
   # Announce that the workflow has started and fetch PR mergeability info
-
   check-mergeability:
     if: |
       github.event.issue.pull_request != null &&
       github.event.comment.body == '/merge' &&
       github.event.comment.user.type != 'Bot'
-    runs-on: isg-ocp-x86-small
+    runs-on: ubuntu-latest
     outputs:
       mergeable: ${{ steps.pr-info.outputs.mergeable }}
       dirty: ${{ steps.pr-info.outputs.dirty }}
@@ -81,116 +107,61 @@ jobs:
             if (process.env.MERGEABLE !== 'true' || process.env.DIRTY !== 'false') {
               core.setFailed("PR not ready for merge.");
             }
-      
-      # - name: Merge base branch into PR (if PR dirty)
-      #   uses: actions/github-script@v7
-      #   if: ${{ steps.pr.outputs.status == 'dirty' }}
-      #   env:
-      #     BASE_BRANCH: ${{ steps.pr.outputs.base_ref }}
-      #     PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
-      #     SUBMODULES_JSON: ${{ needs.detect-submodules.outputs.submodules }}
-      #   with:
-      #     script: |
-      #       const { execSync } = require("child_process");
-      #       const core = require("@actions/core");
+  
+  precheck-conflicts:
+    needs: [get-pr, check-mergeability]
+    if: ${{ needs.check-mergeability.outputs.mergeable == 'true' && needs.check-mergeability.outputs.dirty == 'false' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          token: ${{ env.RW_PAT }}
+          fetch-depth: 0
+          ref: ${{ needs.get-pr.outputs.head_ref }}
 
-      #       // Helper to run a command and return trimmed stdout
-      #       const run = (cmd) => execSync(cmd, { stdio: "pipe", encoding: "utf8" }).trim();
+      - name: Fetch base branch
+        run: git fetch origin ${{ needs.get-pr.outputs.base_ref }}
 
-      #       try {
-              
-      #         //  Pull latest base branch and merge it into the PR branch
-              
-      #         core.info(`Fetching base branch ${process.env.BASE_BRANCH}`);
-      #         run(`git fetch origin ${process.env.BASE_BRANCH}`);
+      - name: Attempt merge (detect conflicts only)
+        id: detect
+        run: |
+          set +e
+          git merge --no-commit --no-ff origin/${{ needs.get-pr.outputs.base_ref }}
+          conflicted=$(git diff --name-only --diff-filter=U || true)
+          git merge --abort || true
+          echo "conflicted=$conflicted" >> $GITHUB_OUTPUT
+          exit 0
 
-      #         core.info(`Merging base branch into PR`);
-      #         run(`git merge origin/${process.env.BASE_BRANCH}`);
-
-              
-      #         //  Determine the set of paths that are *allowed* to have conflicts
-              
-      #         //   a) Paths declared in .gitmodules (submodule checkout paths)
-      #         const gitmodulesOut = run(`git config --file .gitmodules --get-regexp path`);
-      #         //   Example line: submodule.my-lib.path submodules/my-lib
-      #         const gitmodulesPaths = gitmodulesOut
-      #           .split("\n")
-      #           .filter(Boolean)
-      #           .map(line => line.split(" ").pop());
-
-      #         //   b) Paths coming from the cached SUBMODULES JSON (fallback if .gitmodules missing)
-      #         let jsonPaths = [];
-      #         try {
-      #           const submoduleJson = JSON.parse(process.env.SUBMODULES_JSON);
-      #           jsonPaths = submoduleJson.map(s => s.path);
-      #         } catch (e) {
-      #           core.warning("Unable to parse SUBMODULES JSON – proceeding with .gitmodules only");
-      #         }
-
-      #         //   Combine & dedupe
-      #         const allowedConflictPaths = new Set([...gitmodulesPaths, ...jsonPaths]);
-      #         core.info(`Allowed conflict paths: ${[...allowedConflictPaths].join(", ")}`);
-
-              
-      #         //  Detect any conflicted files after the merge
-              
-      #         const conflictedFiles = run(`git diff --name-only --diff-filter=U`).split("\n").filter(Boolean);
-      #         core.info(`Conflicted files: ${conflictedFiles.join(", ")}`);
-
-              
-      #         //  If conflicts exist outside the allowed set → abort the workflow
-              
-      #         const disallowedConflicts = conflictedFiles.filter(f => {
-      #           // a conflict is allowed if it is *exactly* a submodule path
-      #           // or a file *under* a submodule directory
-      #           return ![...allowedConflictPaths].some(allowed => f === allowed || f.startsWith(`${allowed}/`));
-      #         });
-
-      #         if (disallowedConflicts.length > 0) {
-      #           core.setFailed(
-      #             `Merge contains conflicts outside submodule paths: ${disallowedConflicts.join(
-      #               ", "
-      #             )}. Workflow aborting.`
-      #           );
-      #           return;
-      #         }
-
-              
-      #         //  All conflicts are within submodule paths → auto‑resolve them
-              
-      #         // Stage the submodule directories (Git will consider them resolved)
-      #         allowedConflictPaths.forEach(path => {
-      #           try {
-      #             core.info(`Adding resolved submodule path ${path}`);
-      #             run(`git add "${path}"`);
-      #           } catch (e) {
-      #             core.warning(`Failed to add ${path}: ${e.message}`);
-      #           }
-      #         });
-
-      #         // Commit if anything was staged
-      #         try {
-      #           run(`git diff --cached --quiet || git commit -m "Auto‑resolve submodule merge conflicts"`);
-      #           core.info("Auto‑resolve commit created");
-      #         } catch (e) {
-      #           core.info("No changes to commit after auto‑resolve");
-      #         }
-
-              
-      #         //  Push the resolved PR branch back to origin
-      #         core.info(`Pushing resolved PR branch ${process.env.PR_BRANCH}`);
-      #         run(`git push origin HEAD:${process.env.PR_BRANCH}`);
-
-      #       } catch (err) {
-      #         core.setFailed(`Base merge failed: ${err.message}`);
-      #       }
+      - name: Fail if disallowed conflicts exist
+        run: |
+          echo "Conflicted files: ${{ steps.detect.outputs.conflicted }}"
+          if [ -n "${{ steps.detect.outputs.conflicted }}" ]; then
+            allowed=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+            disallowed=""
+            for f in ${{ steps.detect.outputs.conflicted }}; do
+              ok=false
+              for a in $allowed; do
+                if [[ "$f" == "$a" || "$f" == "$a/"* ]]; then
+                  ok=true
+                fi
+              done
+              if [ "$ok" = false ]; then
+                disallowed="$disallowed $f"
+              fi
+            done
+            if [ -n "$disallowed" ]; then
+              echo "❌ Disallowed conflicts: $disallowed"
+              exit 1
+            fi
+          fi
+        shell: bash
 
   # Detect /merge comment and retrieve cached submodule JSON
-
   detect-submodules:
     needs: check-mergeability
     if: ${{ needs.check-mergeability.outputs.mergeable == 'true' && needs.check-mergeability.outputs.dirty == 'false' }}
-    runs-on: isg-ocp-x86-small
+    runs-on: ubuntu-latest
     outputs:
       submodules: ${{ steps.extract.outputs.submodules }}
     steps:
@@ -213,11 +184,10 @@ jobs:
 
 
   # Merge submodule PRs in parallel (only if submodules exist)
-
   process-submodules:
     needs: [detect-submodules, check-mergeability]
     if: ${{ needs.detect-submodules.outputs.submodules != '[]' && needs.check-mergeability.outputs.mergeable == 'true' && needs.check-mergeability.outputs.dirty == 'false' }}
-    runs-on: isg-ocp-x86-small
+    runs-on: ubuntu-latest
     env:
       GITHUB_API_URL: https://github.com/api/v3
     strategy:
@@ -293,22 +263,20 @@ jobs:
 
 
   # Aggregate results (placeholder for future rollback logic)
-
   aggregate:
     needs: process-submodules
-    runs-on: isg-ocp-x86-small
+    runs-on: ubuntu-latest
     steps:
       - run: echo "All matrix jobs finished – proceeding to bump submodules."
 
 
   # Bump submodules & resolve conflicts
-
   bump-submodules:
     needs:
       - detect-submodules
       - aggregate
       - check-mergeability
-    runs-on: isg-ocp-x86-small
+    runs-on: ubuntu-latest
     steps:
       - name: Get PR details
         id: pr
@@ -382,7 +350,7 @@ jobs:
 
             if (changed) {
               execSync('git config user.name "github-actions[bot]"');
-              execSync('git config user.email "github-actions[bot]@users.noreply.dell.com"');
+              execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
               execSync(`git commit -m "Bump submodules to latest default branch"`);
               execSync(`git push origin ${process.env.BRANCH}`);
             } else {
@@ -416,11 +384,10 @@ jobs:
 
 
   # Merge base PR when there are no submodules
-
   merge-base-no-submodules:
     needs: detect-submodules
     if: ${{ needs.detect-submodules.outputs.submodules == '[]' }}
-    runs-on: isg-ocp-x86-small
+    runs-on: ubuntu-latest
     steps:
       - name: Merge base PR (no submodules)
         uses: actions/github-script@v7
@@ -445,14 +412,60 @@ jobs:
               issue_number: context.issue.number,
               body: "✅ **Base PR merged** – no submodules were involved."
             });
+      
+      - name: Merge base branch into PR branch
+        uses: actions/github-script@v7
+        if: ${{ steps.pr.outputs.status == 'dirty' }}
+        env:
+          BASE_BRANCH: ${{ steps.pr.outputs.base_ref }}
+          PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
+        with:
+          script: |
+            const { execSync } = require("child_process");
+
+            try {
+              // Fetch & merge base branch
+              execSync(`git fetch origin ${process.env.BASE_BRANCH}`, { stdio: "inherit" });
+              execSync(`git merge origin/${process.env.BASE_BRANCH}`, { stdio: "inherit" });
+
+              // Collect submodule paths dynamically from .gitmodules
+              const submodulePaths = execSync(
+                "git config --file .gitmodules --get-regexp path | awk '{ print $2 }'",
+                { encoding: "utf8" }
+              )
+                .trim()
+                .split("\n")
+                .filter(Boolean);
+
+              for (const path of submodulePaths) {
+                console.log(`📂 Adding submodule path: ${path}`);
+                try {
+                  execSync(`git add ${path}`, { stdio: "inherit" });
+                } catch (err) {
+                  console.log(`⚠️ Failed to add submodule path ${path}, skipping...`);
+                }
+              }
+
+              // Commit if needed
+              try {
+                execSync('git commit -m "Auto-resolve submodule conflicts"', { stdio: "inherit" });
+              } catch {
+                console.log("✅ No changes to commit.");
+              }
+
+              // Push back to PR branch
+              execSync(`git push origin HEAD:${process.env.PR_BRANCH}`, { stdio: "inherit" });
+            } catch (err) {
+              console.error("❌ Merge step failed:", err.message);
+              process.exit(1);
+            }
 
 
   # Merge base PR after submodules have been processed
-
   merge-base:
     needs: [detect-submodules, process-submodules, bump-submodules, check-mergeability]
     if: ${{ needs.check-mergeability.outputs.mergeable == 'true' && needs.check-mergeability.outputs.dirty == 'false' }}
-    runs-on: isg-ocp-x86-small
+    runs-on: ubuntu-latest
     steps:
       - name: Merge base PR (after submodule)
         uses: actions/github-script@v7
