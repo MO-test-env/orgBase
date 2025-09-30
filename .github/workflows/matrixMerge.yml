@@ -134,7 +134,6 @@ jobs:
               comment_id,
               body: comment.data.body.replace("<!-- WORKFLOW_COMMENT -->", msg + "\n\n<!-- WORKFLOW_COMMENT -->")
             });
-          if: ${{ always() }}
 
   detect-submodules:
     needs: precheck-conflicts
