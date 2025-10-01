@@ -294,6 +294,9 @@ jobs:
                 `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
                 { encoding: 'utf8' }
               ).trim();
+              
+              execSync('git config user.name "github-actions[bot]"');
+              execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
 
               execSync(`git -C ${sub.path} fetch origin ${defaultBranch}:${defaultBranch}`, { stdio: 'inherit' });
               const latestCommit = execSync(
@@ -312,8 +315,6 @@ jobs:
               }
             }
             if (changed) {
-              execSync('git config user.name "github-actions[bot]"');
-              execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
               execSync(`git commit -m "Bump submodules to latest default branch"`);
               execSync(`git push origin ${process.env.BRANCH}`);
             } else {
