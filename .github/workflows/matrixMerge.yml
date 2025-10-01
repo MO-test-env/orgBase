@@ -40,7 +40,7 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            const newBody = comment.body + "\n" + "🔧 **Merge workflow started**";
+            const newBody = comment.body + "\n" + "🔧 **Merge workflow started**\n\n_This may take a few minutes_";
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -202,6 +202,12 @@ jobs:
               ? `**${subInfo.name}** (repo: ${subInfo.url || 'unknown'})`
               : "`unknown submodule`";
 
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              comment_id: commentId
+            });
+
             const failureMsg = `❌ **Job \`${job}\` failed while checking submodule ${subDesc}**\n\nThe PR is either not not open, not approved, or has merge conflicts. Please go check ALL submodules and fix the isue.`;
             const newBody = comment.body + "\n" + failureMsg;
 
@@ -211,11 +217,7 @@ jobs:
               comment_id: commentId,
               body: newBody
             });
-            const comment = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo:  context.repo.repo,
-              comment_id: commentId
-            });
+
 
   aggregate-precheck:
     needs: check-submodule-conflicts
