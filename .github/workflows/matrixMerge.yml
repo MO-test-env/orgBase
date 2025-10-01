@@ -46,19 +46,29 @@ jobs:
             core.setOutput("base_ref", pr.data.base.ref);
             core.setOutput("pr_number", pr.data.number);
 
-      - name: Add start comment
+      - name: Use triggering comment as start comment
         id: start-comment
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const comment = await github.rest.issues.createComment({
+            const commentId = context.payload.comment.id;
+            const body = context.payload.comment.body;
+
+            // Append workflow marker if missing
+            let newBody = body;
+            if (!/<!-- WORKFLOW_COMMENT -->/.test(newBody)) {
+              newBody += "\n\n<!-- WORKFLOW_COMMENT -->";
+            }
+
+            await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: "🔧 **Merge workflow started** – checking PR state...\n\n<!-- WORKFLOW_COMMENT -->"
+              comment_id: commentId,
+              body: `🔧 **Merge workflow started**\n\n${newBody}`
             });
-            core.setOutput('comment_id', comment.data.id);
+
+            core.setOutput('comment_id', commentId);
 
       - name: Detect submodules (cached)
         id: submod
@@ -162,7 +172,7 @@ jobs:
               ? `**${subInfo.name}** (repo: ${subInfo.url || 'unknown'})`
               : "`unknown submodule`";
 
-            const failureMsg = `❌ **Job \`${job}\` failed while checking submodule ${subDesc}**\n\nThe PR is either not open, not approved, or has merge conflicts. Please go check and fix the isue.`;
+            const failureMsg = `❌ **Job \`${job}\` failed while checking submodule ${subDesc}**\n\nThe PR is either not not open, not approved, or has merge conflicts. Please go check ALL submodules and fix the isue.`;
 
             const comment = await github.rest.issues.getComment({
               owner: context.repo.owner,
