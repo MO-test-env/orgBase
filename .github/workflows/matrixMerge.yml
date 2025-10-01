@@ -333,69 +333,46 @@ jobs:
               comment_id,
               body: comment.data.body.replace("<!-- WORKFLOW_COMMENT -->", "🔀 Submodules bumped (if needed).\n\n Attempting to resolve any submod merge conflicts if needed.\n\n<!-- WORKFLOW_COMMENT -->")
             });
-      - name: Rebase PR onto main and resolve submodule conflicts
-        uses: actions/github-script@v7
-        env:
-          BASE_BRANCH: ${{ needs.init.outputs.base_ref }}
-          PR_BRANCH: ${{ needs.init.outputs.head_ref }}
-        with:
-          script: |
-            const { execSync } = require("child_process");
+      
+      
+      - name: Start rebase onto base branch
+        run: |
+          set -e
+          git checkout ${{ needs.init.outputs.head_ref }}
+          echo "Starting rebase onto ${{needs.init.outputs.base_ref }}..."
+          git rebase origin/${{needs.init.outputs.base_ref }} || echo "⚠️ Rebase paused due to conflicts"
 
-            // Fetch all branches
-            execSync(`git fetch origin ${process.env.BASE_BRANCH}`, { stdio: "inherit" });
-            execSync(`git fetch origin ${process.env.PR_BRANCH}`, { stdio: "inherit" });
+      - name: Detect conflicted submodules
+        id: detect
+        run: |
+          conflicted=$(git diff --name-only --diff-filter=U)
+          submodule_paths=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+          conflicted_submodules=""
+          for sub in $submodule_paths; do
+            if echo "$conflicted" | grep -q "^$sub$"; then
+              conflicted_submodules="$conflicted_submodules $sub"
+            fi
+          done
+          echo "Conflicted submodules:$conflicted_submodules"
+          echo "submodules=$conflicted_submodules" >> $GITHUB_OUTPUT
 
-            // Checkout PR branch
-            execSync(`git checkout ${process.env.PR_BRANCH}`, { stdio: "inherit" });
+      - name: Resolve conflicted submodules
+        run: |
+          for sub in ${{ steps.detect.outputs.submodules }}; do
+            echo "Resolving submodule conflict: $sub"
+            # Keep PR branch version ("ours") for the submodule
+            git add "$sub"
+          done
+          if ! git diff --cached --quiet; then
+            git commit -m "Auto-resolve submodule conflicts during rebase"
+          fi
 
-            // Start rebase onto base branch
-            try {
-              execSync(`git rebase origin/${process.env.BASE_BRANCH}`, { stdio: "inherit" });
-            } catch {
-              console.log("⚠️ Rebase stopped due to conflicts. Will auto-resolve submodules only.");
-            }
+      - name: Continue rebase
+        run: |
+          git rebase --continue || echo "⚠️ Rebase still has conflicts (non-submodule files)"
 
-            // Get all submodule paths
-            const submodulePaths = execSync(
-              "git config --file .gitmodules --get-regexp path | awk '{print $2}'",
-              { encoding: "utf8" }
-            )
-              .trim()
-              .split("\n")
-              .filter(Boolean);
-
-            // Find conflicted files
-            const conflictedFiles = execSync("git diff --name-only --diff-filter=U", { encoding: "utf8" })
-              .trim()
-              .split("\n")
-              .filter(Boolean);
-
-            // Keep only conflicted submodules
-            const conflictedSubmodules = conflictedFiles.filter(f => submodulePaths.includes(f));
-
-            if (conflictedSubmodules.length === 0) {
-              console.log("✅ No submodule conflicts detected.");
-            } else {
-              // Stage only conflicted submodules
-              for (const path of conflictedSubmodules) {
-                console.log(`📂 Adding conflicted submodule: ${path}`);
-                execSync(`git add ${path}`, { stdio: "inherit" });
-              }
-            }
-
-            // Continue rebase
-            try {
-              execSync(`git rebase --continue`, { stdio: "inherit" });
-              console.log("✅ Rebase completed successfully.");
-            } catch {
-              console.log("⚠️ Rebase still has conflicts after adding submodules. Manual intervention may be needed.");
-            }
-
-            // Force push updated PR branch
-            execSync(`git push --force-with-lease origin ${process.env.PR_BRANCH}`, { stdio: "inherit" });
-            console.log("✅ PR branch updated with rebase and submodule conflict resolution.");
-
+      - name: Force push rebased branch
+        run: git push --force-with-lease origin ${{ needs.init.outputs.head_ref }}
 
       - name: Report job failure to PR comment
         if: ${{ failure() }}
