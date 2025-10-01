@@ -1,4 +1,4 @@
-name: Rebase PR Submodules
+name: Rebase PR Submodules Automatically
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ on:
         required: true
 
 permissions:
-  contents: write 
+  contents: write
 
 jobs:
   rebase-submodules:
@@ -28,7 +28,7 @@ jobs:
           ref: ${{ github.event.inputs.pr_branch }}
           submodules: recursive
 
-      - name: Configure Git user
+      - name: Configure Git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -40,30 +40,35 @@ jobs:
         run: |
           set -e
           git checkout ${{ github.event.inputs.pr_branch }}
-          echo "Rebasing onto ${{ github.event.inputs.base_branch }}..."
+          echo "Starting rebase onto ${{ github.event.inputs.base_branch }}..."
           git rebase origin/${{ github.event.inputs.base_branch }} || echo "⚠️ Rebase paused due to conflicts"
 
-      - name: Detect and add conflicted submodules
+      - name: Detect conflicted submodules
+        id: detect
         run: |
-          # Get submodule paths from .gitmodules
-          submodule_paths=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
-          # Get conflicted files
           conflicted=$(git diff --name-only --diff-filter=U)
-          # Stage only conflicted submodules
+          submodule_paths=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+          conflicted_submodules=""
           for sub in $submodule_paths; do
             if echo "$conflicted" | grep -q "^$sub$"; then
-              echo "Adding conflicted submodule: $sub"
-              git add "$sub"
+              conflicted_submodules="$conflicted_submodules $sub"
             fi
+          done
+          echo "Conflicted submodules:$conflicted_submodules"
+          echo "submodules=$conflicted_submodules" >> $GITHUB_OUTPUT
+
+      - name: Resolve conflicted submodules
+        run: |
+          for sub in ${{ steps.detect.outputs.submodules }}; do
+            echo "Resolving submodule conflict: $sub"
+            # Keep PR branch version ("ours") for the submodule
+            git checkout --ours "$sub"
+            git add "$sub"
           done
 
       - name: Continue rebase
         run: |
-          if git diff --cached --quiet; then
-            echo "✅ No submodules staged. Nothing to commit."
-          else
-            git rebase --continue || echo "⚠️ Rebase still has conflicts, manual intervention may be needed"
-          fi
+          git rebase --continue || echo "⚠️ Rebase still has conflicts (non-submodule files)"
 
-      - name: Push rebased branch
+      - name: Force push rebased branch
         run: git push --force-with-lease origin ${{ github.event.inputs.pr_branch }}
