@@ -104,7 +104,7 @@ jobs:
             const sub = JSON.parse(process.env.SUBMODULE);
             if (!sub.pr_number) {
               core.info(`⚙️ Submodule "${sub.name}" has no associated PR – skipping check.`);
-              core.setOutput('result', JSON.stringify({ path: sub.path, repo: sub.url, result: "no_pr" }));
+              core.setOutput('result', "no_pr");
               return;
             }
 
@@ -119,27 +119,24 @@ jobs:
                 pull_number: sub.pr_number,
               });
 
+              if (prInfo.merged) {
+                core.info(`✅ Submodule PR #${sub.pr_number} is already merged – skipping conflict check.`);
+                core.setOutput('result', "merged");
+                return;
+              }
+
               if (prInfo.state !== "open") {
-                const msg = `❌ Submodule PR #${sub.pr_number} is not open (state=${prInfo.state}).`;
-                core.setFailed(msg);
-                core.setOutput('reason', msg);
+                core.setFailed(`❌ Submodule PR #${sub.pr_number} is not open (state=${prInfo.state}).`);
               } else if (prInfo.mergeable === false) {
-                const msg = `⚠️ GitHub API reports PR #${sub.pr_number} is not mergeable (mergeable=false). This may be a false conflict due to submodule pointers.`;
-                core.setFailed(msg);
-                core.setOutput('reason', msg);
+                core.setFailed(`❌ Submodule PR #${sub.pr_number} is not mergeable (mergeable=false).`);
               } else {
-                core.info(`✅ Submodule PR #${sub.pr_number} is open and mergeable (or undetermined).`);
-                core.setOutput('result', JSON.stringify({
-                  path: sub.path,
-                  repo: `${owner}/${repo}`,
-                  result: "mergeable",
-                }));
+                core.info(`✅ Submodule PR #${sub.pr_number} is open and mergeable.`);
+                core.setOutput('result', "mergeable");
               }
             } catch (err) {
-              const msg = `❌ Failed to fetch PR #${sub.pr_number} for ${owner}/${repo}: ${err.message}`;
-              core.setFailed(msg);
-              core.setOutput('reason', msg);
+              core.setFailed(`❌ Failed to fetch PR #${sub.pr_number} for ${owner}/${repo}: ${err.message}`);
             }
+
       - name: Report job failure to PR comment
         if: ${{ failure() }}
         uses: actions/github-script@v7
