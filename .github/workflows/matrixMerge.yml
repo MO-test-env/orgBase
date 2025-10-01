@@ -364,7 +364,7 @@ jobs:
             git add "$sub"
           done
           if ! git diff --cached --quiet; then
-            git commit -m "Auto-resolve submodule conflicts during rebase"
+            git commit --no-edit
           fi
 
       - name: Continue rebase
