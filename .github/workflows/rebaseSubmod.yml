@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       base_branch:
-        description: "Base branch to rebase onto"
+        description: 'Base branch to rebase onto'
         required: true
-        default: "main"
+        default: 'main'
       pr_branch:
-        description: "PR branch to rebase"
+        description: 'PR branch to rebase'
         required: true
 
 permissions:
@@ -19,15 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RW_PAT: ${{ secrets.WORKFLOWS }}
-
     steps:
-      - name: Checkout PR branch (no submodules yet)
+      - name: Checkout PR branch with submodules
         uses: actions/checkout@v4
         with:
           token: ${{ env.RW_PAT }}
-          fetch-depth: 0 # required for rebase
+          fetch-depth: 0
           ref: ${{ github.event.inputs.pr_branch }}
-          submodules: false
+          submodules: recursive
 
       - name: Configure Git
         run: |
@@ -40,13 +39,14 @@ jobs:
       - name: Start rebase onto base branch
         run: |
           set -e
+          git checkout ${{ github.event.inputs.pr_branch }}
           echo "Starting rebase onto ${{ github.event.inputs.base_branch }}..."
           git rebase origin/${{ github.event.inputs.base_branch }} || echo "⚠️ Rebase paused due to conflicts"
 
       - name: Detect conflicted submodules
         id: detect
         run: |
-          conflicted=$(git diff --name-only --diff-filter=U || true)
+          conflicted=$(git diff --name-only --diff-filter=U)
           submodule_paths=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
           conflicted_submodules=""
           for sub in $submodule_paths; do
@@ -54,22 +54,14 @@ jobs:
               conflicted_submodules="$conflicted_submodules $sub"
             fi
           done
-          echo "conflicted_submodules=$conflicted_submodules" >> $GITHUB_OUTPUT
-
-      - name: Fetch only conflicted submodules
-        if: ${{ steps.detect.outputs.conflicted_submodules != '' }}
-        run: |
-          for sub in ${{ steps.detect.outputs.conflicted_submodules }}; do
-            echo "Fetching submodule: $sub"
-            git submodule update --init --depth 1 "$sub"
-          done
+          echo "Conflicted submodules:$conflicted_submodules"
+          echo "submodules=$conflicted_submodules" >> $GITHUB_OUTPUT
 
       - name: Resolve conflicted submodules
-        if: ${{ steps.detect.outputs.conflicted_submodules != '' }}
         run: |
-          for sub in ${{ steps.detect.outputs.conflicted_submodules }}; do
+          for sub in ${{ steps.detect.outputs.submodules }}; do
             echo "Resolving submodule conflict: $sub"
-            # Keep PR branch version ("ours")
+            # Keep PR branch version ("ours") for the submodule
             git add "$sub"
           done
           if ! git diff --cached --quiet; then
