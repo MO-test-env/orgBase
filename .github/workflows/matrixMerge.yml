@@ -401,7 +401,7 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            const newBody = comment.body + "\n" + ""🔀 Submodules bumped (if needed).\n\n Attempting to resolve any submod merge conflicts if needed.\nBeginning to rebase base pr onto main (resolving submodule pointer conflicts.\n";
+            const newBody = comment.body + "\n" + "🔀 Submodules bumped (if needed).\n\n Attempting to resolve any submod merge conflicts if needed.\nBeginning to rebase base pr onto main (resolving submodule pointer conflicts.\n";
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
