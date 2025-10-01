@@ -62,9 +62,11 @@ jobs:
           for sub in ${{ steps.detect.outputs.submodules }}; do
             echo "Resolving submodule conflict: $sub"
             # Keep PR branch version ("ours") for the submodule
-            git checkout --ours "$sub"
             git add "$sub"
           done
+          if ! git diff --cached --quiet; then
+            git commit -m "Auto-resolve submodule conflicts during rebase"
+          fi
 
       - name: Continue rebase
         run: |
