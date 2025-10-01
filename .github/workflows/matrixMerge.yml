@@ -144,14 +144,12 @@ jobs:
           script: |
             const sub = JSON.parse(process.env.SUBMODULE);
 
-            // If there is no PR number attached to this submodule we simply skip it
             if (!sub.pr_number) {
               core.info(`⚙️ Submodule "${sub.name}" has no associated PR – skipping check.`);
-              core.setOutput('result', JSON.stringify({path: sub.path, repo: sub.url, result: "no_pr"}));
+              core.setOutput('result', JSON.stringify({ path: sub.path, repo: sub.url, result: "no_pr" }));
               return;
             }
 
-            // Extract owner/repo from the submodule URL (handles optional .git suffix)
             const url = new URL(sub.url);
             const [owner, repo] = url.pathname.replace(/^\/|\.git$/g, '').split('/');
 
@@ -162,23 +160,36 @@ jobs:
                 owner,
                 repo,
                 pull_number: sub.pr_number,
-            });
+              });
 
-              if (prInfo.state !== "open") {
-                core.setFailed(`❌ Submodule PR #${sub.pr_number} is not open (state=${prInfo.state}).`);
+              if (prInfo.state === "closed" && prInfo.merged) {
+                // PR is merged → treat as OK
+                core.info(`✅ Submodule PR #${sub.pr_number} is already merged.`);
+                core.setOutput('result', JSON.stringify({
+                  path: sub.path,
+                  repo: `${owner}/${repo}`,
+                  result: "merged",
+                }));
+              } else if (prInfo.state !== "open") {
+                // PR is closed but not merged → fail
+                core.setFailed(`❌ Submodule PR #${sub.pr_number} is closed and not merged (state=${prInfo.state}).`);
               } else if (!prInfo.mergeable) {
+                // PR is open but has conflicts → fail
                 core.setFailed(`❌ Submodule PR #${sub.pr_number} is not mergeable (has conflicts).`);
-            } else {
-              core.info(`✅ Submodule PR #${sub.pr_number} is open and mergeable.`);
+              } else {
+                // PR is open and mergeable → pass
+                core.info(`✅ Submodule PR #${sub.pr_number} is open and mergeable.`);
                 core.setOutput('result', JSON.stringify({
                   path: sub.path,
                   repo: `${owner}/${repo}`,
                   result: "mergeable",
                 }));
               }
+
             } catch (err) {
               core.setFailed(`❌ Failed to fetch PR #${sub.pr_number} for ${owner}/${repo}: ${err.message}`);
             }
+
       - name: Report job failure to PR comment
         if: ${{ failure() }}
         uses: actions/github-script@v7
