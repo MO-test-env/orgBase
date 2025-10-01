@@ -191,7 +191,6 @@ jobs:
           script: |
             const commentId = Number(process.env.COMMENT_ID);
             const job       = process.env.JOB_NAME;
-            const marker    = "<!-- WORKFLOW_COMMENT -->";
 
             // Parse the submodule that was being processed when the job failed
             let subInfo = {};
@@ -204,16 +203,7 @@ jobs:
               : "`unknown submodule`";
 
             const failureMsg = `❌ **Job \`${job}\` failed while checking submodule ${subDesc}**\n\nThe PR is either not not open, not approved, or has merge conflicts. Please go check ALL submodules and fix the isue.`;
-
-            const comment = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo:  context.repo.repo,
-              comment_id: commentId
-            });
-
-            const newBody = comment.data.body.includes(marker)
-              ? comment.data.body.replace(marker, `${failureMsg}\n${marker}`)
-              : `${comment.data.body}\n${failureMsg}`;
+            const newBody = comment.body + "\n" + failureMsg;
 
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -221,7 +211,11 @@ jobs:
               comment_id: commentId,
               body: newBody
             });
-
+            const comment = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              comment_id: commentId
+            });
 
   aggregate-precheck:
     needs: check-submodule-conflicts
@@ -289,19 +283,18 @@ jobs:
           script: |
             const commentId = Number(process.env.COMMENT_ID);
             const job = process.env.JOB_NAME;
-            const comment = await github.rest.issues.getComment({
+            const { data: comment } = await github.rest.issues.getComment({
               owner: context.repo.owner,
-              repo: context.repo.repo,
+              repo:  context.repo.repo,
               comment_id: commentId
             });
-            const marker = "<!-- WORKFLOW_COMMENT -->";
+
             const failureMsg = `❌ **Job \`${job}\` failed**`;
-            const newBody = comment.data.body.includes(marker)
-              ? comment.data.body.replace(marker, `${failureMsg}\n${marker}`)
-              : `${comment.data.body}\n${failureMsg}`;
+            const newBody = comment.body + "\n" + failureMsg;
+
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
-              repo: context.repo.repo,
+              repo:  context.repo.repo,
               comment_id: commentId,
               body: newBody
             });
@@ -465,19 +458,18 @@ jobs:
           script: |
             const commentId = Number(process.env.COMMENT_ID);
             const job = process.env.JOB_NAME;
-            const comment = await github.rest.issues.getComment({
+            const { data: comment } = await github.rest.issues.getComment({
               owner: context.repo.owner,
-              repo: context.repo.repo,
+              repo:  context.repo.repo,
               comment_id: commentId
             });
-            const marker = "<!-- WORKFLOW_COMMENT -->";
+
             const failureMsg = `❌ **Job \`${job}\` failed**`;
-            const newBody = comment.data.body.includes(marker)
-              ? comment.data.body.replace(marker, `${failureMsg}\n${marker}`)
-              : `${comment.data.body}\n${failureMsg}`;
+            const newBody = comment.body + "\n" + failureMsg;
+
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
-              repo: context.repo.repo,
+              repo:  context.repo.repo,
               comment_id: commentId,
               body: newBody
             });
@@ -534,19 +526,18 @@ jobs:
           script: |
             const commentId = Number(process.env.COMMENT_ID);
             const job = process.env.JOB_NAME;
-            const comment = await github.rest.issues.getComment({
+            const { data: comment } = await github.rest.issues.getComment({
               owner: context.repo.owner,
-              repo: context.repo.repo,
+              repo:  context.repo.repo,
               comment_id: commentId
             });
-            const marker = "<!-- WORKFLOW_COMMENT -->";
+
             const failureMsg = `❌ **Job \`${job}\` failed**`;
-            const newBody = comment.data.body.includes(marker)
-              ? comment.data.body.replace(marker, `${failureMsg}\n${marker}`)
-              : `${comment.data.body}\n${failureMsg}`;
+            const newBody = comment.body + "\n" + failureMsg;
+
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
-              repo: context.repo.repo,
+              repo:  context.repo.repo,
               comment_id: commentId,
               body: newBody
             });
