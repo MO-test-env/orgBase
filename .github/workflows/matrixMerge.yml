@@ -52,7 +52,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const commentId = github.event.comment.id;
+            const commentId = context.payload.comment.id;
             const body = context.payload.comment.body;
 
             // Append workflow marker if missing
