@@ -52,7 +52,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const commentId = context.payload.comment.id;
+            const commentId = github.event.comment.id;
             const body = context.payload.comment.body;
 
             // Append workflow marker if missing
@@ -65,7 +65,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               comment_id: commentId,
-              body: `🔧 **Merge workflow started**\n\n${newBody}`
+              body: `${newBody}\n🔧 **Merge workflow started**\n\n`
             });
 
             core.setOutput('comment_id', commentId);
@@ -152,7 +152,7 @@ jobs:
         if: ${{ failure() }}
         uses: actions/github-script@v7
         env:
-          COMMENT_ID: ${{ needs.init.outputs.comment_id }}
+          COMMENT_ID: ${{ github.event.comment.id }}
           JOB_NAME:   ${{ github.job }}
           SUBMODULE: ${{ toJson(matrix.submod) }}
         with:
@@ -213,7 +213,7 @@ jobs:
       - name: Merge submodule PR
         uses: actions/github-script@v7
         env:
-          COMMENT_ID: ${{ needs.init.outputs.comment_id }}
+          COMMENT_ID: ${{ github.event.comment.id }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
@@ -234,7 +234,7 @@ jobs:
         if: ${{ failure() }}
         uses: actions/github-script@v7
         env:
-          COMMENT_ID: ${{ needs.init.outputs.comment_id }}
+          COMMENT_ID: ${{ github.event.comment.id }}
           JOB_NAME: ${{ github.job }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -271,7 +271,7 @@ jobs:
       - name: Update PR comment – submodules processed
         uses: actions/github-script@v7
         env:
-          COMMENT_ID: ${{ needs.init.outputs.comment_id }} 
+          COMMENT_ID: ${{ github.event.comment.id }} 
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -359,7 +359,7 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const comment_id = Number("${{ needs.init.outputs.comment_id }}");
+            const comment_id = Number("${{ github.event.comment.id }}");
             const comment = await github.rest.issues.getComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id });
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -412,7 +412,7 @@ jobs:
         if: ${{ failure() }}
         uses: actions/github-script@v7
         env:
-          COMMENT_ID: ${{ needs.init.outputs.comment_id }}
+          COMMENT_ID: ${{ github.event.comment.id }}
           JOB_NAME: ${{ github.job }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -463,7 +463,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const prNumber = context.issue.number;
-            const comment_id = Number("${{ needs.init.outputs.comment_id }}");
+            const comment_id = Number("${{ github.event.comment.id }}");
             await github.rest.pulls.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -481,7 +481,7 @@ jobs:
         if: ${{ failure() }}
         uses: actions/github-script@v7
         env:
-          COMMENT_ID: ${{ needs.init.outputs.comment_id }}
+          COMMENT_ID: ${{ github.event.comment.id }}
           JOB_NAME: ${{ github.job }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
