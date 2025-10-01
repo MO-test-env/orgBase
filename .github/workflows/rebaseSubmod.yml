@@ -1,0 +1,69 @@
+name: Rebase PR Submodules
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_branch:
+        description: 'Base branch to rebase onto'
+        required: true
+        default: 'main'
+      pr_branch:
+        description: 'PR branch to rebase'
+        required: true
+
+permissions:
+  contents: write 
+
+jobs:
+  rebase-submodules:
+    runs-on: ubuntu-latest
+    env:
+      RW_PAT: ${{ secrets.WORKFLOWS }}
+    steps:
+      - name: Checkout PR branch with submodules
+        uses: actions/checkout@v4
+        with:
+          token: ${{ env.RW_PAT }}
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.pr_branch }}
+          submodules: recursive
+
+      - name: Configure Git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.event.inputs.base_branch }}
+
+      - name: Start rebase onto base branch
+        run: |
+          set -e
+          git checkout ${{ github.event.inputs.pr_branch }}
+          echo "Rebasing onto ${{ github.event.inputs.base_branch }}..."
+          git rebase origin/${{ github.event.inputs.base_branch }} || echo "⚠️ Rebase paused due to conflicts"
+
+      - name: Detect and add conflicted submodules
+        run: |
+          # Get submodule paths from .gitmodules
+          submodule_paths=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+          # Get conflicted files
+          conflicted=$(git diff --name-only --diff-filter=U)
+          # Stage only conflicted submodules
+          for sub in $submodule_paths; do
+            if echo "$conflicted" | grep -q "^$sub$"; then
+              echo "Adding conflicted submodule: $sub"
+              git add "$sub"
+            fi
+          done
+
+      - name: Continue rebase
+        run: |
+          if git diff --cached --quiet; then
+            echo "✅ No submodules staged. Nothing to commit."
+          else
+            git rebase --continue || echo "⚠️ Rebase still has conflicts, manual intervention may be needed"
+          fi
+
+      - name: Push rebased branch
+        run: git push --force-with-lease origin ${{ github.event.inputs.pr_branch }}
