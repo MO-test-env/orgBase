@@ -13,19 +13,68 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
+  check-submodules:
+    runs-on: ubuntu-latest
+    outputs:
+      submodules_touched: ${{ steps.check.outputs.submodules_touched }}
+    steps:
+      - name: Get changed files in PR
+        id: files
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.inputs.pr_branch
+                ? null // workflow_dispatch won't have PR num directly
+                : context.issue.number
+            });
+
+            // Fallback: if manually dispatched, fetch PR by branch name
+            let files = [];
+            if (pr) {
+              const list = await github.paginate(github.rest.pulls.listFiles, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number
+              });
+              files = list.map(f => f.filename);
+            }
+
+            core.setOutput("files", JSON.stringify(files));
+
+      - name: Check if submodules are touched
+        id: check
+        run: |
+          files=$(echo '${{ steps.files.outputs.files }}' | jq -r '.[]')
+          touched="false"
+          if [ -f .gitmodules ]; then
+            submodules=$(grep -oP '(?<=path = ).*' .gitmodules || true)
+            for sub in $submodules; do
+              if echo "$files" | grep -q "^$sub"; then
+                touched="true"
+                break
+              fi
+            done
+          fi
+          echo "submodules_touched=$touched" >> $GITHUB_OUTPUT
+
   rebase-submodules:
+    needs: check-submodules
+    if: needs.check-submodules.outputs.submodules_touched == 'true'
     runs-on: ubuntu-latest
     env:
       RW_PAT: ${{ secrets.WORKFLOWS }}
-
     steps:
       - name: Checkout PR branch (no submodules yet)
         uses: actions/checkout@v4
         with:
           token: ${{ env.RW_PAT }}
-          fetch-depth: 0 # required for rebase
+          fetch-depth: 0
           ref: ${{ github.event.inputs.pr_branch }}
           submodules: false
 
@@ -47,7 +96,7 @@ jobs:
         id: detect
         run: |
           conflicted=$(git diff --name-only --diff-filter=U || true)
-          submodule_paths=$(git config --file .gitmodules --get-regexp path | awk '{print $2}')
+          submodule_paths=$(git config --file .gitmodules --get-regexp path | awk '{print $2}' || true)
           conflicted_submodules=""
           for sub in $submodule_paths; do
             if echo "$conflicted" | grep -q "^$sub$"; then
@@ -69,7 +118,6 @@ jobs:
         run: |
           for sub in ${{ steps.detect.outputs.conflicted_submodules }}; do
             echo "Resolving submodule conflict: $sub"
-            # Keep PR branch version ("ours")
             git add "$sub"
           done
           if ! git diff --cached --quiet; then
