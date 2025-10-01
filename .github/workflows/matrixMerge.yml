@@ -27,9 +27,27 @@ jobs:
       head_ref: ${{ steps.pr.outputs.head_ref }}
       base_ref: ${{ steps.pr.outputs.base_ref }}
       pr_number: ${{ steps.pr.outputs.pr_number }}
-      comment_id: ${{ steps.start-comment.outputs.comment_id }}
       submodules: ${{ steps.submod.outputs.submodules }}
     steps:
+      - name: Comment start
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
+            const newBody = comment.body + "\n" + "🔧 **Merge workflow started**";
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
+
       - name: Get PR details
         id: pr
         uses: actions/github-script@v7
@@ -45,30 +63,6 @@ jobs:
             core.setOutput("head_ref", pr.data.head.ref);
             core.setOutput("base_ref", pr.data.base.ref);
             core.setOutput("pr_number", pr.data.number);
-
-      - name: Use triggering comment as start comment
-        id: start-comment
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const commentId = context.payload.comment.id;
-            const body = context.payload.comment.body;
-
-            // Append workflow marker if missing
-            let newBody = body;
-            if (!/<!-- WORKFLOW_COMMENT -->/.test(newBody)) {
-              newBody += "\n\n<!-- WORKFLOW_COMMENT -->";
-            }
-
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-              body: `${newBody}\n🔧 **Merge workflow started**\n\n`
-            });
-
-            core.setOutput('comment_id', commentId);
 
       - name: Detect submodules (cached)
         id: submod
@@ -90,6 +84,43 @@ jobs:
               if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
               core.setOutput('submodules', jsonMatch[1]);
             }
+      - name: Comment after init
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
+            const newBody = comment.body + "\n" + "Submodule information found in comment\nBeginning to check for submodule conflicts";
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
+      - name: Comment after init on Failure
+        if: ${{ failure() }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
+            const newBody = comment.body + "\n" + "❌ FAILED to get submodule information from base pr comment";
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
 
   check-submodule-conflicts:
     needs: [init]  
@@ -196,7 +227,24 @@ jobs:
     needs: check-submodule-conflicts
     runs-on: ubuntu-latest
     steps:
-      - run: echo "All pre-check submodule checks completed."
+      - name: Comment after Aggregate submod precheck
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
+            const newBody = comment.body + "\n" + "No merge conflicts were found in submodule prs. \n Beginning to merge submodules";
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
 
   process-submodules:
     needs: [aggregate-precheck, init]
@@ -262,36 +310,29 @@ jobs:
     needs: process-submodules
     runs-on: ubuntu-latest
     steps:
-      - run: echo "All matrix jobs finished – proceeding to bump submodules."
+      - name: Comment after Aggregate 
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
+            const newBody = comment.body + "\n" + "All submodules merged.\n Beginning to bump submodules on base Pr branch.";
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
 
   bump-submodules:
     needs: [aggregate, init]
     runs-on: ubuntu-latest
     steps:
-      - name: Update PR comment – submodules processed
-        uses: actions/github-script@v7
-        env:
-          COMMENT_ID: ${{ github.event.comment.id }} 
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const msg = "✅ All submodules have been processed.";
-            const comment_id = Number(process.env.COMMENT_ID);
-
-            // Fetch current comment
-            const comment = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id
-            });
-
-            // Update comment with message
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id,
-              body: comment.data.body.replace("<!-- WORKFLOW_COMMENT -->", msg + "\n\n<!-- WORKFLOW_COMMENT -->")
-            });
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
@@ -354,18 +395,23 @@ jobs:
             } else {
               console.log('✅ All submodules already up-to-date.');
             }
-      - name: Update PR comment after submodule bump
+      - name: Comment after Bump
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const comment_id = Number("${{ github.event.comment.id }}");
-            const comment = await github.rest.issues.getComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id });
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
+            const newBody = comment.body + "\n" + ""🔀 Submodules bumped (if needed).\n\n Attempting to resolve any submod merge conflicts if needed.\nBeginning to rebase base pr onto main (resolving submodule pointer conflicts.\n";
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              comment_id,
-              body: comment.data.body.replace("<!-- WORKFLOW_COMMENT -->", "🔀 Submodules bumped (if needed).\n\n Attempting to resolve any submod merge conflicts if needed.\n\n<!-- WORKFLOW_COMMENT -->")
+              comment_id: commentId,
+              body: newBody,
             });
       
       
