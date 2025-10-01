@@ -244,8 +244,7 @@ jobs:
       - run: echo "All matrix jobs finished – proceeding to bump submodules."
 
   bump-submodules:
-    needs: [aggregate, precheck-conflicts, init]
-    if: ${{ needs.precheck-conflicts.outputs.dirty == 'false' }}
+    needs: [aggregate, init]
     runs-on: ubuntu-latest
     steps:
       - name: Update PR comment – submodules processed
@@ -432,8 +431,7 @@ jobs:
               merge_method: 'squash'
             });
   merge-base:
-    needs: [bump-submodules, precheck-conflicts, init]
-    if: ${{ needs.precheck-conflicts.outputs.dirty == 'false' }}
+    needs: [bump-submodules, init]
     runs-on: ubuntu-latest
     steps:
       - name: Merge base PR
