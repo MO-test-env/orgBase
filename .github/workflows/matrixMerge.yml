@@ -107,34 +107,24 @@ jobs:
               core.setOutput('result', "no_pr");
               return;
             }
-
             const url = new URL(sub.url);
             const [owner, repo] = url.pathname.replace(/^\/|\.git$/g, '').split('/');
-            core.info(`🔎 Checking PR #${sub.pr_number} in ${owner}/${repo}`);
+            const { data: pr } = await github.rest.pulls.get({
+              owner, repo, pull_number: sub.pr_number
+            });
 
-            try {
-              const { data: prInfo } = await github.rest.pulls.get({
-                owner,
-                repo,
-                pull_number: sub.pr_number,
-              });
-
-              if (prInfo.merged) {
-                core.info(`✅ Submodule PR #${sub.pr_number} is already merged – skipping conflict check.`);
-                core.setOutput('result', "merged");
-                return;
-              }
-
-              if (prInfo.state !== "open") {
-                core.setFailed(`❌ Submodule PR #${sub.pr_number} is not open (state=${prInfo.state}).`);
-              } else if (prInfo.mergeable === false) {
-                core.setFailed(`❌ Submodule PR #${sub.pr_number} is not mergeable (mergeable=false).`);
-              } else {
-                core.info(`✅ Submodule PR #${sub.pr_number} is open and mergeable.`);
-                core.setOutput('result', "mergeable");
-              }
-            } catch (err) {
-              core.setFailed(`❌ Failed to fetch PR #${sub.pr_number} for ${owner}/${repo}: ${err.message}`);
+            if (pr.merged) {
+              core.info(`✅ Submodule PR #${sub.pr_number} is merged.`);
+              core.setOutput('result', "merged");
+            } else if (pr.state !== "open") {
+              core.info(`⚠️ Submodule PR #${sub.pr_number} is closed (not merged).`);
+              core.setOutput('result', "closed");
+            } else if (pr.mergeable === false) {
+              core.info(`❌ Submodule PR #${sub.pr_number} has conflicts.`);
+              core.setOutput('result', "conflict");
+            } else {
+              core.info(`✅ Submodule PR #${sub.pr_number} is open and mergeable.`);
+              core.setOutput('result', "open");
             }
 
       - name: Report job failure to PR comment
