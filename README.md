@@ -3,6 +3,7 @@
     - _Basically_ every job/ matrix strategy/ event trigger/ variable type can be found somewhere in these docs if you know what you're looking for. Even links to examples of workflow or yml syntax 
 - **GitHub CLI Manual** – <https://cli.github.com/manual/>
 - **GitHub REST API Quickstart** – <https://docs.github.com/en/rest/quickstart?apiVersion=2022-11-28>
+    - REST: Get a pull request https://docs.github.com/en/rest/pulls/pulls?apiVersion=2022-11-28#get-a-pull-request
 - **Published actions** - <https://github.com/actions>
 - **General yml ref** - <https://learnxinyminutes.com/yaml/>
 - **Example action** - <https://github.com/marketplace/actions/github-action-submodule-updates>
