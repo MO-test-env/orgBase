@@ -136,7 +136,7 @@ jobs:
             }
 
             // Extract entries like: "⏳ submod" + "PR: #25"
-            const regex = /⏳\s*(\S+)[\s\S]*?PR:\s*#(\d+)/g;
+            const regex = /⏳\s*([A-Za-z0-9_.\-]+)[\s\S]*?PR:\s*#(\d+)/g;
             const matches = [...analysis.body.matchAll(regex)];
 
             if (matches.length === 0) {
