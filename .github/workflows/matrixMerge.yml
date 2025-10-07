@@ -116,19 +116,53 @@ jobs:
           github-token: ${{ env.RW_PAT }}
           script: |
             const prNumber = context.issue.number;
+
+            // Fetch all comments for this PR
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: prNumber
+              issue_number: prNumber,
             });
-            const cache = comments.find(c => /<!-- SUBMODULES_JSON -->/.test(c.body));
-            if (!cache) {
+
+            // Find the latest "🔍 Submodule Analysis Results" comment
+            const analysis = comments
+              .filter(c => c.body.includes('🔍 Submodule Analysis Results'))
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+
+            if (!analysis) {
+              core.warning("No submodule analysis comment found.");
               core.setOutput('submodules', '[]');
-            } else {
-              const jsonMatch = cache.body.match(/```json\s*([\s\S]*?)\s*```/);
-              if (!jsonMatch) throw new Error("Failed to parse JSON from cached comment");
-              core.setOutput('submodules', jsonMatch[1]);
+              return;
             }
+
+            // Extract entries like: "⏳ submod" + "PR: #25"
+            const regex = /⏳\s*(\S+)[\s\S]*?PR:\s*#(\d+)/g;
+            const matches = [...analysis.body.matchAll(regex)];
+
+            if (matches.length === 0) {
+              core.warning("No submodule PRs detected in comment.");
+              core.setOutput('submodules', '[]');
+              return;
+            }
+
+            // Construct array of objects for each submodule
+            const submodules = matches.map(m => {
+              const name = m[1].trim();
+              const pr_number = parseInt(m[2], 10);
+              const url = `https://github.com/${context.repo.owner}/${name}`; // adjust if actual submodule repo differs
+              return {
+                name,
+                pr_number,
+                url,
+                merged: false,
+              };
+            });
+
+            const json = JSON.stringify(submodules, null, 2);
+            core.info("📦 Extracted submodule JSON:");
+            core.info(json);
+            core.setOutput('submodules', json);
+
 
       - name: Add merged flag to each submodule entry
         id: add-merged-flag
