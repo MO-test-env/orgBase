@@ -374,30 +374,26 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            async function fetchReviews() {
-              const reviewsUrl = `${baseUrl}/repos/${owner}/${repo}/pulls/${pull_number}/reviews`;
-              const revResp = await fetch(reviewsUrl, {
-                headers: {
-                  Accept: 'application/vnd.github+json',
-                  Authorization: `Bearer ${process.env.RW_PAT}`,
-                }
-              });
-              if (!revResp.ok) {
-                console.warn(`⚠️ Could not fetch reviews – HTTP ${revResp.status}`);
-                core.setFailed('Failed to fetch reviews.');
-                return [];
-              }
-              return revResp.json();
+            const prNumber = context.issue.number;
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
+            const latestByUser = {};
+            for (const review of reviews) {
+              latestByUser[review.user.login] = review.state;
             }
-            const reviews = await fetchReviews();
-            if (reviews.length <= process.env.MIN_REVIEWERS) {
-              core.setFailed('Not enough PR approvals.');
-              return;
+            const approvedUsers = Object.values(latestByUser).filter(s => s === 'APPROVED');
+            const approvalCount = approvedUsers.length;
+
+            console.log(`✅ Current approvals: ${approvalCount}/${process.env.MIN_REVIEWERS}`);
+
+            if (approvalCount < parseInt(process.env.MIN_REVIEWERS || '0', 10)) {
+              core.setFailed(`❌ Not enough approvals (${approvalCount}/${process.env.MIN_REVIEWERS})`);
             } else {
-              const approved = reviews.filter(r => r.state === 'APPROVED');
-              console.log(`Total reviews: ${reviews.length}`);
-              console.log(`Approved reviews: ${approved.length}`);
-              console.log('Approved reviewers:', approved.map(r => r.user.login).join(', ') || '(none)');
+              console.log('✅ Required approvals met.');
             }
 
       - name: Comment on failure
