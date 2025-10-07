@@ -123,26 +123,25 @@ jobs:
               issue_number: prNumber,
             });
 
-            // Find the most recent "🔍 Submodule Analysis Results" comment
             const analysis = comments
-              .filter(c => c.body.includes('🔍 Submodule Analysis Results'))
+              .filter(c => /🔍 Submodule Analysis Results/.test(c.body))
               .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
 
             if (!analysis) {
-              core.warning("No submodule analysis comment found.");
+              core.warning("⚠️ No 'Submodule Analysis Results' comment found.");
               core.setOutput('submodules', '[]');
               return;
             }
 
             const text = analysis.body;
 
-            // Split by each section starting with "#### ⏳"
-            const blocks = text.split(/(?=####\s*⏳)/g).filter(b => b.includes('PR:'));
+            const blocks = text.split(/(?=####\s*[✅⏳]\s*`)/g).filter(b => /PR:/i.test(b));
 
             const submodules = [];
 
             for (const block of blocks) {
-              const nameMatch = block.match(/####\s*⏳\s*`([^`]+)`/);
+
+              const nameMatch = block.match(/####\s*[✅⏳❌❓]\s*`([^`]+)`/);
               const branchMatch = block.match(/\*\*Branch:\*\*\s*`([^`]+)`/);
               const statusMatch = block.match(/\*\*Status:\*\*\s*\*\*([^*]+)\*\*/);
               const prMatch = block.match(/\[?#(\d+)\]\((https:\/\/github\.com\/[^)]+)\)/);
@@ -154,15 +153,14 @@ jobs:
                 continue;
               }
 
-              const name = nameMatch[1];
-              const branch = branchMatch ? branchMatch[1] : null;
+              const name = nameMatch[1].trim();
+              const branch = branchMatch ? branchMatch[1].trim() : null;
               const status = statusMatch ? statusMatch[1].trim() : null;
               const pr_number = parseInt(prMatch[1], 10);
               const pr_url = prMatch[2];
               const approvals = approvalsMatch ? approvalsMatch[1] : null;
               const change_requests = changeRequestsMatch ? changeRequestsMatch[1] : null;
 
-              // Extract org/repo from PR URL
               const [, org, repo] = pr_url.match(/github\.com\/([^/]+)\/([^/]+)\//) || [];
 
               submodules.push({
