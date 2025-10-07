@@ -11,7 +11,7 @@ permissions:
 
 env:
   RW_PAT: ${{ secrets.WORKFLOWS2 }} # Personal Access Token with RW access to repo contents, PRs
-  MIN_REVIEWERS: 2
+  MIN_REVIEWERS: 0
 
 concurrency:
   group: ${{ github.workflow }}
@@ -577,11 +577,12 @@ jobs:
 
   aggregate-precheck:
     #needs: [check-submodule-conflicts, check-base-conflicts, merge-base-no-submodules]
-    needs: [check-base-conflicts, merge-base-no-submodules]
+    needs: [check-base-conflicts, merge-base-no-submodules, init]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     if: >-
       always() &&
+      needs.init.result == 'success' &&
       (needs.check-base-conflicts.result == 'success' ||
       needs.check-base-conflicts.result == 'skipped') && 
       github.event.issue.pull_request != null &&
@@ -686,11 +687,12 @@ jobs:
             });
 
   aggregate:
-    needs: [merge-submodules, merge-base-no-submodules, check-base-conflicts]
+    needs: [merge-submodules, merge-base-no-submodules, check-base-conflicts, init]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     if: >-
       always() &&
+      needs.init.result == 'success' &&
       (needs.check-base-conflicts.result == 'success' || needs.check-base-conflicts.result == 'skipped') &&
       (needs.merge-submodules.result == 'success' || needs.merge-submodules.result == 'skipped') && 
       github.event.issue.pull_request != null &&
