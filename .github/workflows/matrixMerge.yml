@@ -117,14 +117,13 @@ jobs:
           script: |
             const prNumber = context.issue.number;
 
-            // Fetch all comments for this PR
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
             });
 
-            // Find the latest "🔍 Submodule Analysis Results" comment
+            // Find the most recent "🔍 Submodule Analysis Results" comment
             const analysis = comments
               .filter(c => c.body.includes('🔍 Submodule Analysis Results'))
               .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
@@ -135,28 +134,50 @@ jobs:
               return;
             }
 
-            // Extract entries like: "⏳ submod" + "PR: #25"
-            const regex = /⏳\s*([A-Za-z0-9_.\-]+)[\s\S]*?PR:\s*#(\d+)/g;
-            const matches = [...analysis.body.matchAll(regex)];
+            const text = analysis.body;
 
-            if (matches.length === 0) {
-              core.warning("No submodule PRs detected in comment.");
-              core.setOutput('submodules', '[]');
-              return;
-            }
+            // Split by each section starting with "#### ⏳"
+            const blocks = text.split(/(?=####\s*⏳)/g).filter(b => b.includes('PR:'));
 
-            // Construct array of objects for each submodule
-            const submodules = matches.map(m => {
-              const name = m[1].trim();
-              const pr_number = parseInt(m[2], 10);
-              const url = `https://github.com/${context.repo.owner}/${name}`; // adjust if actual submodule repo differs
-              return {
+            const submodules = [];
+
+            for (const block of blocks) {
+              const nameMatch = block.match(/####\s*⏳\s*`([^`]+)`/);
+              const branchMatch = block.match(/\*\*Branch:\*\*\s*`([^`]+)`/);
+              const statusMatch = block.match(/\*\*Status:\*\*\s*\*\*([^*]+)\*\*/);
+              const prMatch = block.match(/\[?#(\d+)\]\((https:\/\/github\.com\/[^)]+)\)/);
+              const approvalsMatch = block.match(/\*\*Approvals:\*\*\s*([\d/]+)/);
+              const changeRequestsMatch = block.match(/\*\*Change Requests:\*\*\s*(\d+)/);
+
+              if (!nameMatch || !prMatch) {
+                core.warning(`⚠️ Skipping malformed submodule block:\n${block}`);
+                continue;
+              }
+
+              const name = nameMatch[1];
+              const branch = branchMatch ? branchMatch[1] : null;
+              const status = statusMatch ? statusMatch[1].trim() : null;
+              const pr_number = parseInt(prMatch[1], 10);
+              const pr_url = prMatch[2];
+              const approvals = approvalsMatch ? approvalsMatch[1] : null;
+              const change_requests = changeRequestsMatch ? changeRequestsMatch[1] : null;
+
+              // Extract org/repo from PR URL
+              const [, org, repo] = pr_url.match(/github\.com\/([^/]+)\/([^/]+)\//) || [];
+
+              submodules.push({
                 name,
+                branch,
+                status,
                 pr_number,
-                url,
+                approvals,
+                change_requests,
                 merged: false,
-              };
-            });
+                repo: repo || name,
+                org: org || context.repo.owner,
+                url: pr_url,
+              });
+            }
 
             const json = JSON.stringify(submodules, null, 2);
             core.info("📦 Extracted submodule JSON:");
