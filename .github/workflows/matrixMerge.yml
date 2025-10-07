@@ -11,7 +11,7 @@ permissions:
 
 env:
   RW_PAT: ${{ secrets.WORKFLOWS2 }} # Personal Access Token with RW access to repo contents, PRs
-  MIN_REVIEWERS: 0
+  MIN_REVIEWERS: 2
 
 concurrency:
   group: ${{ github.workflow }}
