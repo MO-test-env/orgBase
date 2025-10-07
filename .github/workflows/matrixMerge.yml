@@ -731,33 +731,35 @@ jobs:
             let changed = false;
 
             for (const sub of submoduleJson) {
-              console.log(`🔧 Updating submodule ${sub.repo} at ${sub.path}`);
-              let urlWithToken = sub.url.startsWith('https://')
-                ? sub.url.replace('https://', `https://${process.env.TOKEN}@`)
-                : sub.url;
+              const path = sub.name;
+              const org = sub.org;
+              const branch = sub.branch;
+              const urlWithToken = `https://${process.env.TOKEN}@github.com/${org}/${path}.git`;
 
-              // Get default branch of submodule from .gitmodules
-              const defaultBranch = execSync(
-                `git config --file .gitmodules --get submodule.${sub.name}.branch`,
-                { encoding: 'utf8' }
-              ).trim();
+              console.log(`🔧 Updating submodule ${sub.repo} at ${path}`);
 
-              execSync(`git -C ${sub.path} fetch origin ${defaultBranch}:${defaultBranch}`, { stdio: 'inherit' });
+              execSync(`git -C ${path} fetch origin ${branch}:${branch}`, { stdio: 'inherit' });
+
               const latestCommit = execSync(
-                `git ls-remote ${urlWithToken} refs/heads/${defaultBranch} | awk '{print $1}'`,
+                `git ls-remote ${urlWithToken} refs/heads/${branch} | awk '{print $1}'`,
                 { encoding: 'utf8' }
               ).trim();
-              const currentCommit = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
+
+              const currentCommit = execSync(
+                `git -C ${path} rev-parse HEAD`,
+                { encoding: 'utf8' }
+              ).trim();
 
               if (currentCommit !== latestCommit) {
-                console.log(`⚠️  ${sub.repo} is outdated. Resetting to ${latestCommit}`);
-                execSync(`git -C ${sub.path} reset --hard ${latestCommit}`, { stdio: 'inherit' });
-                execSync(`git add ${sub.path}`);
+                console.log(`⚠️  ${sub.name} is outdated. Resetting to ${latestCommit}`);
+                execSync(`git -C ${path} reset --hard ${latestCommit}`, { stdio: 'inherit' });
+                execSync(`git add ${path}`);
                 changed = true;
               } else {
-                console.log(`✅ ${sub.repo} is already up-to-date`);
+                console.log(`✅ ${sub.name} is already up-to-date`);
               }
             }
+
             if (changed) {
               execSync(`git commit -m "Bump submodules to latest default branch"`);
               execSync(`git push origin ${process.env.BRANCH}`);
