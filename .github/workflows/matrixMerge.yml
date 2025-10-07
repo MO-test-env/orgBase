@@ -543,17 +543,17 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
+            let newBody = comment.body + "\n";
             const result = process.env.SUBMODULE_RESULT;
             if( result == "skipped")
             {
-              const body =  " ✅ **Submodule precheck skipped.** All submodules already merged. \n\n(Step 3/6) Skipping merge submodules";
+              newBody = newBody +  " ✅ **Submodule precheck skipped.** All submodules already merged. \n\n(Step 3/6) Skipping merge submodules";
             }
             else
             {
-              cons body = " ✅ No merge conflicts were found in submodule prs. \n\n(Step 3/6) Beginning to merge submodules";
+              newBody = newBody + " ✅ No merge conflicts were found in submodule prs. \n\n(Step 3/6) Beginning to merge submodules";
             }
 
-            const newBody = comment.body + "\n" + body;
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
