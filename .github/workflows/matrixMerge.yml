@@ -135,13 +135,13 @@ jobs:
 
             const text = analysis.body;
 
-            const blocks = text.split(/(?=####\s*[✅⏳]\s*`)/g).filter(b => /PR:/i.test(b));
+            const blocks = text.split(/(?=####\s*[✅⏳🔄❌]\s*`)/g).filter(b => /PR:/i.test(b));
 
             const submodules = [];
 
             for (const block of blocks) {
 
-              const nameMatch = block.match(/####\s*[✅⏳❌❓]\s*`([^`]+)`/);
+              const nameMatch = block.match(/####\s*[✅⏳🔄❌❓]\s*`([^`]+)`/);
               const branchMatch = block.match(/\*\*Branch:\*\*\s*`([^`]+)`/);
               const statusMatch = block.match(/\*\*Status:\*\*\s*\*\*([^*]+)\*\*/);
               const prMatch = block.match(/\[?#(\d+)\]\((https:\/\/github\.com\/[^)]+)\)/);
