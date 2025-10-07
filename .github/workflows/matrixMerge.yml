@@ -638,7 +638,7 @@ jobs:
       github.event.issue.pull_request != null &&
       github.event.comment.body == '/merge' &&
       needs.merge-base-no-submodules.result == 'skipped' &&
-      needs.check-base-conflicts.result == 'success'
+      (needs.check-base-conflicts.result == 'success' || needs.check-base-conflicts.result == 'skipped')
     steps:
       - name: Comment after Aggregate 
         uses: actions/github-script@v7
