@@ -35,7 +35,7 @@ jobs:
       mergeable_state: ${{ steps.pr.outputs.mergeable_state }}
       state: ${{ steps.pr.outputs.state }}
       submodules: ${{ steps.add-merged-flag.outputs.submodules }}
-      unmerged_submodules: ${{ steps.filter-unmerged.outputs.unmerged }}
+      unmerged_submodules: ${{ steps.add-merged-flag.outputs.unmerged }}
     steps:
       - name: Comment on init
         uses: actions/github-script@v7
@@ -172,6 +172,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           SUBMODULES_JSON: ${{ steps.submod.outputs.submodules }}
+          RW_PAT: ${{ env.RW_PAT }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
@@ -179,7 +180,6 @@ jobs:
             const enriched = [];
 
             for (const sub of submods) {
-              // If the entry has no PR number we treat it as “already merged”
               if (!sub.pr_number) {
                 enriched.push({ ...sub, merged: true });
                 continue;
@@ -196,24 +196,51 @@ jobs:
                 });
 
                 const isMerged = prInfo.state === 'closed' && prInfo.merged === true;
-                enriched.push({ ...sub, merged: isMerged });
-                core.info(`🔎 Submodule ${sub.name} PR #${sub.pr_number} merged=${isMerged}`);
+                const isMergeableClean = prInfo.mergeable_state === 'clean';
+
+                if (!isMergeableClean) {
+                  core.setFailed(`❌ Submodule ${sub.name} PR #${sub.pr_number} is not mergeable (state=${prInfo.mergeable_state})`);
+                  return;
+                }
+
+                enriched.push({ ...sub, merged: isMerged, mergeable_state: prInfo.mergeable_state });
+
+                core.info(`🔎 Submodule ${sub.name} PR #${sub.pr_number} merged=${isMerged}, mergeable_state=${prInfo.mergeable_state}`);
+
+                // Fetch reviews
+                const { data: reviews } = await github.rest.pulls.listReviews({
+                  owner,
+                  repo,
+                  pull_number: sub.pr_number,
+                });
+
+                const approvedReviews = reviews.filter(r => r.state === 'APPROVED');
+                if (approvedReviews.length < parseInt(process.env.MIN_REVIEWERS, 10)) {
+                  core.setFailed(`❌ Submodule ${sub.name} PR #${sub.pr_number} does not have enough approvals.`);
+                  return;
+                }
+
+                core.info(`✅ Submodule ${sub.name} has ${approvedReviews.length} approved review(s).`);
+
               } catch (err) {
-                // If the API call fails we assume it still needs work – do not abort the whole workflow
                 core.warning(`❗️ Could not fetch PR #${sub.pr_number} for ${owner}/${repo}: ${err.message}`);
-                enriched.push({ ...sub, merged: false });
+                enriched.push({ ...sub, merged: false, mergeable_state: 'unknown' });
+                return;
               }
             }
 
-            const newJson = JSON.stringify(enriched);
-            core.setOutput('submodules', newJson);
-            core.info(`🗂️ Updated submodule list (with merged flag): ${newJson}`);
-      
-      - name: Filter out merged submodules
-        id: filter-unmerged
-        run: |
-          echo "unmerged=$(echo '${{ steps.add-merged-flag.outputs.submodules }}' \
-                | jq -c '[.[] | select(.merged == false)]')" >> $GITHUB_OUTPUT
+            const enrichedJson = JSON.stringify(enriched, null, 2);
+            core.info("Submodule JSON:");
+            core.info(enrichedJson);
+            core.setOutput('submodules', enrichedJson);
+
+            // Filter only unmerged submodules
+            const unmerged = enriched.filter(s => s.merged === false);
+            const unmergedJson = JSON.stringify(unmerged, null, 2);
+            core.info("❌ Unmerged submodules:");
+            core.info(unmergedJson);
+            core.setOutput('unmerged_submodules', unmergedJson);
+
       
       - name: Comment after init
         uses: actions/github-script@v7
@@ -336,9 +363,41 @@ jobs:
                 console.log('❌ Non-submodule conflicts detected:');
                 console.log(nonSubmoduleConflicts.join('\n'));
                 core.setFailed('Conflicts found in non-submodule paths.');
+                return;
               } else {
                 console.log('✅ Only submodule conflicts detected — not failing.');
               }
+            }
+
+      - name: Confirm Approvals 
+        if: ${{ steps.detect-conflicts.conclusion == 'success' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            async function fetchReviews() {
+              const reviewsUrl = `${baseUrl}/repos/${owner}/${repo}/pulls/${pull_number}/reviews`;
+              const revResp = await fetch(reviewsUrl, {
+                headers: {
+                  Accept: 'application/vnd.github+json',
+                  Authorization: `Bearer ${process.env.RW_PAT}`,
+                }
+              });
+              if (!revResp.ok) {
+                console.warn(`⚠️ Could not fetch reviews – HTTP ${revResp.status}`);
+                core.setFailed('Failed to fetch reviews.');
+                return [];
+              }
+              return revResp.json();
+            }
+            const reviews = await fetchReviews();
+            if (reviews.length <= process.env.MIN_REVIEWERS) {
+              core.setFailed('Not enough PR approvals.');
+              return;
+            } else {
+              const approved = reviews.filter(r => r.state === 'APPROVED');
+              console.log(`Total reviews: ${reviews.length}`);
+              console.log(`Approved reviews: ${approved.length}`);
+              console.log('Approved reviewers:', approved.map(r => r.user.login).join(', ') || '(none)');
             }
 
       - name: Comment on failure
@@ -381,149 +440,148 @@ jobs:
               body: newBody,
             });
 
-  check-submodule-conflicts:
-    needs: [init]  
-    if: ${{ needs.init.outputs.unmerged_submodules != '[]' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    strategy:
-      matrix:
-        submod: ${{ fromJson(needs.init.outputs.unmerged_submodules) }}
-      max-parallel: 8
-      fail-fast: true
-    env:
-      GITHUB_API_URL: https://github.com/api/v3
-    steps:
-      - name: Verify submodule PR state
-        id: api-check
-        uses: actions/github-script@v7
-        env:
-          SUBMODULE: ${{ toJson(matrix.submod) }}
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const sub = JSON.parse(process.env.SUBMODULE);
+  # check-submodule-conflicts:
+  #   needs: [init]  
+  #   if: ${{ needs.init.outputs.unmerged_submodules != '[]' }}
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 2
+  #   strategy:
+  #     matrix:
+  #       submod: ${{ fromJson(needs.init.outputs.unmerged_submodules) }}
+  #     max-parallel: 8
+  #     fail-fast: true
+  #   env:
+  #     GITHUB_API_URL: https://github.com/api/v3
+  #   steps:
+  #     - name: Verify submodule PR state
+  #       id: api-check
+  #       uses: actions/github-script@v7
+  #       env:
+  #         SUBMODULE: ${{ toJson(matrix.submod) }}
+  #       with:
+  #         github-token: ${{ env.RW_PAT }}
+  #         script: |
+  #           const sub = JSON.parse(process.env.SUBMODULE);
 
-            if (!sub.pr_number) {
-              core.info(`⚙️ Submodule "${sub.name}" has no associated PR – skipping check.`);
-              core.setOutput('result',
-                JSON.stringify({ path: sub.path, repo: sub.url, result: "no_pr" }));
-              return;
-            }
+  #           if (!sub.pr_number) {
+  #             core.info(`⚙️ Submodule "${sub.name}" has no associated PR – skipping check.`);
+  #             core.setOutput('result',
+  #               JSON.stringify({ path: sub.path, repo: sub.url, result: "no_pr" }));
+  #             return;
+  #           }
 
-            const url = new URL(sub.url);
-            const [owner, repo] = url.pathname.replace(/^\/|\.git$/g, '').split('/');
+  #           const url = new URL(sub.url);
+  #           const [owner, repo] = url.pathname.replace(/^\/|\.git$/g, '').split('/');
 
-            core.info(`🔎 Checking submodule PR #${sub.pr_number} in ${owner}/${repo}`);
+  #           core.info(`🔎 Checking submodule PR #${sub.pr_number} in ${owner}/${repo}`);
 
-            let prInfo;
-            try {
-              const { data } = await github.rest.pulls.get({
-                owner,
-                repo,
-                pull_number: sub.pr_number,
-              });
-              prInfo = data;
-            } catch (err) {
-              core.setFailed(`❌ Could not fetch PR #${sub.pr_number} for ${owner}/${repo}: ${err.message}`);
-              return;
-            }
+  #           let prInfo;
+  #           try {
+  #             const { data } = await github.rest.pulls.get({
+  #               owner,
+  #               repo,
+  #               pull_number: sub.pr_number,
+  #             });
+  #             prInfo = data;
+  #           } catch (err) {
+  #             core.setFailed(`❌ Could not fetch PR #${sub.pr_number} for ${owner}/${repo}: ${err.message}`);
+  #             return;
+  #           }
 
-            if (prInfo.state === 'closed' && prInfo.merged) {
-              core.info(`✅ Submodule PR #${sub.pr_number} is already merged.`);
-              core.setOutput('result',
-                JSON.stringify({ path: sub.path, repo: `${owner}/${repo}`, result: "merged" }));
-              return;
-            }
+  #           if (prInfo.state === 'closed' && prInfo.merged) {
+  #             core.info(`✅ Submodule PR #${sub.pr_number} is already merged.`);
+  #             core.setOutput('result',
+  #               JSON.stringify({ path: sub.path, repo: `${owner}/${repo}`, result: "merged" }));
+  #             return;
+  #           }
 
-            let reviews = [];
-            try {
-              const { data } = await github.rest.pulls.listReviews({
-                owner,
-                repo,
-                pull_number: sub.pr_number,
-              });
-              reviews = data;
-            } catch (err) {
-              core.warning(`⚠️ Could not list reviews for ${owner}/${repo}#${sub.pr_number}: ${err.message}`);
-              // Continue – we will treat it as “no approvals yet”.
-            }
+  #           let reviews = [];
+  #           try {
+  #             const { data } = await github.rest.pulls.listReviews({
+  #               owner,
+  #               repo,
+  #               pull_number: sub.pr_number,
+  #             });
+  #             reviews = data;
+  #           } catch (err) {
+  #             core.warning(`⚠️ Could not list reviews for ${owner}/${repo}#${sub.pr_number}: ${err.message}`);
+  #             // Continue – we will treat it as “no approvals yet”.
+  #           }
 
-            const approvedSet = new Set();
-            for (const r of reviews) {
-              if (r.state === 'APPROVED') {
-                approvedSet.add(r.user.login);
-              }
-            }
-            const approvedCount = approvedSet.size;
+  #           const approvedSet = new Set();
+  #           for (const r of reviews) {
+  #             if (r.state === 'APPROVED') {
+  #               approvedSet.add(r.user.login);
+  #             }
+  #           }
+  #           const approvedCount = approvedSet.size;
 
-            const min = parseInt(process.env.MIN_REVIEWERS, 10) || 0; // fallback to 0
-            core.info(`👀 Found ${approvedCount} distinct APPROVED review(s) (need ≥ ${min}).`);
+  #           const min = parseInt(process.env.MIN_REVIEWERS, 10) || 0; // fallback to 0
+  #           core.info(`👀 Found ${approvedCount} distinct APPROVED review(s) (need ≥ ${min}).`);
 
-            if (prInfo.state !== 'open') {
-              core.setFailed(`❌ Submodule PR #${sub.pr_number} is ${prInfo.state} (expected open).`);
-              return;
-            }
-            if (!prInfo.mergeable) {
-              core.setFailed(`❌ Submodule PR #${sub.pr_number} is not mergeable (likely has conflicts).`);
-              return;
-            }
-            if (approvedCount < min) {
-              core.setFailed(
-                `❌ Submodule PR #${sub.pr_number} does not meet the minimum reviewer requirement (${approvedCount}/${min} approved).`
-              );
-              return;
-            }-
-            core.info(`✅ Submodule PR #${sub.pr_number} is ready to be merged.`);
-            core.setOutput('result',
-              JSON.stringify({ path: sub.path, repo: `${owner}/${repo}`, result: "ready" }));
+  #           if (prInfo.state !== 'open') {
+  #             core.setFailed(`❌ Submodule PR #${sub.pr_number} is ${prInfo.state} (expected open).`);
+  #             return;
+  #           }
+  #           if (!prInfo.mergeable) {
+  #             core.setFailed(`❌ Submodule PR #${sub.pr_number} is not mergeable (likely has conflicts).`);
+  #             return;
+  #           }
+  #           if (approvedCount < min) {
+  #             core.setFailed(
+  #               `❌ Submodule PR #${sub.pr_number} does not meet the minimum reviewer requirement (${approvedCount}/${min} approved).`
+  #             );
+  #             return;
+  #           }-
+  #           core.info(`✅ Submodule PR #${sub.pr_number} is ready to be merged.`);
+  #           core.setOutput('result',
+  #             JSON.stringify({ path: sub.path, repo: `${owner}/${repo}`, result: "ready" }));
 
-      - name: Comment on failure
-        if: ${{ failure() }}
-        uses: actions/github-script@v7
-        env:
-          COMMENT_ID: ${{ github.event.comment.id }}
-          JOB_NAME:   ${{ github.job }}
-          SUBMODULE: ${{ toJson(matrix.submod) }}
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const commentId = Number(process.env.COMMENT_ID);
-            const job       = process.env.JOB_NAME;
-            const { data: comment } = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-            });
+  #     - name: Comment on failure
+  #       if: ${{ failure() }}
+  #       uses: actions/github-script@v7
+  #       env:
+  #         COMMENT_ID: ${{ github.event.comment.id }}
+  #         JOB_NAME:   ${{ github.job }}
+  #         SUBMODULE: ${{ toJson(matrix.submod) }}
+  #       with:
+  #         github-token: ${{ env.RW_PAT }}
+  #         script: |
+  #           const commentId = Number(process.env.COMMENT_ID);
+  #           const job       = process.env.JOB_NAME;
+  #           const { data: comment } = await github.rest.issues.getComment({
+  #             owner: context.repo.owner,
+  #             repo: context.repo.repo,
+  #             comment_id: commentId,
+  #           });
 
-            // Parse the submodule that was being processed when the job failed
-            let subInfo = {};
-            try {
-              subInfo = JSON.parse(process.env.SUBMODULE);
-            } catch (_) {}
-            const subDesc = subInfo.name
-              ? `**${subInfo.name}** (repo: ${subInfo.url || 'unknown'})`
-              : "`unknown submodule`";
+  #           // Parse the submodule that was being processed when the job failed
+  #           let subInfo = {};
+  #           try {
+  #             subInfo = JSON.parse(process.env.SUBMODULE);
+  #           } catch (_) {}
+  #           const subDesc = subInfo.name
+  #             ? `**${subInfo.name}** (repo: ${subInfo.url || 'unknown'})`
+  #             : "`unknown submodule`";
 
-            const failureMsg = `❌ **Job \`${job}\` failed while checking submodule ${subDesc}**\n\nThe PR is either not not open, not approved, or has merge conflicts. Please go check ALL submodules and fix the isue.`;
-            const appendMsg = "\n"+ failureMsg;
+  #           const failureMsg = `❌ **Job \`${job}\` failed while checking submodule ${subDesc}**\n\nThe PR is either not not open, not approved, or has merge conflicts. Please go check ALL submodules and fix the isue.`;
+  #           const appendMsg = "\n"+ failureMsg;
 
-            const newBody = comment.body + appendMsg;
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-              body: newBody,
-            });
+  #           const newBody = comment.body + appendMsg;
+  #           await github.rest.issues.updateComment({
+  #             owner: context.repo.owner,
+  #             repo: context.repo.repo,
+  #             comment_id: commentId,
+  #             body: newBody,
+  #           });
 
   aggregate-precheck:
-    needs: [check-submodule-conflicts, check-base-conflicts, merge-base-no-submodules]
+    #needs: [check-submodule-conflicts, check-base-conflicts, merge-base-no-submodules]
+    needs: [check-base-conflicts, merge-base-no-submodules]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     if: >-
       always() &&
-      (needs.check-submodule-conflicts.result == 'success' ||
-      needs.check-submodule-conflicts.result == 'skipped') &&
       (needs.check-base-conflicts.result == 'success' ||
       needs.check-base-conflicts.result == 'skipped') && 
       github.event.issue.pull_request != null &&
@@ -633,12 +691,11 @@ jobs:
     timeout-minutes: 1
     if: >-
       always() &&
-      (needs.merge-submodules.result == 'success' ||
-      needs.merge-submodules.result == 'skipped') && 
+      (needs.check-base-conflicts.result == 'success' || needs.check-base-conflicts.result == 'skipped') &&
+      (needs.merge-submodules.result == 'success' || needs.merge-submodules.result == 'skipped') && 
       github.event.issue.pull_request != null &&
       github.event.comment.body == '/merge' &&
-      needs.merge-base-no-submodules.result == 'skipped' &&
-      (needs.check-base-conflicts.result == 'success' || needs.check-base-conflicts.result == 'skipped')
+      needs.merge-base-no-submodules.result == 'skipped'
     steps:
       - name: Comment after Aggregate 
         uses: actions/github-script@v7
