@@ -734,7 +734,7 @@ jobs:
               const path = sub.name;
               const org = sub.org;
               const branch = sub.branch;
-              const urlWithToken = `https://${process.env.TOKEN}@github.com/${org}/${path}.git`;
+              const urlWithToken = `https://${process.env.TOKEN}@github.com/${org}/${sub.repo}.git`;
 
               console.log(`🔧 Updating submodule ${sub.repo} at ${path}`);
 
