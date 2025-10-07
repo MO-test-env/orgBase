@@ -42,9 +42,20 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
             const appendMsg = "\n # 🔧 Merge workflow started #\n(Step 1/7) Initializing ";
-            const appendToComment = require('.github/scripts/comment-helper.js');
-            await appendToComment(github, context.payload.comment.id, appendMsg, context.repo.owner, context.repo.repo);
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
 
       - name: Get BasePR details
         id: pr
@@ -209,9 +220,22 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
+
             const appendMsg = "\n ✅ Submodule information found in comment\n\n(Step 2/6) Beginning to check for submodule conflicts";
-            const appendToComment = require('.github/scripts/comment-helper.js');
-            await appendToComment(github, context.payload.comment.id, appendMsg, context.repo.owner, context.repo.repo);
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
+
 
   check-base-conflicts:
     needs: [init]
@@ -327,9 +351,14 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
             const conflicts = process.env.CONFLICT_FILES || '[]';
             const parsed = JSON.parse(conflicts);
-
             const conflictSummary =
               parsed.length > 0
                 ? parsed.map(f => `• \`${f}\``).join('\n')
@@ -344,8 +373,13 @@ jobs:
             ].join('\n');
 
             const appendMsg = "\n"+ failureMsg;
-            const appendToComment = require('.github/scripts/comment-helper.js');
-            await appendToComment(github, context.payload.comment.id, appendMsg, context.repo.owner, context.repo.repo);
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
 
   check-submodule-conflicts:
     needs: [init]  
@@ -456,21 +490,31 @@ jobs:
           script: |
             const commentId = Number(process.env.COMMENT_ID);
             const job       = process.env.JOB_NAME;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
 
             // Parse the submodule that was being processed when the job failed
             let subInfo = {};
             try {
               subInfo = JSON.parse(process.env.SUBMODULE);
             } catch (_) {}
-
             const subDesc = subInfo.name
               ? `**${subInfo.name}** (repo: ${subInfo.url || 'unknown'})`
               : "`unknown submodule`";
 
             const failureMsg = `❌ **Job \`${job}\` failed while checking submodule ${subDesc}**\n\nThe PR is either not not open, not approved, or has merge conflicts. Please go check ALL submodules and fix the isue.`;
             const appendMsg = "\n"+ failureMsg;
-            const appendToComment = require('.github/scripts/comment-helper.js');
-            await appendToComment(github, context.payload.comment.id, appendMsg, context.repo.owner, context.repo.repo);
+
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
 
   aggregate-precheck:
     needs: [check-submodule-conflicts, check-base-conflicts, merge-base-no-submodules]
@@ -493,7 +537,12 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
             const result = process.env.SUBMODULE_RESULT;
             if( result == "skipped")
             {
@@ -503,9 +552,8 @@ jobs:
             {
               cons body = " ✅ No merge conflicts were found in submodule prs. \n\n(Step 3/6) Beginning to merge submodules";
             }
-            const appendMsg = "\n"+ body;
-            const appendToComment = require('.github/scripts/comment-helper.js');
-            await appendToComment(github, context.payload.comment.id, appendMsg, context.repo.owner, context.repo.repo);
+
+            const newBody = comment.body + "\n" + body;
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -563,11 +611,21 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
             const failureMsg = `❌ **Job \`${job}\` failed**`;
             const appendMsg = "\n"+ failureMsg;
-            const appendToComment = require('.github/scripts/comment-helper.js');
-            await appendToComment(github, context.payload.comment.id, appendMsg, context.repo.owner, context.repo.repo);
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
 
   aggregate:
     needs: [merge-submodules, merge-base-no-submodules, check-base-conflicts]
@@ -693,10 +751,21 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
             const appendMsg = "\n ✅ Submodules bumped \n\n(Step 5/6) Beginning to rebase base pr onto main (_resolving submodule pointer conflicts_)";
-            const appendToComment = require('.github/scripts/comment-helper.js');
-            await appendToComment(github, context.payload.comment.id, appendMsg, context.repo.owner, context.repo.repo);
-      
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
+
       - name: Squash all PR commits 
         if: ${{ needs.init.outputs.mergeable != 'true' }}
         id: squash
@@ -753,9 +822,20 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
             const appendMsg = "\n ✅ Rebase pushed successfully. \n";
-            const appendToComment = require('.github/scripts/comment-helper.js');
-            await appendToComment(github, context.payload.comment.id, appendMsg, context.repo.owner, context.repo.repo);
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
 
       - name: Comment on failure
         if: ${{ failure() }}
@@ -771,9 +851,15 @@ jobs:
             const job = process.env.JOB_NAME;
             const stepStatus = process.env.STEP_STATUS;
             const stepName = process.env.STEP_NAME;
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
+            
             let failureMsg;
             let resolutionSteps;
-
             if (stepName === 'Bump submodules') {
               failureMsg = `❌ **Job \`${job}\` failed: Submodule bump failed**`;
               resolutionSteps = `
@@ -789,10 +875,14 @@ jobs:
               Please check the job logs for more information and try again.
               `;
             }
-
             const appendMsg = "\n"+ failureMsg + "\n" + resolutionSteps;
-            const appendToComment = require('.github/scripts/comment-helper.js');
-            await appendToComment(github, context.payload.comment.id, appendMsg, context.repo.owner, context.repo.repo);
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
 
   merge-base-no-submodules:
     needs: init
@@ -835,9 +925,27 @@ jobs:
               merge_method: 'squash'
             });
 
-            const appendMsg = "\n ### **🚀 (Step 6/6) Base PR merged successfully.** ### \n";
-            const appendToComment = require('.github/scripts/comment-helper.js');
-            await appendToComment(github, context.payload.comment.id, appendMsg, context.repo.owner, context.repo.repo);
+
+      - name: Comment on success
+        if: ${{ success() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commentId = context.payload.comment.id;
+              const { data: comment } = await github.rest.issues.getComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: commentId,
+              });
+
+              const appendMsg = "\n ### **🚀 (Step 6/6) Base PR merged successfully.** ### \n";
+              const newBody = comment.body + appendMsg;
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: commentId,
+                body: newBody,
+              });
 
       - name: Comment on failure
         if: ${{ failure() }}
@@ -848,9 +956,18 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
             const failureMsg = `❌ (Step 6/6)**Job \`${job}\` failed**\n The PR likely has merge conflicts. Please manually resolve them and push the changes to this branch. `;
-
             const appendMsg = "\n"+ failureMsg;
-            const appendToComment = require('.github/scripts/comment-helper.js');
-            await appendToComment(github, context.payload.comment.id, appendMsg, context.repo.owner, context.repo.repo);
-  
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
