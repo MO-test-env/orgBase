@@ -273,7 +273,7 @@ jobs:
               comment_id: commentId,
             });
 
-            const appendMsg = "\n ✅ Submodules have approvals and no conflicts\n\n Beginning to pre-check base repo";
+            const appendMsg = "\n ✅ Submodules have approvals and no conflicts\n";
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -310,6 +310,25 @@ jobs:
     outputs:
       conflicts: ${{ steps.detect-conflicts.outputs.conflicts }}
     steps:
+      - name: Comment on start
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
+            const appendMsg = "\n\n Starting to check base conflicts ";
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
       - name: Checkout PR branch
         if: ${{ needs.init.outputs.mergeable_state == 'dirty' && needs.init.outputs.state == 'open' }}
         uses: actions/checkout@v4
@@ -446,6 +465,7 @@ jobs:
               comment_id: commentId,
             });
             const newBody = comment.body + "\n" + "✅ Base repository has approvals and no meaningful conflicts.";
+            // MO:TODO add logic to add comment with starting to merge submodules 
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -612,6 +632,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
+      - name: Comment on start
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
+            const appendMsg = "\n\n Starting to bump submodules ";
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
@@ -851,6 +890,25 @@ jobs:
       needs.bump-rebase-submodules.result == 'success' &&
       needs.merge-base-no-submodules.result == 'skipped'
     steps:
+      - name: Comment on start
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
+            const appendMsg = "\n\n Starting to merge base ";
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
       - name: Merge base PR
         uses: actions/github-script@v7
         with:
