@@ -48,7 +48,7 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            const appendMsg = "\n # 🔧 Merge workflow started #\n(Step 1/7) Initializing ";
+            const appendMsg = "\n # 🔧 Merge workflow started #\n Initializing ";
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -273,7 +273,7 @@ jobs:
               comment_id: commentId,
             });
 
-            const appendMsg = "\n ✅ Submodules have approvals and no conflicts\n\n(Step 2/6) Beginning to pre-check base repo";
+            const appendMsg = "\n ✅ Submodules have approvals and no conflicts\n\n Beginning to pre-check base repo";
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -588,11 +588,11 @@ jobs:
             const result = process.env.SUBMODULE_RESULT;
             if( result == "skipped")
             {
-              newBody = newBody + " ✅ **Submodule merge skipped.** All submodules were already merged. \n\n(Step 4/6) Beginning to bump submodules for base PR branch.";
+              newBody = newBody + " ✅ **Submodule merge skipped.** All submodules were already merged. \n\n Beginning to bump submodules for base PR branch.";
             }
             else
             {
-              newBody = newBody + " ✅ All submodules merged.\n\n(Step 4/6) Beginning to bump submodules for base PR branch.";
+              newBody = newBody + " ✅ All submodules merged.\n\n Beginning to bump submodules for base PR branch.";
             }
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -689,7 +689,8 @@ jobs:
               comment_id: commentId,
             });
             let appendMsg = "\n ✅ Submodules bumped \n\n";
-            if ${{ needs.init.outputs.mergeable == 'true'}} {
+            const mergeable = "${{ needs.init.outputs.mergeable }}" === "true";
+            if (mergeable) {
               appendMsg = appendMsg + "No need to squash and rebase. Continuing to merge base."
             }
             else {
@@ -876,7 +877,7 @@ jobs:
                 comment_id: commentId,
               });
 
-              const appendMsg = "\n ### **🚀 (Step 6/6) Base PR merged successfully.** ### \n";
+              const appendMsg = "\n ### **🚀  Base PR merged successfully.** ### \n";
               const newBody = comment.body + appendMsg;
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
@@ -900,7 +901,7 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            const failureMsg = `❌ (Step 6/6)**Job \`${job}\` failed**\n The PR likely has merge conflicts. Please manually resolve them and push the changes to this branch. `;
+            const failureMsg = `❌ **Job \`${job}\` failed**\n The PR likely has merge conflicts. Please manually resolve them and push the changes to this branch. `;
             const appendMsg = "\n"+ failureMsg;
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
