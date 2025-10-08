@@ -273,8 +273,10 @@ jobs:
               comment_id: commentId,
             });
 
-            const appendMsg = "\n\n ✅ Submodules have approvals and no conflicts\n";
-            const skip = '${{ steps.pr.outputs.mergeable_state }}' == 'dirty' && '${{ steps.pr.outputs.state }}' == 'open';
+            let appendMsg = "\n\n Submodules have approvals and no conflicts\n";
+            const mergeableState = "${{ steps.pr.outputs.mergeable_state }}";
+            const prState = "${{ steps.pr.outputs.state }}";
+            const skip = mergeableState === "dirty" && prState === "open";
             if(skip){
               appendMsg = appendMsg + "(Step 2/6) Skipping base repo pre-check. No conflicts detected. "
             }
@@ -452,15 +454,15 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            const newBody = comment.body + "\n" + "✅ Base repository has approvals and no meaningful conflicts.";
-            const skip = '${{ needs.init.outputs.unmerged_submodules }}' != '[]';
+            let newBody = comment.body + "\n Base repository has approvals and no meaningful conflicts.";
+            const unmergedSubmodules = "${{ needs.init.outputs.unmerged_submodules }}";
+            const skip = unmergedSubmodules !== "[]";
             if(skip){
               newBody += "\n" + "(Step 3/6) Starting to merge submodules.";
             }
             else{
               newBody += "\n" + "(Step 3/6) Skipping submodule merge. All submodules are already merged";
             }
-            // MO:TODO add logic to add comment with starting to merge submodules 
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -607,7 +609,7 @@ jobs:
             }
             else
             {
-              newBody = newBody + " ✅ All submodules merged.\n\n(Step 4/6) Beginning to bump submodules for base PR branch.";
+              newBody = newBody + "  All submodules merged.\n\n(Step 4/6) Beginning to bump submodules for base PR branch.";
             }
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
