@@ -278,10 +278,10 @@ jobs:
             const prState = "${{ steps.pr.outputs.state }}";
             const skip = mergeableState === "dirty" && prState === "open";
             if(skip){
-              appendMsg = appendMsg + "(Step 2/6) Skipping base repo pre-check. No conflicts detected. "
+              appendMsg = appendMsg + "\n(Step 2/6) Skipping base repo pre-check. No conflicts detected.\n\n(Step 3/6) Starting to merge submodules."
             }
             else{
-              appendMsg = appendMsg + "(Step 2/6) Pre-checking base repo for approvals and conflicts. "
+              appendMsg = appendMsg + "\n(Step 2/6) Pre-checking base repo for approvals and conflicts. "
             }
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
@@ -543,12 +543,12 @@ jobs:
             const [owner, repo] = url.pathname.replace(/^\//,'').replace(/\.git$/,'').split('/');
             const pr = sub.pr_number;
             const { data: prInfo } = await github.rest.pulls.get({ owner, repo, pull_number: pr });
-            // const res = await github.rest.pulls.merge({
-            //   owner,
-            //   repo,
-            //   pull_number: pr,
-            //   merge_method: "squash",
-            // });
+            const res = await github.rest.pulls.merge({
+              owner,
+              repo,
+              pull_number: pr,
+              merge_method: "squash",
+            });
 
       - name: Comment on failure (Submodule merge)
         if: ${{ failure() }}
@@ -609,7 +609,7 @@ jobs:
             }
             else
             {
-              newBody = newBody + "  All submodules merged.\n\n(Step 4/6) Beginning to bump submodules for base PR branch.";
+              newBody = newBody + " - All submodules merged.\n\n(Step 4/6) Beginning to bump submodules for base PR branch.";
             }
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -708,7 +708,7 @@ jobs:
             let appendMsg = "\n - Submodules bumped \n\n";
             const mergeable = "${{ needs.init.outputs.mergeable }}" === "true";
             if (mergeable) {
-              appendMsg = appendMsg + "(Step 5/6) Skipping suqash and rebase. (No conflicts detected) (Step 6/6) Starting to merge base."
+              appendMsg = appendMsg + "(Step 5/6) Skipping suqash and rebase. (No conflicts detected)\n\n (Step 6/6) Starting to merge base."
             }
             else {
               appendMsg = appendMsg + "(Step 5/6) Starting to auto-resolve submodule conflicts with squash and rebase."
@@ -852,12 +852,12 @@ jobs:
           github-token: ${{ env.RW_PAT }}
           script: |
             const prNumber = context.issue.number;
-            // await github.rest.pulls.merge({
-            //  owner: context.repo.owner,
-            //  repo: context.repo.repo,
-            //  pull_number: prNumber,
-            //  merge_method: 'squash'
-            // });
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              merge_method: 'squash'
+            );
   
   merge-base:
     needs: [bump-rebase-submodules, merge-base-no-submodules]
@@ -874,12 +874,12 @@ jobs:
           github-token: ${{ env.RW_PAT }}
           script: |
             const prNumber = context.issue.number;
-            // await github.rest.pulls.merge({
-            //  owner: context.repo.owner,
-            //  repo: context.repo.repo,
-            //  pull_number: prNumber,
-            //  merge_method: 'squash'
-            // });
+            await github.rest.pulls.merge({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              merge_method: 'squash'
+            });
 
 
       - name: Comment on success
