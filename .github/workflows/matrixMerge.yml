@@ -48,7 +48,7 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            const appendMsg = "\n # 🔧 Merge workflow started #\n Initializing ";
+            const appendMsg = "\n # 🔧 Merge workflow started #\n (Step 1/6) Initializing ";
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -273,7 +273,14 @@ jobs:
               comment_id: commentId,
             });
 
-            const appendMsg = "\n ✅ Submodules have approvals and no conflicts\n";
+            const appendMsg = "\n\n ✅ Submodules have approvals and no conflicts\n";
+            const skip = '${{ steps.pr.outputs.mergeable_state }}' == 'dirty' && '${{ steps.pr.outputs.state }}' == 'open';
+            if(skip){
+              appendMsg = appendMsg + "(Step 2/6) Skipping base repo pre-check. No conflicts detected. "
+            }
+            else{
+              appendMsg = appendMsg + "(Step 2/6) Pre-checking base repo for approvals and conflicts. "
+            }
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -310,25 +317,6 @@ jobs:
     outputs:
       conflicts: ${{ steps.detect-conflicts.outputs.conflicts }}
     steps:
-      - name: Comment on start
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const commentId = context.payload.comment.id;
-            const { data: comment } = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-            });
-            const appendMsg = "\n\n Starting to check base conflicts ";
-            const newBody = comment.body + appendMsg;
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-              body: newBody,
-            });
       - name: Checkout PR branch
         if: ${{ needs.init.outputs.mergeable_state == 'dirty' && needs.init.outputs.state == 'open' }}
         uses: actions/checkout@v4
@@ -465,6 +453,13 @@ jobs:
               comment_id: commentId,
             });
             const newBody = comment.body + "\n" + "✅ Base repository has approvals and no meaningful conflicts.";
+            const skip = '${{ needs.init.outputs.unmerged_submodules }}' != '[]';
+            if(skip){
+              newBody += "\n" + "(Step 3/6) Starting to merge submodules.";
+            }
+            else{
+              newBody += "\n" + "(Step 3/6) Skipping submodule merge. All submodules are already merged";
+            }
             // MO:TODO add logic to add comment with starting to merge submodules 
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -608,11 +603,11 @@ jobs:
             const result = process.env.SUBMODULE_RESULT;
             if( result == "skipped")
             {
-              newBody = newBody + " ✅ **Submodule merge skipped.** All submodules were already merged. \n\n Beginning to bump submodules for base PR branch.";
+              newBody = newBody + "\n\n(Step 4/6) Beginning to bump submodules for base PR branch.";
             }
             else
             {
-              newBody = newBody + " ✅ All submodules merged.\n\n Beginning to bump submodules for base PR branch.";
+              newBody = newBody + " ✅ All submodules merged.\n\n(Step 4/6) Beginning to bump submodules for base PR branch.";
             }
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -632,25 +627,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Comment on start
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const commentId = context.payload.comment.id;
-            const { data: comment } = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-            });
-            const appendMsg = "\n\n Starting to bump submodules ";
-            const newBody = comment.body + appendMsg;
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-              body: newBody,
-            });
       - name: Checkout PR branch
         uses: actions/checkout@v4
         with:
@@ -727,13 +703,13 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            let appendMsg = "\n ✅ Submodules bumped \n\n";
+            let appendMsg = "\n - Submodules bumped \n\n";
             const mergeable = "${{ needs.init.outputs.mergeable }}" === "true";
             if (mergeable) {
-              appendMsg = appendMsg + "No need to squash and rebase. Continuing to merge base."
+              appendMsg = appendMsg + "(Step 5/6) Skipping suqash and rebase. (No conflicts detected) (Step 6/6) Starting to merge base."
             }
             else {
-              appendMsg = appendMsg + "Beginning to auto-resolve submodule conflicts with squash and rebase."
+              appendMsg = appendMsg + "(Step 5/6) Starting to auto-resolve submodule conflicts with squash and rebase."
             }
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
@@ -806,7 +782,7 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            const appendMsg = "\n ✅ Rebase pushed successfully. \n";
+            const appendMsg = "\n - Rebase pushed successfully. \n\n (Step 6/6) Starting to merge base.";
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -890,25 +866,6 @@ jobs:
       needs.bump-rebase-submodules.result == 'success' &&
       needs.merge-base-no-submodules.result == 'skipped'
     steps:
-      - name: Comment on start
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const commentId = context.payload.comment.id;
-            const { data: comment } = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-            });
-            const appendMsg = "\n\n Starting to merge base ";
-            const newBody = comment.body + appendMsg;
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-              body: newBody,
-            });
       - name: Merge base PR
         uses: actions/github-script@v7
         with:
@@ -935,7 +892,7 @@ jobs:
                 comment_id: commentId,
               });
 
-              const appendMsg = "\n ### **🚀  Base PR merged successfully.** ### \n";
+              const appendMsg = "\n ### **🚀 Base PR merged successfully.** ### \n";
               const newBody = comment.body + appendMsg;
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
