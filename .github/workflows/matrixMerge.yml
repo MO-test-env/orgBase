@@ -526,12 +526,12 @@ jobs:
             const [owner, repo] = url.pathname.replace(/^\//,'').replace(/\.git$/,'').split('/');
             const pr = sub.pr_number;
             const { data: prInfo } = await github.rest.pulls.get({ owner, repo, pull_number: pr });
-            const res = await github.rest.pulls.merge({
-              owner,
-              repo,
-              pull_number: pr,
-              merge_method: "squash",
-            });
+            // const res = await github.rest.pulls.merge({
+            //   owner,
+            //   repo,
+            //   pull_number: pr,
+            //   merge_method: "squash",
+            // });
 
       - name: Comment on failure (Submodule merge)
         if: ${{ failure() }}
@@ -834,12 +834,12 @@ jobs:
           github-token: ${{ env.RW_PAT }}
           script: |
             const prNumber = context.issue.number;
-            await github.rest.pulls.merge({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-              merge_method: 'squash'
-            });
+            // await github.rest.pulls.merge({
+            //  owner: context.repo.owner,
+            //  repo: context.repo.repo,
+            //  pull_number: prNumber,
+            //  merge_method: 'squash'
+            // });
   
   merge-base:
     needs: [bump-rebase-submodules, merge-base-no-submodules]
@@ -856,12 +856,12 @@ jobs:
           github-token: ${{ env.RW_PAT }}
           script: |
             const prNumber = context.issue.number;
-            await github.rest.pulls.merge({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-              merge_method: 'squash'
-            });
+            // await github.rest.pulls.merge({
+            //  owner: context.repo.owner,
+            //  repo: context.repo.repo,
+            //  pull_number: prNumber,
+            //  merge_method: 'squash'
+            // });
 
 
       - name: Comment on success
