@@ -302,11 +302,12 @@ jobs:
             let appendMsg = "\n - Submodules have approvals and no conflicts\n";
             const mergeableState = "${{ steps.pr.outputs.mergeable_state }}";
             const prState = "${{ steps.pr.outputs.state }}";
+            const noSubmod = "${{ steps.add-merged-flag.outputs.unmerged }}" === "[]";
             const skip = mergeableState === "dirty" && prState === "open";
-            if(skip){
+            if(skip && !noSubmod){
               appendMsg = appendMsg + "\n**_(Step 2/6)_** Skipping base repo pre-check. No conflicts detected.\n\n**_(Step 3/6)_** Starting to merge submodules."
             }
-            else{
+            if(skip && !noSubmod){
               appendMsg = appendMsg + "\n**_(Step 2/6)_** Pre-checking base repo for approvals and conflicts. "
             }
             const newBody = comment.body + appendMsg;
