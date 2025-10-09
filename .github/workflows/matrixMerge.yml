@@ -34,8 +34,8 @@ jobs:
       merged: ${{ steps.pr.outputs.merged }}
       mergeable_state: ${{ steps.pr.outputs.mergeable_state }}
       state: ${{ steps.pr.outputs.state }}
-      submodules: ${{ steps.add-merged-flag.outputs.submodules }}
-      unmerged_submodules: ${{ steps.add-merged-flag.outputs.unmerged }}
+      submodules: ${{ steps.pre-check-submod.outputs.submodules }}
+      unmerged_submodules: ${{ steps.pre-check-submod.outputs.unmerged }}
     steps:
       - name: Get BasePR details
         id: pr
@@ -88,6 +88,7 @@ jobs:
             });
       
       - name: Confirm Approvals for base PR
+        id: base-approvals
         if: ${{ steps.pr.outputs.merged == 'false' }}
         uses: actions/github-script@v7
         with:
@@ -138,7 +139,7 @@ jobs:
 
       - name: Detect submodules from comment and populate Json
         if: ${{ steps.pr.outputs.merged == 'false' }}
-        id: submod
+        id: detect
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
@@ -227,10 +228,10 @@ jobs:
 
       - name: Pre-check all Submodules
         if: ${{ steps.pr.outputs.merged == 'false' }}
-        id: add-merged-flag
+        id: pre-check-submod
         uses: actions/github-script@v7
         env:
-          SUBMODULES_JSON: ${{ steps.submod.outputs.submodules }}
+          SUBMODULES_JSON: ${{ steps.detect.outputs.submodules }}
           RW_PAT: ${{ env.RW_PAT }}
         with:
           github-token: ${{ env.RW_PAT }}
@@ -306,7 +307,7 @@ jobs:
         env:
           MERGEABLE_STATE: ${{ steps.pr.outputs.mergeable_state }}
           PR_STATE: ${{ steps.pr.outputs.state }}
-          UNMERGED_SUBMODULES: ${{ steps.add-merged-flag.outputs.unmerged }}
+          UNMERGED_SUBMODULES: ${{ steps.pre-check-submod.outputs.unmerged }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
@@ -339,15 +340,32 @@ jobs:
       - name: Comment on Failure
         if: ${{ failure() }}
         uses: actions/github-script@v7
+        env:
+          JOB_NAME: ${{ github.job }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
             const commentId = context.payload.comment.id;
+            const job = process.env.JOB_NAME;
             const { data: comment } = await github.rest.issues.getComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               comment_id: commentId,
             });
+            const failureMsg = `❌ **Job \`${job}\` failed:** `;
+            let appendMsg = "";
+            if('${{ steps.pr.conclusion }}' == 'failure'){
+              appendMsg = "API failed to get information on base pr. _Please try again later_";
+            }else if ('${{ steps.base-approvals.conclusion }}' == 'failure'){
+              appendMsg = "Base PR does not have enough approvals.";
+            }else if ('${{ steps.detect.conclusion }}' == 'failure'){
+              appendMsg = "Unable to initialize submodule array from app summary comment. Please go to checks page, click re-run on the app, and try again.";
+            }else if ('${{ steps.pre-check-submod.conclusion }}' == 'failure'){
+              appendMsg = "Submodules failed pre-check. Please ensure there are no merge conflicts and you have enough approvals. ";
+            }else {
+              appendMsg = "Unknown error. Please check the job logs on **Actions** tab for more information. ";
+            }
+
             const newBody = comment.body + "\n\n" + "❌ FAILED to initialize: base pr does not have enough approvals OR could not create and pre-check submodule array";
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -361,6 +379,8 @@ jobs:
     if: ${{ needs.init.outputs.mergeable_state == 'dirty' && needs.init.outputs.state == 'open' }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    env:
+      UNMERGED_SUBMODULES: ${{ needs.init.outputs.unmerged_submodules }}
     outputs:
       conflicts: ${{ steps.detect-conflicts.outputs.conflicts }}
     steps:
@@ -473,7 +493,7 @@ jobs:
               comment_id: commentId,
             });
             let newBody = comment.body + "\n Base repository has no meaningful conflicts.";
-            const unmergedSubmodules = "${{ needs.init.outputs.unmerged_submodules }}";
+            const unmergedSubmodules = process.env.UNMERGED_SUBMODULES;
             const skip = unmergedSubmodules !== "[]";
             if(skip){
               newBody += "\n" + "**_(Step 3/6)_** Starting to merge submodules.";
@@ -499,6 +519,7 @@ jobs:
           github-token: ${{ env.RW_PAT }}
           script: |
             const commentId = context.payload.comment.id;
+            const job = process.env.JOB_NAME;
             const { data: comment } = await github.rest.issues.getComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -578,6 +599,7 @@ jobs:
           github-token: ${{ env.RW_PAT }}
           script: |
             const commentId = context.payload.comment.id;
+            const job = process.env.JOB_NAME;
             const { data: comment } = await github.rest.issues.getComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -666,6 +688,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Bump submodules
+        id: bump
         uses: actions/github-script@v7
         env:
           SUBMODULES: ${{ needs.init.outputs.submodules }}
@@ -771,6 +794,7 @@ jobs:
           git commit -m "$SUBJECT" -m "$BODY"
 
       - name: Rebase onto base branch & resolve submodule conflicts
+        id: rebase
         if: ${{ needs.init.outputs.mergeable != 'true' && steps.squash.conclusion == 'success'}}
         run: |
           set -euo pipefail
@@ -832,14 +856,10 @@ jobs:
         env:
           COMMENT_ID: ${{ github.event.comment.id }}
           JOB_NAME: ${{ github.job }}
-          STEP_STATUS: ${{ github.actions.step.status }}
-          STEP_NAME: ${{ github.actions.step.name }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
             const job = process.env.JOB_NAME;
-            const stepStatus = process.env.STEP_STATUS;
-            const stepName = process.env.STEP_NAME;
             const commentId = context.payload.comment.id;
             const { data: comment } = await github.rest.issues.getComment({
               owner: context.repo.owner,
@@ -849,12 +869,12 @@ jobs:
             
             let failureMsg;
             let resolutionSteps;
-            if (stepName === 'Bump submodules') {
+            if ('${{ steps.bump.conclusion }}' == 'failure') {
               failureMsg = `❌ **Job \`${job}\` failed: Submodule bump failed**`;
               resolutionSteps = `
               Please check the submodule configuration and try again.
               `;
-            } else if (stepName === 'Rebase to resolve submodule conflicts') {
+            } else if ('${{ steps.squash.conclusion }}' == 'failure' || '${{ steps.rebase.conclusion }}' == 'failure') {
               failureMsg = `❌ **Job \`${job}\` failed: Rebase failed**`;
               resolutionSteps = `
               If the rebase fails, it's likely due to merge conflicts in the base repository. Please manually resolve these conflicts and push the branch back to continue.`;
@@ -928,6 +948,7 @@ jobs:
           github-token: ${{ env.RW_PAT }}
           script: |
             const commentId = context.payload.comment.id;
+            const job = process.env.JOB_NAME;
             const { data: comment } = await github.rest.issues.getComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
