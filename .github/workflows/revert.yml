@@ -210,7 +210,7 @@ jobs:
                 // Create revert branch from base branch
                 execSync(`git checkout -b ${branchName} origin/${baseBranch}`, { stdio: 'inherit' });
 
-                execSync(`git revert -m 1 ${prInfo.merge_commit_sha}`, { stdio: 'inherit' });
+                execSync(`git revert -m 1 ${prInfo.merge_commit_sha} -X theirs`, { stdio: 'inherit' });
                 execSync(`git commit -am "Revert: ${sub.title || 'Submodule PR #' + sub.pr_number}"`, { stdio: 'inherit' });
 
                 // Push revert branch
