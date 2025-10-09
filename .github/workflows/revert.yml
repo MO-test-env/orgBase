@@ -184,6 +184,12 @@ jobs:
             }
 
             for (const sub of submods) {
+              const { data: prInfo } = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: sub.pr_number,
+                });
+
               const repoUrl = `https://${process.env.RW_PAT}@github.com/${sub.org}/${sub.repo}.git`;
               const branchName = `revert-${context.issue.number}`;
               const tempDir = `/tmp/${sub.repo}-${Date.now()}`;
@@ -204,13 +210,8 @@ jobs:
                 // Create revert branch from base branch
                 execSync(`git checkout -b ${branchName} origin/${baseBranch}`, { stdio: 'inherit' });
 
-                // Attempt to revert the PR commit
-                try {
-                  execSync(`git revert -m 1 ${sub.pr_number}`, { stdio: 'inherit' });
-                  execSync(`git commit -am "Revert: ${sub.title || 'Submodule PR #' + sub.pr_number}"`, { stdio: 'inherit' });
-                } catch {
-                  console.log(`⚠️ No changes to revert in ${sub.repo}`);
-                }
+                execSync(`git revert -m 1 ${prInfo.data.merge_commit_sha}`, { stdio: 'inherit' });
+                execSync(`git commit -am "Revert: ${sub.title || 'Submodule PR #' + sub.pr_number}"`, { stdio: 'inherit' });
 
                 // Push revert branch
                 execSync(`git push origin ${branchName}`, { stdio: 'inherit' });
