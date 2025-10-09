@@ -75,7 +75,7 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            if(steps.pr.outputs.merged){
+            if('${{ steps.pr.outputs.merged}}'){
               const appendMsg = "\n ## Nothing to merge. ##"
             }
             else{
