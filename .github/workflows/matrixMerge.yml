@@ -128,7 +128,7 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            const appendMsg = "\n - Successfully got PR data.\n - Starting to detect submodules from comment. ";
+            const appendMsg = "\n - Successfully got PR data.\n - Confirmed base PR is open and approved.\n - Detecting submodule PR numbers and url from comment. ";
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -217,7 +217,7 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            const appendMsg = "\n - Starting to Pre-check submodules ";
+            const appendMsg = "\n - Running submodule pre-check";
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -496,10 +496,10 @@ jobs:
             const unmergedSubmodules = process.env.UNMERGED_SUBMODULES;
             const skip = unmergedSubmodules !== "[]";
             if(skip){
-              newBody += "\n" + "**_(Step 3/6)_** Starting to merge submodules.";
+              newBody += "\n\n" + "**_(Step 3/6)_** Starting to merge submodules.";
             }
             else{
-              newBody += "\n" + "**_(Step 3/6)_** Skipping submodule merge. All submodules are already merged";
+              newBody += "\n\n" + "**_(Step 3/6)_** Skipping submodule merge. All submodules are already merged";
             }
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
