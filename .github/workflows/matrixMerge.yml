@@ -78,7 +78,33 @@ jobs:
             core.setOutput("merged", pr.data.merged);
             core.setOutput("mergeable_state", pr.data.mergeable_state);
             core.setOutput("state", pr.data.state);
+      
+      - name: Confirm Approvals for base PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.issue.number;
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
 
+            const latestByUser = {};
+            for (const review of reviews) {
+              latestByUser[review.user.login] = review.state;
+            }
+            const approvedUsers = Object.values(latestByUser).filter(s => s === 'APPROVED');
+            const approvalCount = approvedUsers.length;
+
+            console.log(`✅ Current approvals: ${approvalCount}/${process.env.MIN_REVIEWERS}`);
+
+            if (approvalCount < parseInt(process.env.MIN_REVIEWERS || '0', 10)) {
+              core.setFailed(`❌ Not enough approvals (${approvalCount}/${process.env.MIN_REVIEWERS})`);
+              return;
+            } else {
+              console.log('✅ Required approvals met.');
+            }
       
       - name: Comment on pr data success
         uses: actions/github-script@v7
@@ -303,7 +329,7 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            const newBody = comment.body + "\n" + "❌ FAILED to initialize:\n - could not create and pre-check submodule array";
+            const newBody = comment.body + "\n\n" + "❌ FAILED to initialize: base pr does not have enough approvals OR could not create and pre-check submodule array";
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -416,33 +442,6 @@ jobs:
               }
             }
 
-      - name: Confirm Approvals 
-        if: ${{ steps.detect-conflicts.conclusion == 'success' }}
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const prNumber = context.issue.number;
-            const { data: reviews } = await github.rest.pulls.listReviews({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-            });
-
-            const latestByUser = {};
-            for (const review of reviews) {
-              latestByUser[review.user.login] = review.state;
-            }
-            const approvedUsers = Object.values(latestByUser).filter(s => s === 'APPROVED');
-            const approvalCount = approvedUsers.length;
-
-            console.log(`✅ Current approvals: ${approvalCount}/${process.env.MIN_REVIEWERS}`);
-
-            if (approvalCount < parseInt(process.env.MIN_REVIEWERS || '0', 10)) {
-              core.setFailed(`❌ Not enough approvals (${approvalCount}/${process.env.MIN_REVIEWERS})`);
-            } else {
-              console.log('✅ Required approvals met.');
-            }
-      
       - name: Comment on Success
         uses: actions/github-script@v7
         with:
@@ -454,7 +453,7 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            let newBody = comment.body + "\n Base repository has approvals and no meaningful conflicts.";
+            let newBody = comment.body + "\n Base repository has no meaningful conflicts.";
             const unmergedSubmodules = "${{ needs.init.outputs.unmerged_submodules }}";
             const skip = unmergedSubmodules !== "[]";
             if(skip){
@@ -511,7 +510,7 @@ jobs:
             });
 
   merge-submodules:
-    needs: [ init, merge-base-no-submodules]
+    needs: [ init ]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     if: >-
@@ -519,8 +518,7 @@ jobs:
       needs.init.result == 'success' &&
       needs.init.outputs.unmerged_submodules != '[]' && 
       github.event.issue.pull_request != null &&
-      github.event.comment.body == '/merge' &&
-      needs.merge-base-no-submodules.result == 'skipped'
+      github.event.comment.body == '/merge'
     env:
       GITHUB_API_URL: https://github.com/api/v3
     strategy:
@@ -576,7 +574,7 @@ jobs:
             });
 
   aggregate:
-    needs: [merge-submodules, merge-base-no-submodules, check-base-conflicts, init]
+    needs: [merge-submodules,check-base-conflicts, init]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     if: >-
@@ -585,8 +583,7 @@ jobs:
       (needs.check-base-conflicts.result == 'success' || needs.check-base-conflicts.result == 'skipped') &&
       (needs.merge-submodules.result == 'success' || needs.merge-submodules.result == 'skipped') && 
       github.event.issue.pull_request != null &&
-      github.event.comment.body == '/merge' &&
-      needs.merge-base-no-submodules.result == 'skipped'
+      github.event.comment.body == '/merge' 
     steps:
       - name: Comment after Aggregate 
         uses: actions/github-script@v7
@@ -840,33 +837,14 @@ jobs:
               body: newBody,
             });
 
-  merge-base-no-submodules:
-    needs: init
-    if: ${{ needs.init.outputs.submodules == '[]' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: Merge base PR (no submodules)
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const prNumber = context.issue.number;
-            await github.rest.pulls.merge({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-              merge_method: 'squash'
-            );
   
   merge-base:
-    needs: [bump-rebase-submodules, merge-base-no-submodules]
+    needs: [bump-rebase-submodules, init]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     if: >-
       always() &&
-      needs.bump-rebase-submodules.result == 'success' &&
-      needs.merge-base-no-submodules.result == 'skipped'
+      needs.bump-rebase-submodules.result == 'success' || (needs.init.outputs.submodules == '[]')
     steps:
       - name: Merge base PR
         uses: actions/github-script@v7
