@@ -1,351 +1,489 @@
-name: Auto-Revert Submodules + Base PR
+name: Revert
 
 on:
   issue_comment:
     types: [created]
 
 permissions:
+  issues: write
   pull-requests: write
   contents: write
-  issues: write
-  actions: write
 
 env:
-  CROSS_TOKEN: ${{ secrets.WORKFLOWS }}
+  RW_PAT: ${{ secrets.WORKFLOWS2 }} # Personal Access Token with RW access to repo contents, PRs
+  MIN_REVIEWERS: 0
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
-  detect-submodules:
+  init:
     if: |
       github.event.issue.pull_request != null &&
       github.event.comment.body == '/revert' &&
       github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     outputs:
-      submodules: ${{ steps.extract.outputs.submodules }}
+      head_ref: ${{ steps.pr.outputs.head_ref }}
+      base_ref: ${{ steps.pr.outputs.base_ref }}
+      pr_number: ${{ steps.pr.outputs.pr_number }}
+      pr_title: ${{ steps.pr.outputs.title }}
+      mergeable: ${{ steps.pr.outputs.mergeable }}
+      merged: ${{ steps.pr.outputs.merged }}
+      mergeable_state: ${{ steps.pr.outputs.mergeable_state }}
+      state: ${{ steps.pr.outputs.state }}
+      submodules: ${{ steps.add-merged-flag.outputs.submodules }}
+      unmerged_submodules: ${{ steps.add-merged-flag.outputs.unmerged }}
     steps:
-      - id: extract
+
+      - name: Get BasePR details
+        id: pr
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ env.RW_PAT }}
           script: |
             const prNumber = context.issue.number;
+            const pr = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+            core.setOutput("head_ref", pr.data.head.ref);
+            core.setOutput("base_ref", pr.data.base.ref);
+            core.setOutput("pr_number", pr.data.number);
+            core.setOutput("title", pr.data.title);
+            core.setOutput("body", pr.data.body);
+            core.setOutput("mergeable", pr.data.mergeable);
+            core.setOutput("merged", pr.data.merged);
+            core.setOutput("mergeable_state", pr.data.mergeable_state);
+            core.setOutput("state", pr.data.state);
+      
+      - name: Confirm Approvals for base PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = context.issue.number;
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
+
+            const latestByUser = {};
+            for (const review of reviews) {
+              latestByUser[review.user.login] = review.state;
+            }
+            const approvedUsers = Object.values(latestByUser).filter(s => s === 'APPROVED');
+            const approvalCount = approvedUsers.length;
+
+            console.log(`✅ Current approvals: ${approvalCount}/${process.env.MIN_REVIEWERS}`);
+
+            if (approvalCount < parseInt(process.env.MIN_REVIEWERS || '0', 10)) {
+              core.setFailed(`❌ Not enough approvals (${approvalCount}/${process.env.MIN_REVIEWERS})`);
+              return;
+            } else {
+              console.log('✅ Required approvals met.');
+            }
+      
+
+      - name: Detect submodules from comment and populate Json
+        id: submod
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const prNumber = context.issue.number;
+
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: prNumber
+              issue_number: prNumber,
             });
-            const cache = comments.find(c => /<!-- SUBMODULES_JSON -->/.test(c.body));
-            if (!cache) { core.setOutput("submodules", "[]"); return; }
-            const jsonMatch = cache.body.match(/```json\s*([\s\S]*?)\s*```/);
-            core.setOutput('submodules', jsonMatch ? jsonMatch[1] : "[]");
 
-  create-revert-base:
-    needs: detect-submodules
-    if: |
-      github.event.issue.pull_request != null &&
-      github.event.comment.body == '/revert' &&
-      github.event.comment.user.type != 'Bot'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Create revert PR via GraphQL
-        id: create
+            const analysis = comments
+              .filter(c => /🔍 Submodule Analysis Results/.test(c.body))
+              .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+
+            if (!analysis) {
+              core.warning("⚠️ No 'Submodule Analysis Results' comment found.");
+              core.setOutput('submodules', '[]');
+              return;
+            }
+            const submodules = [];
+            const text = analysis.body;
+            const blocks = text.split(/(?=####\s*[✅⏳🔄❌]\s*`)/g).filter(b => /PR:/i.test(b));
+
+            for (const block of blocks) {
+              // If the markdown for the comment generated by the app changes, everything will break
+              const nameMatch = block.match(/####\s*[✅⏳🔄❌]\s*`([^`]+)`/);
+              const branchMatch = block.match(/\*\*Branch:\*\*\s*`([^`]+)`/);
+              const statusMatch = block.match(/\*\*Status:\*\*\s*\*\*([^*]+)\*\*/);
+              const prMatch = block.match(/\[?#(\d+)\]\((https:\/\/github\.com\/[^)]+)\)/);
+              const approvalsMatch = block.match(/\*\*Approvals:\*\*\s*([\d/]+)/);
+              const changeRequestsMatch = block.match(/\*\*Change Requests:\*\*\s*(\d+)/);
+
+              if (!nameMatch || !prMatch) {
+                core.warning(`⚠️ Skipping malformed submodule block:\n${block}`);
+                continue;
+              }
+
+              const name = nameMatch[1].trim();
+              const branch = branchMatch ? branchMatch[1].trim() : null;
+              const status = statusMatch ? statusMatch[1].trim() : null;
+              const pr_number = parseInt(prMatch[1], 10);
+              const pr_url = prMatch[2];
+              const approvals = approvalsMatch ? approvalsMatch[1] : null;
+              const change_requests = changeRequestsMatch ? changeRequestsMatch[1] : null;
+              const [, org, repo] = pr_url.match(/github\.com\/([^/]+)\/([^/]+)\//) || [];
+
+              submodules.push({
+                name,
+                branch,
+                status,
+                pr_number,
+                change_requests,
+                repo: repo || name,
+                org: org || context.repo.owner,
+                url: pr_url,
+              });
+            }
+
+            const json = JSON.stringify(submodules, null, 2);
+            core.info("📦 Extracted submodule JSON:");
+            core.info(json);
+            core.setOutput('submodules', json);
+
+
+      - name: Pre-check all Submodules
+        id: add-merged-flag
         uses: actions/github-script@v7
         env:
-          CROSS_TOKEN: ${{ env.CROSS_TOKEN }}
+          SUBMODULES_JSON: ${{ steps.submod.outputs.submodules }}
+          RW_PAT: ${{ env.RW_PAT }}
         with:
-          github-token: ${{ env.CROSS_TOKEN }}
+          github-token: ${{ env.RW_PAT }}
           script: |
-            const prNumber = context.issue.number;
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber
-            });
-            if (!pr.merged) {
-              core.setFailed('Base PR is not merged – nothing to revert.');
-              return;
-            }
+            const submods = JSON.parse(process.env.SUBMODULES_JSON);
+            const enriched = [];
 
-            // Revert the merged PR
-            const revertResp = await github.graphql(`
-              mutation($input: RevertPullRequestInput!) {
-                revertPullRequest(input: $input) {
-                  pullRequest {
-                    number
-                    headRefName   
-                  }
-                }
+            for (const sub of submods) {
+              if (!sub.pr_number) {
+                enriched.push({ ...sub, merged: true });
+                continue;
               }
-            `, { input: { pullRequestId: pr.node_id } });
 
-  revert-submodules:
-    needs: detect-submodules
-    if: needs.detect-submodules.outputs.submodules != '[]'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
-    steps:
-      - uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.CROSS_TOKEN }}
-          script: |
-            const sub = ${{ toJson(matrix.submod) }};
-            const url = new URL(sub.url);
-            const [owner, repo] = url.pathname.replace(/^\/|\.git$/g,'').split('/');
-            const prNumber = sub.pr_number;
-            core.info(`🔍 Processing PR #${prNumber} in ${repo}`);
-            // Get PR Node ID via GraphQL
-            const prNodeQuery = `
-              query($owner: String!, $repo: String!, $prNumber: Int!) {
-                repository(owner: $owner, name: $repo) {
-                  pullRequest(number: $prNumber) {
-                    id
-                    merged
-                  }
-                }
-              }
-            `;
-            const prNodeResp = await github.graphql(prNodeQuery, { owner, repo, prNumber });
-            const prNode = prNodeResp.repository.pullRequest;
-            if (!prNode.merged) {
-              core.info(`⚠️ PR #${prNumber} in ${repo} is not merged. Skipping.`);
-              return;
-            }
-            const prNodeId = prNode.id;
-            const { data: openPRs } = await github.rest.pulls.list({
-              owner, repo, state: 'open', sort: 'created', direction: 'desc', per_page: 20
-            });
-            let revertPR = openPRs.find(p =>
-              p.title.includes(`Revert ${sub.name}`) || p.body?.includes(`#${prNumber}`)
-            );
-            // If no existing revert PR, create it via GraphQL
-            if (!revertPR) {
-              core.info(`No existing revert PR found for #${prNumber}, creating...`);
+              const url = new URL(sub.url);
+              const [owner, repo] = url.pathname.replace(/^\/|\.git$/g, '').split('/');
+
               try {
-                await github.graphql(`
-                  mutation($input: RevertPullRequestInput!) {
-                    revertPullRequest(input: $input) {
-                      pullRequest { id }
-                    }
-                  }
-                `, { input: { pullRequestId: prNodeId } });
-                const { data: recentPRs } = await github.rest.pulls.list({
-                  owner, repo, state: 'open', sort: 'created', direction: 'desc', per_page: 5
+                const { data: prInfo } = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: sub.pr_number,
                 });
-                revertPR = recentPRs.find(p =>
-                  p.title.includes(`Revert "${prNumber}"`) || p.body?.includes(`#${prNumber}`)
-                );
-                if (!revertPR) throw new Error(`❌ Could not find revert PR after creating it for PR #${prNumber}`);
-                core.info(`🔄 Created revert PR #${revertPR.number}`);
+
+                const isMerged = prInfo.state === 'closed' && prInfo.merged === true;
+                const isMergeableClean = prInfo.mergeable_state === 'clean';
+
+                if (!isMergeableClean && !isMerged) {
+                  core.setFailed(`❌ Submodule ${sub.name} PR #${sub.pr_number} is not mergeable (state=${prInfo.mergeable_state})`);
+                  return;
+                }
+
+                enriched.push({ ...sub, merged: isMerged, mergeable_state: prInfo.mergeable_state });
+
+                core.info(`🔎 Submodule ${sub.name} PR #${sub.pr_number} merged=${isMerged}, mergeable_state=${prInfo.mergeable_state}`);
+
+                // Fetch reviews
+                const { data: reviews } = await github.rest.pulls.listReviews({
+                  owner,
+                  repo,
+                  pull_number: sub.pr_number,
+                });
+
+                const approvedReviews = reviews.filter(r => r.state === 'APPROVED');
+                if (approvedReviews.length < parseInt(process.env.MIN_REVIEWERS, 10)) {
+                  core.setFailed(`❌ Submodule ${sub.name} PR #${sub.pr_number} does not have enough approvals.`);
+                  return;
+                }
+
+                core.info(`✅ Submodule ${sub.name} has ${approvedReviews.length} approved review(s).`);
+
               } catch (err) {
-                // Handle race condition where GitHub already created a revert PR
-                if (err.message.includes('Validation failed: A pull request already exists')) {
-                  core.info(`⚠️ A revert PR already exists for #${prNumber}, using existing PR`);
-                  revertPR = openPRs.find(p =>
-                    p.title.includes(`Revert "${prNumber}"`) || p.body?.includes(`#${prNumber}`)
-                  );
-                } else {
-                  throw err;
-                }
+                core.warning(`❗️ Could not fetch PR #${sub.pr_number} for ${owner}/${repo}: ${err.message}`);
+                enriched.push({ ...sub, merged: false, mergeable_state: 'unknown' });
+                return;
               }
-            } else {
-              core.info(`⚠️ Existing revert PR found #${revertPR.number}, skipping creation`);
             }
-            // Merge the revert PR
-            await github.rest.pulls.merge({
-              owner, repo, pull_number: revertPR.number, merge_method: "squash"
-            });
-            core.info(`✅ Successfully merged revert PR #${revertPR.number} for original PR #${prNumber}`);
-  aggregate:
-    needs: revert-submodules
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "All submodule reverts completed. Ready to bump."
 
-  bump-base-revert-pr:
-    needs:
-      - detect-submodules
-      - create-revert-base
-      - aggregate
+            const enrichedJson = JSON.stringify(enriched, null, 2);
+            core.info("Submodule JSON:");
+            core.info(enrichedJson);
+            core.setOutput('submodules', enrichedJson);
+
+            // Filter only unmerged submodules
+            const unmerged = enriched.filter(s => s.merged === false);
+            const unmergedJson = JSON.stringify(unmerged, null, 2);
+            core.info("❌ Unmerged submodules:");
+            core.info(unmergedJson);
+            core.setOutput('unmerged', unmergedJson);
+
+  check-base-conflicts:
+    needs: [init]
+    if: ${{ needs.init.outputs.mergeable_state == 'dirty' && needs.init.outputs.state == 'open' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     outputs:
-      revert_number: ${{ steps.find-base.outputs.number }}
-    env:
-      ORIG_PR: ${{ github.event.issue.number }}
+      conflicts: ${{ steps.detect-conflicts.outputs.conflicts }}
     steps:
-      - name: Find base revert PR (REST search)
-        id: find-base
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.CROSS_TOKEN }}
-          script: |
-            const origPrNumber = parseInt(process.env.ORIG_PR, 10);
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const perPage = 100;
-
-            core.info(`Searching repository ${owner}/${repo} for a revert PR referencing #${origPrNumber}...`);
-
-            // Helper function: try to find a matching PR in a paginated list
-            async function findInList(state, maxPages = 5) {
-              for (let page = 1; page <= maxPages; page++) {
-                const { data: prs } = await github.rest.pulls.list({
-                  owner, repo, state, per_page: perPage, page
-                });
-                if (!prs || prs.length === 0) break;
-
-                // prefer PRs that explicitly reference the original PR number in the body/title,
-                // or whose branch name contains "revert-<origPrNumber>"
-                const candidate = prs.find(p => {
-                  const title = (p.title||'').toLowerCase();
-                  const body = (p.body||'').toLowerCase();
-                  const headRef = (p.head && p.head.ref) ? p.head.ref.toLowerCase() : '';
-
-                  if (body.includes(`#${origPrNumber}`)) return true;
-                  if (title.includes(`#${origPrNumber}`)) return true;
-                  if (title.includes('revert') && body.includes(String(origPrNumber))) return true;
-                  if (headRef.includes(`revert-${origPrNumber}`) || headRef.includes(`revert/${origPrNumber}`)) return true;
-                  // sometimes GraphHub uses "revert-<repo>-<pr>" or similar; basic "revert" + number heuristics:
-                  if (title.includes('revert') && (body.includes(String(origPrNumber)) || title.includes(String(origPrNumber)))) return true;
-
-                  return false;
-                });
-
-                if (candidate) return candidate;
-              }
-              return null;
-            }
-
-            // Search open PRs first 
-            let found = await findInList('open', 5);
-
-            // Fallback: use the global search API (search bodies/titles for the original PR number)
-            if (!found) {
-              core.info('Fallback: using search API for references to the original PR number...');
-              const q = `repo:${owner}/${repo} type:pr ${origPrNumber} in:body,code`;
-              const searchResp = await github.rest.search.issuesAndPullRequests({ q, per_page: 10 });
-              if (searchResp && searchResp.data && Array.isArray(searchResp.data.items)) {
-                // prefer open results, then any
-                const items = searchResp.data.items;
-                const match = items.find(i => i.pull_request && i.body && i.body.includes(`#${origPrNumber}`))
-                          || items.find(i => i.pull_request);
-                if (match) {
-                  // match.number is the PR number
-                  const { data: pr } = await github.rest.pulls.get({
-                    owner, repo, pull_number: match.number
-                  });
-                  found = pr;
-                }
-              }
-            }
-
-            if (!found) {
-              core.setFailed(`Could not locate a revert PR referencing original PR #${origPrNumber}.`);
-              return;
-            }
-
-            // If search returned a lightweight item (from list), ensure we have full PR object
-            let fullPR = found;
-            if (!fullPR.head || !fullPR.title) {
-              const { data: pr } = await github.rest.pulls.get({
-                owner, repo, pull_number: found.number
-              });
-              fullPR = pr;
-            }
-
-            core.info(`Found revert PR #${fullPR.number} (branch: ${fullPR.head.ref})`);
-
-            core.setOutput('number', String(fullPR.number));
-            core.setOutput('head_ref', fullPR.head.ref);
-            core.setOutput('head_sha', fullPR.head.sha || '');
-            core.setOutput('title', fullPR.title || '');
-            core.setOutput('body', fullPR.body || '');
-
-      - name: Checkout revert branch
+      - name: Checkout PR branch
+        if: ${{ needs.init.outputs.mergeable_state == 'dirty' && needs.init.outputs.state == 'open' }}
         uses: actions/checkout@v4
         with:
-          token: ${{ env.CROSS_TOKEN }}
-          fetch-depth: 1
+          token:       ${{ env.RW_PAT }}
+          ref:         ${{ needs.init.outputs.base_ref }}
+          fetch-depth: 0
+          submodules:  false
+
+      - name: Detect conflicts (dry‑run merge)
+        if: ${{ needs.init.outputs.mergeable_state == 'dirty' && needs.init.outputs.state == 'open' }}
+        id: detect-conflicts
+        uses: actions/github-script@v7
+        env:
+          BASE: ${{ needs.init.outputs.base_ref }}  
+          PR_BRANCH: ${{ needs.init.outputs.head_ref }}
+          TOKEN: ${{ env.RW_PAT }}
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const fs = require('fs');
+
+            const run = (cmd, opts = {}) => {
+              const stdio = opts.stdio ?? 'pipe';
+              const encoding = opts.encoding ?? 'utf8';
+              return execSync(cmd, { stdio, encoding }).trim();
+            };
+
+            run('git config --global user.name "github-actions[bot]"');
+            run('git config --global user.email "github-actions[bot]@users.noreply.github.com"');
+
+            try {
+              run(`git fetch origin "${process.env.PR_BRANCH}"`);
+            } catch (e) {
+              core.setFailed(`❌ Failed to fetch base branch ${process.env.PR_BRANCH}: ${e.message}`);
+              process.exit(1);
+            }
+
+            // Parse submodule paths from .gitmodules 
+            let submodulePaths = [];
+            if (fs.existsSync('.gitmodules')) {
+              const gm = fs.readFileSync('.gitmodules', 'utf8');
+              const matches = [...gm.matchAll(/path\s*=\s*(.+)/g)];
+              submodulePaths = matches.map(m => m[1].trim());
+              console.log(`📦 Found submodules: ${submodulePaths.join(', ')}`);
+            } else {
+              core.setFailed('⚠️ No .gitmodules file found');
+              process.exit(1);
+            }
+
+            try {
+              run(`git merge --no-commit --no-ff "origin/${process.env.PR_BRANCH}"`, { stdio: 'inherit' });
+            } catch (_) {
+              // merge returned non‑zero → likely conflicts - allow it to fall through
+            }
+
+            let conflictList = '';
+            try {
+              conflictList = run('git diff --name-only --diff-filter=U');
+            } catch (_) {
+              // No conflicted files → git diff returns nothing, keep empty string
+            }
+
+            if (!conflictList) {
+              console.log('!! No conflicted files – this is unexpected when mergeable_state was “dirty”.');
+              core.setOutput('conflict_files', '[]');  
+            } else {
+              console.log('⚡️ Conflicted files (plain‑text):');
+              console.log(conflictList);
+
+              const conflicts = conflictList
+                .split('\n')
+                .filter(Boolean)
+                .map(f => f.trim());
+
+              console.log('⚡️ Conflicted files:', conflicts);
+
+              // Determine if any conflict is *not* inside a submodule path
+              const nonSubmoduleConflicts = conflicts.filter(f => {
+                return !submodulePaths.some(sub => f === sub || f.startsWith(`${sub}/`));
+              });
+
+              const json = JSON.stringify(conflicts);
+              core.setOutput('conflict_files', json);
+              
+              run('git merge --abort || true');
+
+              if (nonSubmoduleConflicts.length > 0) {
+                console.log('❌ Non-submodule conflicts detected:');
+                console.log(nonSubmoduleConflicts.join('\n'));
+                core.setFailed('Conflicts found in non-submodule paths.');
+                return;
+              } else {
+                console.log('✅ Only submodule conflicts detected — not failing.');
+              }
+            }
+
+  merge-submodules:
+    needs: [ init ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    if: >-
+      always() &&
+      needs.init.result == 'success' &&
+      needs.init.outputs.unmerged_submodules != '[]' && 
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/revert'
+    env:
+      GITHUB_API_URL: https://github.com/api/v3
+    strategy:
+      matrix:
+        submod: ${{ fromJson(needs.init.outputs.unmerged_submodules) }}
+      max-parallel: 4
+      fail-fast: true
+    steps:
+      - name: Merge submodule PR
+        uses: actions/github-script@v7
+        env:
+          COMMENT_ID: ${{ github.event.comment.id }}
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const sub = ${{ toJson(matrix.submod) }};
+            console.info(`🔎 Processing submodule: ${JSON.stringify(sub)}`);
+
+            const url = new URL(sub.url);
+            const [owner, repo] = url.pathname.replace(/^\//,'').replace(/\.git$/,'').split('/');
+            const pr = sub.pr_number;
+            const { data: prInfo } = await github.rest.pulls.get({ owner, repo, pull_number: pr });
+            const res = await github.rest.pulls.merge({
+              owner,
+              repo,
+              pull_number: pr,
+              merge_method: "squash",
+            });
+
+  aggregate:
+    needs: [merge-submodules,check-base-conflicts, init]
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    if: >-
+      always() &&
+      needs.init.result == 'success' &&
+      (needs.check-base-conflicts.result == 'success' || needs.check-base-conflicts.result == 'skipped') &&
+      (needs.merge-submodules.result == 'success' || needs.merge-submodules.result == 'skipped') && 
+      (needs.init.outputs.submodules != '[]') &&
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/revert' 
+    steps:
+      - name: wait
+        run: |
+          echo "wait"
+
+  bump-rebase-submodules:
+    needs: [aggregate, check-base-conflicts, init]
+    if: >-
+      always() &&
+      needs.aggregate.result == 'success' &&
+      ( needs.check-base-conflicts.result == 'success' || needs.check-base-conflicts.result == 'skipped') &&
+      needs.init.result == 'success' &&
+      needs.init.outputs.submodules != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          token: ${{ env.RW_PAT }}
+          fetch-depth: 0
+          ref: ${{ needs.init.outputs.head_ref }}
           submodules: false
-          ref: ${{ steps.find-base.outputs.head_ref }}
 
       - name: Authenticate submodules
         run: |
-          git config --global url."https://${{ env.CROSS_TOKEN }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
+          git config --global url."https://${{ env.RW_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
           git submodule sync --recursive
           git submodule update --init --recursive
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Bump submodules
         uses: actions/github-script@v7
         env:
-          SUBMODULES: ${{ needs.detect-submodules.outputs.submodules }}
-          TOKEN: ${{ env.CROSS_TOKEN }}
-          BRANCH: ${{ steps.find-base.outputs.head_ref }}
+          SUBMODULES: ${{ needs.init.outputs.submodules }}
+          TOKEN: ${{ env.RW_PAT }}
+          BRANCH: ${{ needs.init.outputs.head_ref }}
         with:
           script: |
             const { execSync } = require('child_process');
-            const branch = process.env.BRANCH;
-            if (!branch) {
-              core.setFailed('❌ No branch name supplied to bump-submodules');
-              process.exit(1);
-            }
-            const submodules = JSON.parse(process.env.SUBMODULES || '[]');
+            const submoduleJson = JSON.parse(process.env.SUBMODULES);
             let changed = false;
 
-            for (const sub of submodules) {
-              console.log(`🔧 Updating submodule ${sub.repo} at ${sub.path}`);
-              const urlWithToken = sub.url.replace(/^https:\/\//, `https://${process.env.TOKEN}@`);
-              execSync(`git submodule update --init ${sub.path}`, { stdio: 'inherit' });
+            for (const sub of submoduleJson) {
+              const path = sub.name;
+              const org = sub.org;
+              const branch = sub.branch;
+              const urlWithToken = `https://${process.env.TOKEN}@github.com/${org}/${sub.repo}.git`;
 
-              const defaultBranch = execSync(
-                `git ls-remote --symref ${urlWithToken} HEAD | grep '^ref:' | awk '{print $2}' | sed 's|refs/heads/||'`,
+              console.log(`🔧 Updating submodule ${sub.repo} at ${path}`);
+
+              execSync(`git -C ${path} fetch origin ${branch}:${branch}`, { stdio: 'inherit' });
+
+              const latestCommit = execSync(
+                `git ls-remote ${urlWithToken} refs/heads/${branch} | awk '{print $1}'`,
                 { encoding: 'utf8' }
               ).trim();
 
-              execSync(`git -C ${sub.path} fetch origin ${defaultBranch}:${defaultBranch}`, { stdio: 'inherit' });
-              const latest = execSync(`git ls-remote ${urlWithToken} refs/heads/${defaultBranch} | awk '{print $1}'`, { encoding: 'utf8' }).trim();
-              const current = execSync(`git -C ${sub.path} rev-parse HEAD`, { encoding: 'utf8' }).trim();
+              const currentCommit = execSync(
+                `git -C ${path} rev-parse HEAD`,
+                { encoding: 'utf8' }
+              ).trim();
 
-              if (current !== latest) {
-                console.log(`⚠️ Resetting ${sub.repo} to ${latest}`);
-                execSync(`git -C ${sub.path} reset --hard ${latest}`, { stdio: 'inherit' });
-                execSync(`git add ${sub.path}`);
+              if (currentCommit !== latestCommit) {
+                console.log(`⚠️  ${sub.name} is outdated. Resetting to ${latestCommit}`);
+                execSync(`git -C ${path} reset --hard ${latestCommit}`, { stdio: 'inherit' });
+                execSync(`git add ${path}`);
                 changed = true;
               } else {
-                console.log(`✅ ${sub.repo} up-to-date`);
+                console.log(`✅ ${sub.name} is already up-to-date`);
               }
             }
 
             if (changed) {
-              execSync('git config user.name "github-actions[bot]"');
-              execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
               execSync(`git commit -m "Bump submodules to latest default branch"`);
-              execSync(`git push origin ${branch}`);
+              execSync(`git push origin ${process.env.BRANCH}`);
             } else {
-              console.log('✅ All submodules already up-to-date');
+              console.log('✅ All submodules already up-to-date.');
             }
 
-  merge-base-revert-pr:
-    needs:
-      - bump-base-revert-pr
+  merge-base:
+    needs: [bump-rebase-submodules, init]
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    if: >-
+      always() &&
+      needs.bump-rebase-submodules.result == 'success' || (needs.init.outputs.submodules == '[]')
     steps:
-      - name: Merge base revert PR
+      - name: Merge base PR
         uses: actions/github-script@v7
         with:
-          github-token: ${{ env.CROSS_TOKEN }}
+          github-token: ${{ env.RW_PAT }}
           script: |
-            const revertNumber = parseInt('${{ needs.bump-base-revert-pr.outputs.revert_number }}', 10);
-            if (!revertNumber) {
-              core.setFailed('❌ No revert PR number found to merge.');
-              return;
-            }
-            core.info(`🔄 Merging revert PR #${revertNumber}`);
+            const prNumber = context.issue.number;
             await github.rest.pulls.merge({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: revertNumber,
+              pull_number: prNumber,
               merge_method: 'squash'
             });
-            core.info(`✅ Successfully merged revert PR #${revertNumber}`);
