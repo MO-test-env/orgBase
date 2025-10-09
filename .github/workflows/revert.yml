@@ -22,14 +22,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout base repo
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
           token: ${{ env.RW_PAT }}
           fetch-depth: 0
           submodules: recursive
 
-      - name: Get merged PR info
+      - name: Get PR info
         id: pr
         uses: actions/github-script@v7
         with:
@@ -49,106 +49,154 @@ jobs:
             core.setOutput('base_branch', pr.base.ref);
             core.setOutput('title', pr.title);
 
-      - name: Create revert branch and commit
-        id: revert
+      - name: Print full diff of merged commit
+        run: |
+          echo "================= FULL DIFF FOR DEBUG ================="
+          git show --submodule=diff ${{ steps.pr.outputs.merge_sha }} || true
+          echo "========================================================"
+
+      - name: Detect submodule commits changed in merge
+        id: submods
+        run: |
+          echo "🔍 Detecting submodule diffs..."
+          # We look for lines that start with 'Submodule <path>'
+          git diff-tree -r --summary ${{ steps.pr.outputs.merge_sha }} | grep '^Submodule' || true
+
+          # Extract submodule name and the two SHAs
+          git diff-tree -r --summary ${{ steps.pr.outputs.merge_sha }} | \
+            awk '/Submodule/ {print $2,$4,$6}' > submods.txt || true
+
+          echo "Detected submodule diffs:"
+          cat submods.txt || echo "None found"
+          subs=$(awk '{print $1}' submods.txt | xargs)
+          echo "submodules=$subs" >> $GITHUB_OUTPUT
+
+      - name: Create revert branch for base repo
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin ${{ steps.pr.outputs.base_branch }}
           git checkout -b revert-${{ github.event.issue.number }} origin/${{ steps.pr.outputs.base_branch }}
           git revert -m 1 ${{ steps.pr.outputs.merge_sha }} || true
-          git commit -am "Revert: ${{ steps.pr.outputs.title }}" || echo "No changes to commit"
+          git commit -am "Revert: ${{ steps.pr.outputs.title }}" || echo "No base changes to commit"
           git push origin HEAD
 
-      - name: Create PR for base revert
-        id: create-base-pr
+      - name: Create revert PR for base repo
+        id: basepr
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const prNumber = context.issue.number;
-            const revertBranch = `revert-${prNumber}`;
-            const { data: newPR } = await github.rest.pulls.create({
+            const revertBranch = `revert-${context.issue.number}`;
+            const { data: pr } = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: `Revert "${{ steps.pr.outputs.title }}"`,
               head: revertBranch,
               base: "${{ steps.pr.outputs.base_branch }}",
-              body: `This reverts PR #${prNumber}`,
+              body: `Automatically reverting PR #${context.issue.number}`
             });
-            core.setOutput('revert_pr', newPR.number);
-            core.info(`✅ Created base revert PR #${newPR.number}`);
+            core.setOutput('revert_pr', pr.number);
+            core.info(`✅ Created base revert PR #${pr.number}`);
 
-      - name: Detect submodule changes from merged SHA
-        id: detect-submodules
-        run: |
-          echo "🔍 Detecting submodule diffs..."
-          git diff-tree -r --summary ${{ steps.pr.outputs.merge_sha }} | grep "^Submodule" || true
-          git diff-tree -r --summary ${{ steps.pr.outputs.merge_sha }} | awk '/Submodule/ {print $2}' > changed_subs.txt || true
-          if [ -s changed_subs.txt ]; then
-            echo "Detected submodules:"
-            cat changed_subs.txt
-            echo "submodules=$(cat changed_subs.txt | xargs)" >> $GITHUB_OUTPUT
-          else
-            echo "No submodules changed."
-          fi
-
-      - name: Revert submodule PRs
-        if: steps.detect-submodules.outputs.submodules != ''
-        env:
-          RW_PAT: ${{ env.RW_PAT }}
-          SUBS: ${{ steps.detect-submodules.outputs.submodules }}
+      - name: Revert submodules
+        if: steps.submods.outputs.submodules != ''
         run: |
           set -e
-          for sub in $SUBS; do
-            echo "🔄 Processing submodule: $sub"
+          echo "🔄 Processing submodule reverts..."
+          while read sub old new; do
+            echo "➡️ Submodule: $sub"
+            echo "   Old SHA: $old"
+            echo "   New SHA: $new"
+
+            # Get submodule repo URL from .gitmodules
             url=$(git config -f .gitmodules submodule.${sub}.url)
             if [ -z "$url" ]; then
-              echo "⚠️ Could not determine URL for $sub"
+              echo "⚠️ Could not determine URL for $sub, skipping."
               continue
             fi
-            echo "➡️ Cloning $url"
-            git clone https://${RW_PAT}@${url#https://} ${sub}
+
+            # Parse owner and repo
+            owner=$(echo "$url" | sed -E 's|.*github.com[:/](.+?)/(.+?)(\.git)?$|\1|')
+            repo=$(echo "$url" | sed -E 's|.*github.com[:/](.+?)/(.+?)(\.git)?$|\2|')
+
+            echo "📦 Cloning $owner/$repo..."
+            git clone https://${RW_PAT}@github.com/${owner}/${repo}.git ${sub}
             cd ${sub}
+
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            base_branch=$(git remote show origin | grep "HEAD branch" | awk '{print $NF}')
+
+            base_branch=$(git remote show origin | grep 'HEAD branch' | awk '{print $NF}')
             git fetch origin $base_branch
-            git checkout -b revert-sub-${GITHUB_RUN_ID} origin/$base_branch
-            latest_commit=$(git rev-parse HEAD)
-            if ! git revert -m 1 $latest_commit; then
-              echo "⚠️ Could not revert cleanly for $sub, skipping"
-              git revert --abort || true
+            git checkout -b revert-${GITHUB_RUN_ID} origin/$base_branch
+
+            # Revert the submodule commit referenced in the parent diff
+            if git cat-file -e ${new} 2>/dev/null; then
+              git revert --no-edit ${new} || true
+              git commit -am "Revert submodule change from parent PR" || true
+              git push origin HEAD
+            else
+              echo "⚠️ Commit ${new} not found in ${repo}, skipping."
               cd ..
               continue
             fi
-            git push origin HEAD
-            echo "🔁 Creating PR in $url"
-            owner_repo=$(echo $url | sed -E 's|https://github.com/||;s|.git$||')
-            owner=$(echo $owner_repo | cut -d/ -f1)
-            repo=$(echo $owner_repo | cut -d/ -f2)
-            gh api repos/${owner}/${repo}/pulls \
-              -f title="Revert latest submodule commit" \
-              -f head=revert-sub-${GITHUB_RUN_ID} \
-              -f base=$base_branch \
-              -f body="Auto-revert of latest commit triggered by /revert in parent repo"
-            pr_num=$(gh api repos/${owner}/${repo}/pulls --jq '.[0].number')
-            echo "Merging PR #${pr_num} in ${repo}"
-            gh api repos/${owner}/${repo}/pulls/${pr_num}/merge -f merge_method=squash
-            cd ..
-          done
 
-      - name: Update submodules after revert
+            # Create PR via REST
+            echo "📝 Creating PR for ${owner}/${repo}..."
+            pr_data=$(curl -s -X POST -H "Authorization: token ${RW_PAT}" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${owner}/${repo}/pulls \
+              -d "{\"title\":\"Revert submodule commit from parent PR\",\"head\":\"revert-${GITHUB_RUN_ID}\",\"base\":\"${base_branch}\",\"body\":\"Auto-revert triggered by parent repo\"}")
+
+            pr_number=$(echo "$pr_data" | jq -r '.number')
+            if [ "$pr_number" = "null" ]; then
+              echo "⚠️ Failed to create PR for ${repo}"
+              cd ..
+              continue
+            fi
+
+            echo "✅ Created PR #${pr_number} for ${repo}"
+
+            # Merge PR via REST
+            curl -s -X PUT -H "Authorization: token ${RW_PAT}" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${owner}/${repo}/pulls/${pr_number}/merge \
+              -d '{"merge_method":"squash"}' >/dev/null || echo "⚠️ Failed to merge ${repo}"
+
+            cd ..
+          done < submods.txt
+
+      - name: Update submodules and commit to base revert branch
         run: |
           git submodule update --init --recursive
           git add .
-          git commit -m "Update submodules after revert" || echo "No submodule updates"
+          git commit -m "Update submodules after submodule reverts" || echo "No submodule updates"
           git push origin HEAD
 
-      - name: Ensure base revert PR branch is up to date
-        run: |
-          gh pr checkout ${{ steps.create-base-pr.outputs.revert_pr }}
-          gh pr merge ${{ steps.create-base-pr.outputs.revert_pr }} --rebase --auto --merge || \
-          echo "⚠️ Could not auto-merge, please resolve conflicts manually."
-        env:
-          GH_TOKEN: ${{ env.RW_PAT }}
+      - name: Merge base revert PR (safe rebase if outdated)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const revertNumber = parseInt("${{ steps.basepr.outputs.revert_pr }}");
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            try {
+              await github.rest.pulls.merge({
+                owner, repo, pull_number: revertNumber, merge_method: 'squash'
+              });
+              core.info(`✅ Successfully merged base revert PR #${revertNumber}`);
+            } catch (err) {
+              if (err.message.includes('out of date')) {
+                core.warning('⚠️ Head branch out of date – updating before merge...');
+                await github.rest.pulls.updateBranch({
+                  owner, repo, pull_number: revertNumber
+                });
+                await github.rest.pulls.merge({
+                  owner, repo, pull_number: revertNumber, merge_method: 'squash'
+                });
+              } else {
+                core.warning(`❌ Merge failed: ${err.message}`);
+              }
+            }
