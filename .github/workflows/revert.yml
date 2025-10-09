@@ -185,8 +185,8 @@ jobs:
 
             for (const sub of submods) {
               const { data: prInfo } = await github.rest.pulls.get({
-                  owner,
-                  repo,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
                   pull_number: sub.pr_number,
                 });
 
