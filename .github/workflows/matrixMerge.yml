@@ -218,7 +218,7 @@ jobs:
                 const isMerged = prInfo.state === 'closed' && prInfo.merged === true;
                 const isMergeableClean = prInfo.mergeable_state === 'clean';
 
-                if (!isMergeableClean) {
+                if (!isMergeableClean && !isMerged) {
                   core.setFailed(`❌ Submodule ${sub.name} PR #${sub.pr_number} is not mergeable (state=${prInfo.mergeable_state})`);
                   return;
                 }
