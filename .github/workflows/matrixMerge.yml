@@ -582,6 +582,7 @@ jobs:
       needs.init.result == 'success' &&
       (needs.check-base-conflicts.result == 'success' || needs.check-base-conflicts.result == 'skipped') &&
       (needs.merge-submodules.result == 'success' || needs.merge-submodules.result == 'skipped') && 
+      (needs.init.outputs.submodules != '[]') &&
       github.event.issue.pull_request != null &&
       github.event.comment.body == '/merge' 
     steps:
