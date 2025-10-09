@@ -164,67 +164,84 @@ jobs:
       matrix:
         submod: ${{ fromJson(needs.detect-submodules.outputs.submodules) }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          token: ${{ env.RW_PAT }}
-          fetch-depth: 0
-
-      - uses: actions/github-script@v7
+      - name: Process submodule revert
+        uses: actions/github-script@v7
         env:
           RW_PAT: ${{ env.RW_PAT }}
         with:
+          github-token: ${{ env.RW_PAT }}
           script: |
             const sub = ${{ toJson(matrix.submod) }};
-            const owner = sub.org;
-            const repo = sub.repo;
-            const prNumber = sub.pr_number;
+            const url = new URL(sub.url);
+            
+            // Extract owner/repo robustly
+            let pathParts = url.pathname.replace(/^\/|\.git$/g, '').split('/');
+            const owner = sub.org || pathParts[0] || context.repo.owner;
+            const repo = sub.repo || pathParts[1] || context.repo.repo;
+            const prNumber = parseInt(sub.pr_number, 10);
 
-            const { data: pr } = await github.rest.pulls.get({
-              owner, repo, pull_number: prNumber
-            });
-            if (!pr.merged) {
-              core.info(`⚠️ PR #${prNumber} in ${repo} is not merged. Skipping.`);
-              return;
-            }
-
-            const branch = `revert-${prNumber}`;
-            const mergeCommit = pr.merge_commit_sha;
+            core.info(`🔍 Processing revert for ${owner}/${repo} PR #${prNumber}`);
 
             const execSync = require('child_process').execSync;
-            execSync(`git clone https://${process.env.RW_PAT}@github.com/${owner}/${repo}.git`, { stdio: 'inherit' });
-            process.chdir(repo);
-            execSync(`git config user.name "github-actions[bot]"`);
-            execSync(`git config user.email "github-actions[bot]@users.noreply.github.com"`);
-            execSync(`git fetch origin ${pr.base.ref}`);
-            execSync(`git checkout -b ${branch} origin/${pr.base.ref}`);
+
             try {
-              execSync(`git revert -m 1 ${mergeCommit}`, { stdio: 'inherit' });
-              execSync(`git push origin ${branch}`, { stdio: 'inherit' });
-              core.info(`✅ Created revert branch ${branch} for ${repo}`);
-            } catch (e) {
-              core.warning(`⚠️ Revert failed for ${repo}: ${e.message}`);
-              return;
+              const { data: pr } = await github.rest.pulls.get({
+                owner, repo, pull_number: prNumber
+              });
+
+              if (!pr.merged) {
+                core.info(`⚠️ PR #${prNumber} in ${owner}/${repo} is not merged. Skipping.`);
+                return;
+              }
+
+              const branch = `revert-${prNumber}`;
+              const mergeCommit = pr.merge_commit_sha;
+
+              execSync(`git clone https://${process.env.RW_PAT}@github.com/${owner}/${repo}.git`, { stdio: 'inherit' });
+              process.chdir(repo);
+              execSync(`git config user.name "github-actions[bot]"`);
+              execSync(`git config user.email "github-actions[bot]@users.noreply.github.com"`);
+              execSync(`git fetch origin ${pr.base.ref}`);
+              execSync(`git checkout -b ${branch} origin/${pr.base.ref}`);
+
+              try {
+                execSync(`git revert -m 1 ${mergeCommit}`, { stdio: 'inherit' });
+                execSync(`git push origin ${branch}`, { stdio: 'inherit' });
+              } catch (err) {
+                core.warning(`⚠️ Revert may have conflicts in ${repo}: ${err.message}`);
+                execSync(`git revert --abort || true`);
+                return;
+              }
+
+              // Create the PR
+              const { data: revertPR } = await github.rest.pulls.create({
+                owner,
+                repo,
+                title: `Revert "${pr.title}"`,
+                head: branch,
+                base: pr.base.ref,
+                body: `Automatically reverting PR #${prNumber}`,
+              });
+              core.info(`✅ Created revert PR #${revertPR.number} in ${repo}`);
+
+              // Merge it
+              await github.rest.pulls.merge({
+                owner,
+                repo,
+                pull_number: revertPR.number,
+                merge_method: "squash",
+              });
+              core.info(`✅ Merged revert PR #${revertPR.number} in ${repo}`);
+
+            } catch (err) {
+              if (err.status === 404) {
+                core.warning(`🚫 Repo or PR not found: ${owner}/${repo}#${prNumber}. Skipping.`);
+              } else if (err.status === 403) {
+                core.warning(`🚫 Permission denied on ${owner}/${repo}. Check PAT scopes.`);
+              } else {
+                core.warning(`❌ Unexpected error on ${owner}/${repo}: ${err.message}`);
+              }
             }
-
-            // Create PR via REST
-            const revertPR = await github.rest.pulls.create({
-              owner,
-              repo,
-              title: `Revert "${pr.title}"`,
-              head: branch,
-              base: pr.base.ref,
-              body: `Automatically reverting PR #${prNumber}`
-            });
-            core.info(`✅ Created revert PR #${revertPR.data.number} in ${repo}`);
-
-            // Merge automatically
-            await github.rest.pulls.merge({
-              owner,
-              repo,
-              pull_number: revertPR.data.number,
-              merge_method: "squash"
-            });
-            core.info(`✅ Merged revert PR #${revertPR.data.number} in ${repo}`);
 
 
   aggregate:
