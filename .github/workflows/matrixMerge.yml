@@ -37,26 +37,6 @@ jobs:
       submodules: ${{ steps.add-merged-flag.outputs.submodules }}
       unmerged_submodules: ${{ steps.add-merged-flag.outputs.unmerged }}
     steps:
-      - name: Comment on init
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const commentId = context.payload.comment.id;
-            const { data: comment } = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-            });
-            const appendMsg = "\n # 🔧 Merge workflow started #\n**_(Step 1/6)_** Initializing ";
-            const newBody = comment.body + appendMsg;
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-              body: newBody,
-            });
-
       - name: Get BasePR details
         id: pr
         uses: actions/github-script@v7
@@ -69,6 +49,7 @@ jobs:
               repo: context.repo.repo,
               pull_number: prNumber,
             });
+            
             core.setOutput("head_ref", pr.data.head.ref);
             core.setOutput("base_ref", pr.data.base.ref);
             core.setOutput("pr_number", pr.data.number);
@@ -78,6 +59,35 @@ jobs:
             core.setOutput("merged", pr.data.merged);
             core.setOutput("mergeable_state", pr.data.mergeable_state);
             core.setOutput("state", pr.data.state);
+            if (pr.data.merged){
+              core.notice("Workflow stopped because the base PR is already merged.");
+              return;
+            }
+
+      - name: Comment on init
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const commentId = context.payload.comment.id;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+            });
+            if(steps.pr.outputs.merged){
+              const appendMsg = "\n ## Nothing to merge. ##"
+            }
+            else{
+              const appendMsg = "\n # 🔧 Merge workflow started #\n**_(Step 1/6)_** Initializing "
+            }
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: commentId,
+              body: newBody,
+            });
       
       - name: Confirm Approvals for base PR
         uses: actions/github-script@v7
@@ -519,7 +529,8 @@ jobs:
       needs.init.result == 'success' &&
       needs.init.outputs.unmerged_submodules != '[]' && 
       github.event.issue.pull_request != null &&
-      github.event.comment.body == '/merge'
+      github.event.comment.body == '/merge' &&
+      needs.init.outputs.merged == 'false'
     env:
       GITHUB_API_URL: https://github.com/api/v3
     strategy:
@@ -585,7 +596,8 @@ jobs:
       (needs.merge-submodules.result == 'success' || needs.merge-submodules.result == 'skipped') && 
       (needs.init.outputs.submodules != '[]') &&
       github.event.issue.pull_request != null &&
-      github.event.comment.body == '/merge' 
+      github.event.comment.body == '/merge' &&
+      needs.init.outputs.merged == 'false'
     steps:
       - name: Comment after Aggregate 
         uses: actions/github-script@v7
@@ -624,7 +636,8 @@ jobs:
       needs.aggregate.result == 'success' &&
       ( needs.check-base-conflicts.result == 'success' || needs.check-base-conflicts.result == 'skipped') &&
       needs.init.result == 'success' &&
-      needs.init.outputs.submodules != '[]'
+      needs.init.outputs.submodules != '[]' &&
+      needs.init.outputs.merged == 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -846,7 +859,8 @@ jobs:
     timeout-minutes: 2
     if: >-
       always() &&
-      needs.bump-rebase-submodules.result == 'success' || (needs.init.outputs.submodules == '[]')
+      needs.bump-rebase-submodules.result == 'success' || (needs.init.outputs.submodules == '[]') &&
+      needs.init.outputs.merged == 'false'
     steps:
       - name: Merge base PR
         uses: actions/github-script@v7
