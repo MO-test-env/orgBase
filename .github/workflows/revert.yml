@@ -198,8 +198,8 @@ jobs:
               console.log(`🔧 Processing submodule ${sub.name} at ${sub.org}/${sub.repo}, base branch: ${baseBranch}`);
 
               try {
-                execSync(git config user.name "github-actions[bot]");
-                execSync(git config user.email "github-actions[bot]@users.noreply.github.com");
+                execSync('git config user.name "github-actions[bot]"');
+                execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
                 // Clone the submodule repo
                 execSync(`git clone ${repoUrl} ${tempDir}`, { stdio: 'inherit' });
 
