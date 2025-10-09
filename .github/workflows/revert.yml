@@ -22,14 +22,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: Checkout base repo
         uses: actions/checkout@v4
         with:
           token: ${{ env.RW_PAT }}
           fetch-depth: 0
           submodules: recursive
 
-      - name: Get PR info
+      - name: Get merged PR info
         id: pr
         uses: actions/github-script@v7
         with:
@@ -79,84 +79,76 @@ jobs:
             core.setOutput('revert_pr', newPR.number);
             core.info(`✅ Created base revert PR #${newPR.number}`);
 
-      - name: Detect submodules changed in the reverted commit
-        id: submods
+      - name: Detect submodule changes from merged SHA
+        id: detect-submodules
         run: |
-          git show ${{ steps.pr.outputs.merge_sha }} -- .gitmodules || true
-          git diff-tree --no-commit-id --name-only -r ${{ steps.pr.outputs.merge_sha }} | grep -E '^[^/]+/' > submodules.txt || true
-          echo "Detected submodules:"
-          cat submodules.txt || echo "None"
-          echo "submodules=$(cat submodules.txt | xargs)" >> $GITHUB_OUTPUT
+          echo "🔍 Detecting submodule diffs..."
+          git diff-tree -r --summary ${{ steps.pr.outputs.merge_sha }} | grep "^Submodule" || true
+          git diff-tree -r --summary ${{ steps.pr.outputs.merge_sha }} | awk '/Submodule/ {print $2}' > changed_subs.txt || true
+          if [ -s changed_subs.txt ]; then
+            echo "Detected submodules:"
+            cat changed_subs.txt
+            echo "submodules=$(cat changed_subs.txt | xargs)" >> $GITHUB_OUTPUT
+          else
+            echo "No submodules changed."
+          fi
 
       - name: Revert submodule PRs
-        if: steps.submods.outputs.submodules != ''
-        uses: actions/github-script@v7
+        if: steps.detect-submodules.outputs.submodules != ''
         env:
           RW_PAT: ${{ env.RW_PAT }}
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const { execSync } = require('child_process');
-            const submods = process.env.SUBMODULES ? process.env.SUBMODULES.split(/\s+/) : [];
-            for (const sub of submods) {
-              core.info(`🔄 Processing submodule: ${sub}`);
-              execSync(`git submodule update --init ${sub}`, { stdio: 'inherit' });
-              const url = execSync(`git config -f .gitmodules submodule.${sub}.url`, { encoding: 'utf8' }).trim();
-              const [_, owner, repo] = url.match(/github\.com[:/](.+?)\/(.+?)(\.git)?$/) || [];
-              if (!owner || !repo) {
-                core.warning(`Could not parse repo for ${sub}`);
-                continue;
-              }
+          SUBS: ${{ steps.detect-submodules.outputs.submodules }}
+        run: |
+          set -e
+          for sub in $SUBS; do
+            echo "🔄 Processing submodule: $sub"
+            url=$(git config -f .gitmodules submodule.${sub}.url)
+            if [ -z "$url" ]; then
+              echo "⚠️ Could not determine URL for $sub"
+              continue
+            fi
+            echo "➡️ Cloning $url"
+            git clone https://${RW_PAT}@${url#https://} ${sub}
+            cd ${sub}
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            base_branch=$(git remote show origin | grep "HEAD branch" | awk '{print $NF}')
+            git fetch origin $base_branch
+            git checkout -b revert-sub-${GITHUB_RUN_ID} origin/$base_branch
+            latest_commit=$(git rev-parse HEAD)
+            if ! git revert -m 1 $latest_commit; then
+              echo "⚠️ Could not revert cleanly for $sub, skipping"
+              git revert --abort || true
+              cd ..
+              continue
+            fi
+            git push origin HEAD
+            echo "🔁 Creating PR in $url"
+            owner_repo=$(echo $url | sed -E 's|https://github.com/||;s|.git$||')
+            owner=$(echo $owner_repo | cut -d/ -f1)
+            repo=$(echo $owner_repo | cut -d/ -f2)
+            gh api repos/${owner}/${repo}/pulls \
+              -f title="Revert latest submodule commit" \
+              -f head=revert-sub-${GITHUB_RUN_ID} \
+              -f base=$base_branch \
+              -f body="Auto-revert of latest commit triggered by /revert in parent repo"
+            pr_num=$(gh api repos/${owner}/${repo}/pulls --jq '.[0].number')
+            echo "Merging PR #${pr_num} in ${repo}"
+            gh api repos/${owner}/${repo}/pulls/${pr_num}/merge -f merge_method=squash
+            cd ..
+          done
 
-              execSync(`git clone https://${process.env.RW_PAT}@github.com/${owner}/${repo}.git`, { stdio: 'inherit' });
-              process.chdir(repo);
-              execSync(`git fetch origin main`);
-              execSync(`git checkout -b revert-sub-${sub} origin/main`);
-              try {
-                execSync(`git revert -m 1 HEAD`, { stdio: 'inherit' });
-                execSync(`git push origin HEAD`, { stdio: 'inherit' });
-              } catch (err) {
-                core.warning(`⚠️ Skipped ${repo}: ${err.message}`);
-                execSync(`git revert --abort || true`);
-                process.chdir('..');
-                continue;
-              }
-
-              const { data: newPR } = await github.rest.pulls.create({
-                owner,
-                repo,
-                title: `Revert latest submodule commit`,
-                head: `revert-sub-${sub}`,
-                base: "main",
-                body: `Automatically reverting last commit in ${repo}`,
-              });
-              await github.rest.pulls.merge({
-                owner,
-                repo,
-                pull_number: newPR.number,
-                merge_method: "squash",
-              });
-              process.chdir('..');
-              core.info(`✅ Reverted and merged ${repo}`);
-            }
-
-      - name: Update submodules and push to base revert PR
+      - name: Update submodules after revert
         run: |
           git submodule update --init --recursive
           git add .
           git commit -m "Update submodules after revert" || echo "No submodule updates"
           git push origin HEAD
 
-      - name: Merge base revert PR
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const revertPR = parseInt("${{ steps.create-base-pr.outputs.revert_pr }}");
-            await github.rest.pulls.merge({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: revertPR,
-              merge_method: 'squash'
-            });
-            core.info(`✅ Successfully merged base revert PR #${revertPR}`);
+      - name: Ensure base revert PR branch is up to date
+        run: |
+          gh pr checkout ${{ steps.create-base-pr.outputs.revert_pr }}
+          gh pr merge ${{ steps.create-base-pr.outputs.revert_pr }} --rebase --auto --merge || \
+          echo "⚠️ Could not auto-merge, please resolve conflicts manually."
+        env:
+          GH_TOKEN: ${{ env.RW_PAT }}
