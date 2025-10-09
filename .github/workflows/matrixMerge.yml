@@ -303,6 +303,10 @@ jobs:
       - name: Comment after init
         if: ${{ steps.pr.outputs.merged == 'false' }}
         uses: actions/github-script@v7
+        env:
+          MERGEABLE_STATE: ${{ steps.pr.outputs.mergeable_state }}
+          PR_STATE: ${{ steps.pr.outputs.state }}
+          UNMERGED_SUBMODULES: ${{ steps.add-merged-flag.outputs.unmerged }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
@@ -314,14 +318,14 @@ jobs:
             });
 
             let appendMsg = "\n - Submodules have approvals and no conflicts\n";
-            const mergeableState = "${{ steps.pr.outputs.mergeable_state }}";
-            const prState = "${{ steps.pr.outputs.state }}";
-            const noSubmod = "${{ steps.add-merged-flag.outputs.unmerged }}" === "[]";
+            const mergeableState = process.env.MERGEABLE_STATE;
+            const prState = process.env.PR_STATE;
+            const noSubmod = process.env.UNMERGED_SUBMODULES === "[]";
             const skip = mergeableState === "dirty" && prState === "open";
             if(skip && !noSubmod){
               appendMsg = appendMsg + "\n**_(Step 2/6)_** Skipping base repo pre-check. No conflicts detected.\n\n**_(Step 3/6)_** Starting to merge submodules."
             }
-            if(skip && !noSubmod){
+            if(!skip && !noSubmod){
               appendMsg = appendMsg + "\n**_(Step 2/6)_** Pre-checking base repo for approvals and conflicts. "
             }
             const newBody = comment.body + appendMsg;
