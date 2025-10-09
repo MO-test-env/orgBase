@@ -75,11 +75,9 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
+            let appendMsg = "\n # 🔧 Merge workflow started #\n**_(Step 1/6)_** Initializing ";
             if('${{ steps.pr.outputs.merged}}'){
-              const appendMsg = "\n ## Nothing to merge. ##"
-            }
-            else{
-              const appendMsg = "\n # 🔧 Merge workflow started #\n**_(Step 1/6)_** Initializing "
+              appendMsg = "\n ## Nothing to merge. ##"
             }
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
