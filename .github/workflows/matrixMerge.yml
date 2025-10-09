@@ -59,7 +59,7 @@ jobs:
             core.setOutput("merged", pr.data.merged);
             core.setOutput("mergeable_state", pr.data.mergeable_state);
             core.setOutput("state", pr.data.state);
-            if (pr.data.merged){
+            if (pr.data.merged == true){
               core.notice("Workflow stopped because the base PR is already merged.");
               return;
             }
@@ -76,7 +76,7 @@ jobs:
               comment_id: commentId,
             });
             let appendMsg = "\n # 🔧 Merge workflow started #\n**_(Step 1/6)_** Initializing ";
-            if('${{ steps.pr.outputs.merged}}'){
+            if('${{ steps.pr.outputs.merged}}' == 'true'){
               appendMsg = "\n ## Nothing to merge. ##"
             }
             const newBody = comment.body + appendMsg;
