@@ -151,7 +151,7 @@ jobs:
               base: "${{ steps.pr.outputs.base_branch }}",
               body: `Automatically reverting PR #${context.issue.number}`
             });
-            core.setOutput('revert_pr', pr.number);
+            core.setOutput('revert_number', pr.number);
             core.setOutput('revert_branch', revertBranch);
             core.info(`✅ Created base revert PR #${pr.number}`);
       
@@ -210,7 +210,7 @@ jobs:
                   git config user.email "github-actions[bot]@users.noreply.github.com" &&
                   git fetch origin ${baseBranch} &&
                   git checkout -b ${branchName} origin/${baseBranch} &&
-                  git revert -m 1 ${prInfo.merge_commit_sha} -X theirs || echo "Nothing to revert" &&
+                  git revert -m 1 ${prInfo.merge_commit_sha} -X ours || echo "Nothing to revert" &&
                   git commit -am "Revert: ${sub.title || 'Submodule PR #' + sub.pr_number}" || echo "No changes to commit" &&
                   git push origin ${branchName}
                 `, { stdio: 'inherit', shell: '/bin/bash' });
@@ -223,6 +223,12 @@ jobs:
                   head: branchName,
                   base: baseBranch,
                   body: `Automatically reverting PR #${sub.pr_number}`
+                });
+                await github.rest.pulls.merge({
+                  owner: sub.org,
+                  repo: sub.repo,
+                  pull_number: '${sub.pr_number}',
+                  merge_method: 'squash'
                 });
 
                 console.log(`✅ Created revert PR #${pr.data.number} in ${sub.repo}`);
