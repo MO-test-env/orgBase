@@ -182,7 +182,7 @@ jobs:
                 gitmodulesBranches[subPath.trim()] = branchMatch ? branchMatch[1].trim() : 'main';
               }
             }
-
+            
             for (const sub of submods) {
               const { data: prInfo } = await github.rest.pulls.get({
                   owner: sub.org,
@@ -198,24 +198,22 @@ jobs:
               console.log(`🔧 Processing submodule ${sub.name} at ${sub.org}/${sub.repo}, base branch: ${baseBranch}`);
 
               try {
-                execSync('git config user.name "github-actions[bot]"');
-                execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
                 // Clone the submodule repo
                 execSync(`git clone ${repoUrl} ${tempDir}`, { stdio: 'inherit' });
 
                 // Navigate into repo
                 process.chdir(tempDir);
 
-                // Fetch base branch
-                execSync(`git fetch origin ${baseBranch}`, { stdio: 'inherit' });
-
-                // Create revert branch from base branch
-                execSync(`git checkout -b ${branchName} origin/${baseBranch}`, { stdio: 'inherit' });
-                execSync(`git revert -m 1 ${prInfo.merge_commit_sha} -X theirs`, { stdio: 'inherit' });
-                execSync(`git commit -am "Revert: ${sub.title || 'Submodule PR #' + sub.pr_number}"`, { stdio: 'inherit' });
-
-                // Push revert branch
-                execSync(`git push origin ${branchName}`, { stdio: 'inherit' });
+                // Combine git config with revert/commit in one execSync shell
+                execSync(`
+                  git config user.name "github-actions[bot]" &&
+                  git config user.email "github-actions[bot]@users.noreply.github.com" &&
+                  git fetch origin ${baseBranch} &&
+                  git checkout -b ${branchName} origin/${baseBranch} &&
+                  git revert -m 1 ${prInfo.merge_commit_sha} -X theirs || echo "Nothing to revert" &&
+                  git commit -am "Revert: ${sub.title || 'Submodule PR #' + sub.pr_number}" || echo "No changes to commit" &&
+                  git push origin ${branchName}
+                `, { stdio: 'inherit', shell: '/bin/bash' });
 
                 // Create PR in submodule repo
                 const pr = await github.rest.pulls.create({
