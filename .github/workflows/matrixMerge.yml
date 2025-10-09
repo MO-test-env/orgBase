@@ -663,19 +663,32 @@ jobs:
           SUBMODULES: ${{ needs.init.outputs.submodules }}
           TOKEN: ${{ env.RW_PAT }}
           BRANCH: ${{ needs.init.outputs.head_ref }}
+          BASE_REF: ${{ needs.init.outputs.base_ref }}
         with:
           script: |
             const { execSync } = require('child_process');
             const submoduleJson = JSON.parse(process.env.SUBMODULES);
             let changed = false;
 
+            // Fetch the base PR branch and read .gitmodules from it
+            execSync(`git fetch origin ${process.env.BASE_REF}:${process.env.BASE_REF}`, { stdio: 'inherit' });
+            execSync(`git show ${process.env.BASE_REF}:.gitmodules > .gitmodules.base || true`, { stdio: 'inherit' });
+
             for (const sub of submoduleJson) {
               const path = sub.name;
               const org = sub.org;
-              const branch = sub.branch;
-              const urlWithToken = `https://${process.env.TOKEN}@github.com/${org}/${sub.repo}.git`;
+              const repo = sub.repo;
+              const urlWithToken = `https://${process.env.TOKEN}@github.com/${org}/${repo}.git`;
 
-              console.log(`🔧 Updating submodule ${sub.repo} at ${path}`);
+              // Determine branch from .gitmodules.base, default to "main"
+              let branch;
+              try {
+                branch = execSync(`git config --file .gitmodules.base submodule.${path}.branch || echo main`, { encoding: 'utf8' }).trim();
+              } catch (e) {
+                branch = 'main';
+              }
+
+              console.log(`🔧 Updating submodule ${repo} at ${path} to branch ${branch}`);
 
               execSync(`git -C ${path} fetch origin ${branch}:${branch}`, { stdio: 'inherit' });
 
@@ -690,7 +703,7 @@ jobs:
               ).trim();
 
               if (currentCommit !== latestCommit) {
-                console.log(`⚠️  ${sub.name} is outdated. Resetting to ${latestCommit}`);
+                console.log(`⚠️ ${sub.name} is outdated. Resetting to ${latestCommit}`);
                 execSync(`git -C ${path} reset --hard ${latestCommit}`, { stdio: 'inherit' });
                 execSync(`git add ${path}`);
                 changed = true;
@@ -700,7 +713,7 @@ jobs:
             }
 
             if (changed) {
-              execSync(`git commit -m "Bump submodules to latest default branch"`);
+              execSync(`git commit -m "Bump submodules to default branch from base PR ${process.env.BASE_REF}"`);
               execSync(`git push origin ${process.env.BRANCH}`);
             } else {
               console.log('✅ All submodules already up-to-date.');
