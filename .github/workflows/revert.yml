@@ -120,6 +120,7 @@ jobs:
               core.setFailed('Base PR is not merged – nothing to revert.');
               return;
             }
+
             core.setOutput('merge_commit_sha', pr.merge_commit_sha);
             core.setOutput('base_ref', pr.base.ref);
             core.setOutput('title', pr.title);
@@ -139,16 +140,21 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const { data: pr } = await github.rest.pulls.create({
+            const prNumber = context.issue.number;
+            const baseRef = "${{ steps.get-pr.outputs.base_ref }}";
+            const title = "${{ steps.get-pr.outputs.title }}";
+            const revertBranch = `revert-${prNumber}`;
+
+            const { data: newPr } = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `Revert "${process.env.PR_TITLE || context.payload.pull_request.title}"`,
-              head: `revert-${context.issue.number}`,
-              base: process.env.BASE_REF || context.payload.pull_request.base.ref,
-              body: `This reverts PR #${context.issue.number}`,
+              title: `Revert "${title}"`,
+              head: revertBranch,
+              base: baseRef,
+              body: `This reverts PR #${prNumber}`,
             });
-            core.info(`Created revert PR #${pr.number}`);
 
+            core.info(`✅ Created revert PR #${newPr.number}`);
 
   revert-submodules:
     needs: detect-submodules
