@@ -207,7 +207,7 @@ jobs:
             }
 
       - name: Detect Base conflicts (dry-run merge)
-        if: ${{ steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.state == 'open' && steps.remove-submodule-objects.outputs.updated_git_modules != '[]' }}
+        if: ${{ steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.state == 'open' && steps.remove-submodule-objects.outputs.updated_git_modules != '{}' }}
         id: detect-conflicts
         uses: actions/github-script@v7
         env:
@@ -299,7 +299,7 @@ jobs:
               comment_id: commentId,
             });
             let appendMsg = "\n - Base PR has enough approvals and no notable merge conflicts.\n";
-            if ('${{ steps.remove-submodule-objects.outputs.updated_git_modules }}' != '[]') {
+            if ('${{ steps.remove-submodule-objects.outputs.updated_git_modules }}' != '{}') {
               appendMsg = appendMsg + " - Running submodule pre-check.\n\n No submodules detected skipping to merge base."
             }
             const newBody = comment.body + appendMsg;
@@ -312,7 +312,7 @@ jobs:
 
       # PRE-CHECK SUBMODULES
       - name: Detect submod PR numbers and Pre-check all Submodules
-        if: ${{ steps.pr.outputs.merged == 'false'  && steps.remove-submodule-objects.outputs.updated_git_modules != '[]' }}
+        if: ${{ steps.pr.outputs.merged == 'false'  && steps.remove-submodule-objects.outputs.updated_git_modules != '{}' }}
         id: pre-check-submod
         uses: actions/github-script@v7
         env:
