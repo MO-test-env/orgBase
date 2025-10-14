@@ -424,7 +424,7 @@ jobs:
 
       # MERGE SUBMODULES
       - name: Merge Submodules
-        if: ${{ steps.pre-check-submod.outputs.unmerged != '[]' }}
+        if: ${{ steps.remove-submodule-objects.outputs.updated_git_modules != '{}' && steps.pre-check-submod.outputs.unmerged != '[]' && steps.pre-check-submod.conclusion == 'success' }}
         id: merge-submodules
         uses: actions/github-script@v7
         env:
