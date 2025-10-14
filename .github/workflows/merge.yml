@@ -298,7 +298,10 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            const appendMsg = "\n - Base PR has enough approvals and no notable conflicts.\n - Running submodule pre-check.\n";
+            let appendMsg = "\n - Base PR has enough approvals and no notable merge conflicts.\n";
+            if ('${{ steps.remove-submodule-objects.outputs.updated_git_modules }}' != '[]') {
+              appendMsg = appendMsg + " - Running submodule pre-check.\n\n No submodules detected skipping to merge base."
+            }
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -392,6 +395,7 @@ jobs:
             core.setOutput('unmerged', unmergedJson);
 
       - name: Comment on Pre-check Success
+        if: ${{ steps.pre-check-submod.conclusion == 'success' }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
@@ -402,7 +406,7 @@ jobs:
               repo: context.repo.repo,
               comment_id: commentId,
             });
-            let newBody = comment.body + "\n Base repository has no meaningful conflicts.";
+            let newBody = comment.body;
             const unmergedSubmodules = process.env.UNMERGED_SUBMODULES;
             const skip = unmergedSubmodules !== "[]";
             if(skip){
@@ -445,6 +449,7 @@ jobs:
             }
 
       - name: Comment after Merging submods 
+        if: ${{ steps.merge-submodules.conclusion == 'success' }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
@@ -543,6 +548,7 @@ jobs:
             }
 
       - name: Comment after Bump
+        if: ${{ steps.bump.conclusion == 'success' }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
@@ -625,8 +631,8 @@ jobs:
           git push --force-with-lease origin "${{steps.pr.outputs.head_ref}}"
 
       - name: Comment after Rebase
+        if: ${{ steps.pr.outputs.mergeable != 'true' && steps.rebase.conclusion == 'success' }}
         uses: actions/github-script@v7
-        if: ${{ steps.pr.outputs.mergeable != 'true' }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
