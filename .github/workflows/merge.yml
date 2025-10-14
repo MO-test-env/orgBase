@@ -700,8 +700,14 @@ jobs:
             let resolutionSteps;
             if('${{ steps.pr.conclusion }}' == 'failure'){
               appendMsg = "API failed to get information on base pr. _Please try again later_";
+            } else if('${{ steps.read-modules-file.conclusion }}' == 'failure'){
+              appendMsg = "Failed to read the .gitmodules file. _Please try again later_";
+            } else if ('${{ steps.diff.conclusion }}' == 'failure' || '${{ steps.remove-submodule-objects.conclusion }}' == 'failure'){
+              appendMsg = "Failed to pull the changed files of this PR. _Please try again later_";
             } else if ('${{ steps.base-approvals.conclusion }}' == 'failure'){
               appendMsg = "Base PR does not have enough approvals.";
+            } else if ('${{ steps.detect-conflicts.conclusion }}' == 'failure'){
+              appendMsg = "Base PR has conflicts in non submodule files. Please locally resolve them with a rebase or merge, push up your changes, and try again.";
             } else if ('${{ steps.pre-check-submod.conclusion }}' == 'failure'){
               appendMsg = "Submodules failed pre-check. Please ensure there are no merge conflicts and you have enough approvals. ";
             } else if ('${{ steps.merge-submodules.conclusion }}' == 'failure'){
