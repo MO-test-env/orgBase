@@ -151,6 +151,7 @@ jobs:
             core.setOutput('diff', diff);
 
       - name: Remove submodule paths not present in diff
+        if: ${{ steps.read-modules-file.outputs.git_modules != '[]' && steps.diff.outputs.diff != '' }}
         id: remove-submodule-objects
         uses: actions/github-script@v7
         env:
@@ -206,7 +207,7 @@ jobs:
             }
 
       - name: Detect Base conflicts (dry-run merge)
-        if: ${{ steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.state == 'open' }}
+        if: ${{ steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.state == 'open' && steps.remove-submodule-objects.outputs.updated_git_modules != '[]' }}
         id: detect-conflicts
         uses: actions/github-script@v7
         env:
@@ -308,7 +309,7 @@ jobs:
 
       # PRE-CHECK SUBMODULES
       - name: Detect submod PR numbers and Pre-check all Submodules
-        if: ${{ steps.pr.outputs.merged == 'false' }}
+        if: ${{ steps.pr.outputs.merged == 'false'  && steps.remove-submodule-objects.outputs.updated_git_modules != '[]' }}
         id: pre-check-submod
         uses: actions/github-script@v7
         env:
@@ -419,6 +420,7 @@ jobs:
 
       # MERGE SUBMODULES
       - name: Merge Submodules
+        if: ${{ steps.pre-check-submod.outputs.unmerged != '[]' }}
         id: merge-submodules
         uses: actions/github-script@v7
         env:
@@ -472,6 +474,7 @@ jobs:
       
       # BUMP SUBSMODULES
       - name: Authenticate submodules
+        if: ${{ steps.pre-check-submod.outputs.submodules != '[]' }}
         run: |
           git checkout "${{steps.pr.outputs.head_ref}}"
           git config --global url."https://${{ env.RW_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
@@ -481,6 +484,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Bump submodules
+        if: ${{ steps.pre-check-submod.outputs.submodules != '[]' }}
         id: bump
         uses: actions/github-script@v7
         env:
@@ -567,7 +571,7 @@ jobs:
 
       # SQUASH AND REBASE
       - name: Squash all PR commits 
-        if: ${{ steps.pr.outputs.mergeable != 'true' }}
+        if: ${{ steps.pr.outputs.mergeable != 'true' && steps.bump.conclusion == 'success' }}
         id: squash
         run: |
           set -euo pipefail
