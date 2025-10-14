@@ -479,7 +479,7 @@ jobs:
       
       # BUMP SUBSMODULES
       - name: Authenticate submodules
-        if: ${{ steps.pre-check-submod.outputs.submodules != '[]' }}
+        if: ${{ steps.pre-check-submod.outputs.submodules != '[]' && steps.remove-submodule-objects.outputs.updated_git_modules != '{}'}}
         run: |
           git checkout "${{steps.pr.outputs.head_ref}}"
           git config --global url."https://${{ env.RW_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
@@ -489,7 +489,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
       - name: Bump submodules
-        if: ${{ steps.pre-check-submod.outputs.submodules != '[]' }}
+        if: ${{ steps.pre-check-submod.outputs.submodules != '[]' && steps.remove-submodule-objects.outputs.updated_git_modules != '{}'}}
         id: bump
         uses: actions/github-script@v7
         env:
