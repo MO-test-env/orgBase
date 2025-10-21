@@ -119,7 +119,8 @@ jobs:
       GITHUB_API_VERSION: "2022-11-28"
     steps:
       - name: Show which repo (log)
-        run: echo "Processing repo: ${{ matrix.repo }}"
+        run: |
+          echo "Processing repo: ${{ matrix.repo }}"
 
       - name: Fetch repo metadata (get default branch)
         id: repo_info
@@ -240,5 +241,6 @@ jobs:
 
       - name: Done (log)
         if: always()
-        run: echo "Finished ${{ matrix.repo }}"
+        run: |
+          echo "Finished ${{ matrix.repo }}"
 
