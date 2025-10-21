@@ -12,6 +12,10 @@ permissions:
 env:
   RW_PAT: ${{ secrets.WORKFLOWS2 }} # Personal Access Token with RW access to repo contents, PRs
   MIN_REVIEWERS: 0
+  OWNER: ${{ github.repository_owner }}
+  REPO: ${{ github.event.repository.name }}
+  COMMENT_ID: ${{ github.event.comment.id }}
+  PR_NUMBER: ${{ github.event.issue.number }}
 
 concurrency:
   group: ${{ github.workflow }}
@@ -21,21 +25,53 @@ jobs:
   merge-chain:
     if: |
       github.event.issue.pull_request != null &&
-      github.event.comment.body == '/merge' &&
-      github.event.comment.user.type != 'Bot'
+      github.event.issue.state == 'open' &&
+      github.event.comment.user.type == 'User' &&
+      github.event.comment.body == '/merge'
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
+      - name: Check org membership
+        id: org-membership
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            let username = context.actor;
+            console.log('User:', username);
+            if ( !username ) {
+              core.setFailed('Username not found');
+              core.setOutput("failMsg", "Workflow stopped because username could not be found.");
+              return;
+            }
+            try {
+              const membership = await github.rest.orgs.getMembershipForUser({
+                org: process.env.OWNER, 
+                username,
+              });
+              console.log('Membership state:', membership.data.state);
+              console.log('Role:', membership.data.role);
+              
+              if (membership.data.state !== 'active') {
+                core.setFailed('User is not an active org member');
+                core.setOutput("failMsg", `Workflow stopped because user is not an active member of the ${process.env.OWNER} organization.`);
+              }
+            } catch (error) {
+              console.log('Error details:', error.message);
+              core.setFailed('User is not an org member');
+              core.setOutput("failMsg", `Workflow stopped because user is not an member of the ${process.env.OWNER} organization.`);
+            }
+
       - name: Get BasePR details
         id: pr
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const prNumber = context.issue.number;
+            const prNumber = process.env.PR_NUMBER;
             const pr = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               pull_number: prNumber,
             });
             
@@ -49,7 +85,8 @@ jobs:
             core.setOutput("mergeable_state", pr.data.mergeable_state);
             core.setOutput("state", pr.data.state);
             if (pr.data.merged == true){
-              core.notice("Workflow stopped because the base PR is already merged.");
+              core.setFailed("Workflow stopped because the base PR is already merged.");
+              core.setOutput("failMsg", "Workflow stopped because the base PR is already merged.");
               return;
             }
 
@@ -58,20 +95,25 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const commentId = context.payload.comment.id;
+            const commentId = process.env.COMMENT_ID;
+            const owner = process.env.OWNER;
+            const repo = process.env.REPO;
             const { data: comment } = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner,
+              repo,
               comment_id: commentId,
             });
-            let appendMsg = "\n # 🔧 Merge workflow started #\n**_(Step 1/5)_** Initializing \n - Successfully got PR data.\n - Reading .gitmodules file and comparing with PR diff.\n";
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            let appendMsg = "\n # 🔧 Merge workflow started #\n";
+            appendMsg = appendMsg + `[🖥️ View this workflow run](${runUrl})`;
+            appendMsg = appendMsg + "\n**_(Step 1/5)_** Initializing \n - Successfully got PR data.\n - Reading .gitmodules file and comparing with PR diff.";
             if('${{ steps.pr.outputs.merged}}' == 'true'){
               appendMsg = "\n ## Nothing to merge. ##"
             }
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner,
+              repo,
               comment_id: commentId,
               body: newBody,
             });
@@ -96,6 +138,7 @@ jobs:
             const path = require('path');
 
             const gitmodulesContent = fs.readFileSync('.gitmodules', 'utf8');
+            const owner = process.env.OWNER;
 
             const submoduleRegex = /\[submodule "(.*)"\]\s*path = (.*)\s*url = (.*)\s*branch = (.*)/g;
             const submodules = {};
@@ -108,7 +151,7 @@ jobs:
               const branch = match[4];
 
               const repoName = url.replace('../', '').replace('.git', '');
-              const newUrl = `https://github.com/${context.repo.owner}/${repoName}.git`;
+              const newUrl = `https://github.com/${owner}/${repoName}.git`;
 
               core.info(`Found submodule: ${name} with path ${path} and url ${url}`);
 
@@ -128,17 +171,29 @@ jobs:
             core.info("Submodules JSON:");
             core.info(json);
             core.setOutput('git_modules', json);
-
-      - name: Get diff to determine changed submodules
-        id: diff
+      
+      - name: Config Bot user and Authenticate submodules
+        id: auth
+        run: |
+          git checkout "${{steps.pr.outputs.head_ref}}"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global url."https://${{ env.RW_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
+          git submodule update --init --recursive
+      
+      # Parse PR diff and filter out unchanged submodules
+      - name: Update submodules with SHA and PR branch
+        id: diff-submodules
         uses: actions/github-script@v7
         env:
+          GIT_MODULES: ${{ steps.read-modules-file.outputs.git_modules }}
           BASE_REF: ${{ steps.pr.outputs.base_ref }}
           PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
-          TOKEN: ${{ env.RW_PAT }}
         with:
           script: |
             const { execSync } = require('child_process');
+
+            const gitModules = JSON.parse(process.env.GIT_MODULES);
 
             const run = (cmd, opts = {}) => {
               const stdio = opts.stdio ?? 'pipe';
@@ -146,35 +201,84 @@ jobs:
               return execSync(cmd, { stdio, encoding }).trim();
             };
 
-            const diff = run(`git diff --name-only origin/${process.env.BASE_REF}...origin/${process.env.PR_BRANCH}`);
-            core.info(`Diff files: ${diff}`);
-            core.setOutput('diff', diff);
+            const diff = run(`git diff origin/${process.env.BASE_REF}...origin/${process.env.PR_BRANCH} `);
 
-      - name: Remove submodule paths not present in diff
-        if: ${{ steps.read-modules-file.outputs.git_modules != '[]' && steps.diff.outputs.diff != '' }}
-        id: remove-submodule-objects
-        uses: actions/github-script@v7
-        env:
-          GIT_MODULES: ${{ steps.read-modules-file.outputs.git_modules }}
-          DIFF: ${{ steps.diff.outputs.diff }}
-        with:
-          script: |
-            const gitModules = JSON.parse(process.env.GIT_MODULES);
-            const diff = process.env.DIFF.split('\n'); // Split the diff into an array for easier searching
+            // Parse the diff to find changed submodules and their SHAs
+            let changedSubmodules = {};
+            let currentFile = null;
 
+            diff.split('\n').forEach(line => {
+              const fileMatch = line.match(/^\+\+\+ b\/(.*)$/);
+              const subMatch = line.match(/^\+Subproject commit ([0-9a-f]{40})$/);
+              
+              if (fileMatch) {
+                currentFile = fileMatch[1];
+              } else if (subMatch && currentFile) {
+                changedSubmodules[currentFile] = subMatch[1];
+              }
+            });
+
+            console.log(`Changed submodules: ${JSON.stringify(changedSubmodules, null, 2)}`);
+
+            const updatedModules = {};
             for (const submodule in gitModules) {
-              if (!diff.includes(gitModules[submodule].path)) {
-                core.info(`Removing submodule ${submodule} with path ${gitModules[submodule].path} as it's not in the diff`);
-                delete gitModules[submodule];
-              } else {
-                core.info(`Keeping submodule ${submodule} with path ${gitModules[submodule].path} as it's in the diff`);
+              const path = gitModules[submodule].path;
+              const sha = changedSubmodules[path];
+              if (!sha) {
+                core.info(`Removing submodule ${submodule} (path: ${path}) as it's not in the diff`);
+                continue;
+              }
+              
+              console.log(`submodule ${submodule} (path: ${path}) sha: ${sha}`);
+              let prBranch = run(`git -C ${path} for-each-ref --format='%(refname:short)' refs/remotes/origin/ --points-at ${sha}`);
+              if (prBranch == '')
+              {
+                //Fall back on just seeing if any branch contains the relevant sha (ex if user pushes a new change to branch in submodule but not update sha in base)
+                prBranch = run(`git -C ${path} branch -r --contains ${sha}`);
+              }
+              core.info(`PR branch: *${prBranch}*`);
+
+              if (prBranch == '')
+              {
+                core.setFailed('Unable to find remote branch containing the SHA');
+                core.setOutput("failMsg", `Unable to find remote branch containing the SHA for submodule ${submodule} with sha ${sha}. \n Please ensure you have pushed up your branch or ensure that the base sha is pointing the right place.`);
+                return;
+              }
+              const prBranchArr = prBranch.trim().split('\n');
+              core.info(`PR branch Array: *${prBranchArr}*`);
+              const defaultBranch = `origin/${gitModules[submodule].branch}`;
+              console.log(`defaultBranch: ${defaultBranch}`);
+              if(prBranchArr.includes(defaultBranch))
+              {
+                core.info('Prevent failure if the submodule is just pointing to the  default branch.');
+                core.info(`Keeping submodule ${submodule}: SHA=${sha}, PR Branch=${prBranch}`);
+                updatedModules[submodule] = {
+                  ...gitModules[submodule],
+                  sha,
+                  prBranch: defaultBranch,
+                };
+              } else if(prBranchArr.length > 1)
+              {
+                core.setFailed('The submodule sha is present on multiple branches. ');
+                core.setOutput("failMsg", `The submodule sha is present on multiple branches for submodule ${submodule} with sha ${sha}. \n Please ensure your base PR branch is pointing to the correct submodule sha. Delete any duplicate branches you do not want merged.`);
+                return;
+              }
+              else 
+              {
+                core.info(`Keeping submodule ${submodule}: SHA=${sha}, PR Branch=${prBranch}`);
+                updatedModules[submodule] = {
+                  ...gitModules[submodule],
+                  sha,
+                  prBranch: prBranchArr[0],
+                };
               }
             }
 
-            const updatedGitModules = JSON.stringify(gitModules, null, 2);
+            const updatedGitModulesJSON = JSON.stringify(updatedModules, null, 2);
             core.info("Updated git_modules JSON:");
-            core.info(updatedGitModules);
-            core.setOutput('updated_git_modules', updatedGitModules);
+            core.info(updatedGitModulesJSON);
+
+            core.setOutput('updated_git_modules', updatedGitModulesJSON);
 
       # PRE-CHECK BASE 
       - name: Confirm Approvals for base PR
@@ -183,10 +287,10 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const prNumber = context.issue.number;
+            const prNumber = process.env.PR_NUMBER;
             const { data: reviews } = await github.rest.pulls.listReviews({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               pull_number: prNumber,
             });
 
@@ -201,20 +305,21 @@ jobs:
 
             if (approvalCount < parseInt(process.env.MIN_REVIEWERS || '0', 10)) {
               core.setFailed(` Not enough approvals (${approvalCount}/${process.env.MIN_REVIEWERS})`);
+              core.setOutput("failMsg", `(${approvalCount}/${process.env.MIN_REVIEWERS})`);
               return;
             } else {
               console.log(' Required approvals met.');
             }
 
       - name: Detect Base conflicts (dry-run merge)
-        if: ${{ steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.state == 'open' && steps.remove-submodule-objects.outputs.updated_git_modules != '{}' }}
+        if: ${{ steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.state == 'open' && steps.diff-submodules.outputs.updated_git_modules != '{}' }}
         id: detect-conflicts
         uses: actions/github-script@v7
         env:
           BASE: ${{ steps.pr.outputs.base_ref }}  
           PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
           TOKEN: ${{ env.RW_PAT }}
-          GIT_MODULES: ${{ steps.remove-submodule-objects.outputs.updated_git_modules }}
+          GIT_MODULES: ${{ steps.diff-submodules.outputs.updated_git_modules }}
         with:
           script: |
             const { execSync } = require('child_process');
@@ -227,13 +332,11 @@ jobs:
               return execSync(cmd, { stdio, encoding }).trim();
             };
 
-            run('git config --global user.name "github-actions[bot]"');
-            run('git config --global user.email "github-actions[bot]@users.noreply.github.com"');
-
             try {
               run(`git fetch origin "${process.env.PR_BRANCH}"`);
             } catch (e) {
-              core.setFailed(` Failed to fetch base branch ${process.env.PR_BRANCH}: ${e.message}`);
+              core.setFailed(`Failed to fetch base branch ${process.env.PR_BRANCH}: ${e.message}`);
+              core.setOutput("failMsg", `Failed to fetch base branch ${process.env.PR_BRANCH}: ${e.message}`);
               process.exit(1);
             }
 
@@ -280,6 +383,7 @@ jobs:
                 console.log(' Non-submodule conflicts detected:');
                 console.log(nonSubmoduleConflicts.join('\n'));
                 core.setFailed('Conflicts found in non-submodule paths.');
+                core.setOutput("failMsg", `Base repo has conflicts in non-submodule paths: ${nonSubmoduleConflicts.join('\n')}`);
                 return;
               } else {
                 console.log(' Only submodule conflicts detected — not failing.');
@@ -289,62 +393,91 @@ jobs:
       - name: Comment on submodule precheck
         if: ${{ steps.pr.outputs.merged == 'false' }}
         uses: actions/github-script@v7
+        env:
+          UPDATED_GIT_MODULES: ${{ steps.diff-submodules.outputs.updated_git_modules }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const commentId = context.payload.comment.id;
+            const commentId = process.env.COMMENT_ID;
             const { data: comment } = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               comment_id: commentId,
             });
             let appendMsg = "\n - Base PR has enough approvals and no notable merge conflicts.\n";
-            if ('${{ steps.remove-submodule-objects.outputs.updated_git_modules }}' != '{}') {
-              appendMsg = appendMsg + " - Running submodule pre-check.\n\n No submodules detected skipping to merge base."
+            const updatedGitModules = process.env.UPDATED_GIT_MODULES || '{}';
+            if ( updatedGitModules != '{}') {
+              appendMsg = appendMsg + " - Running submodule pre-check.";
+            }else {
+              appendMsg = appendMsg + "\n\n - No submodules detected skipping to merge base.";
             }
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               comment_id: commentId,
               body: newBody,
             });
 
       # PRE-CHECK SUBMODULES
       - name: Detect submod PR numbers and Pre-check all Submodules
-        if: ${{ steps.pr.outputs.merged == 'false'  && steps.remove-submodule-objects.outputs.updated_git_modules != '{}' }}
+        if: ${{ steps.pr.outputs.merged == 'false'  && steps.diff-submodules.outputs.updated_git_modules != '{}' }}
         id: pre-check-submod
         uses: actions/github-script@v7
         env:
-          SUBMODULES_JSON: ${{ steps.remove-submodule-objects.outputs.updated_git_modules }}
+          SUBMODULES_JSON: ${{ steps.diff-submodules.outputs.updated_git_modules }}
           RW_PAT: ${{ env.RW_PAT }}
           PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
+            const { execSync } = require('child_process');
             const submods = JSON.parse(process.env.SUBMODULES_JSON);
             const submodules = [];
 
             for (const sub of Object.values(submods)) {
-              const submodulePr = await github.rest.pulls.list({
-                owner: context.repo.owner,
+              core.info(JSON.stringify(sub, null, 2));
+              let prBranch = (sub.prBranch||'')?.replace(/^origin\//, '');
+              if (prBranch == sub.branch)
+              {
+                submodules.push({ 
+                  name: sub.repoName, 
+                  path: sub.path, 
+                  url: sub.url, 
+                  branch: sub.branch, 
+                  merged: true, 
+                  mergeable_state: 'clean', 
+                  pr_number: '0', 
+                  prBranch: 'default',
+                  sha: sub.sha,
+                });
+                continue;
+              }
+              let submodulePr = await github.rest.pulls.list({
+                owner: process.env.OWNER,
                 repo: sub.repoName,
-                head: `${context.repo.owner}:${process.env.PR_BRANCH}`,
+                head: `${process.env.OWNER}:${prBranch}`,
+                base: sub.branch,
                 state: 'all',
-                sort: 'created', 
+                sort: 'updated', 
                 direction: 'desc',
-                per_page: 1,
+                per_page: 3,
               });
-
-              if (submodulePr.data.length > 0) {
+              core.info(JSON.stringify(submodulePr.data, null, 2));
+              if(!submodulePr.data || submodulePr.data.length == 0){
+                core.setFailed('No submodule PR found');
+                core.setOutput("failMsg", `No submodule PR found for submodule ${sub.repoName} with branch ${sub.prBranch} and base ${sub.branch}. Please confirm you have opened all submodule PRs and your base is pointing to the top of the correct branch.`);
+                return;
+              } else {
+                core.info(`Using most recently updated relevant found submodule PR: ${submodulePr.data[0].number}`);
                 let prInfo = submodulePr.data[0];
                 if(!prInfo.merged && (prInfo.mergeable_state === undefined || prInfo.mergeable_state === 'unknown') ) // retry if undefined
                 {
                   for (let i = 0; i < 3; i++) {
-                    await new Promise(resolve => setTimeout(resolve, 3000));
                     console.log(`Retrying... ${i}`);
+                      await new Promise(resolve => setTimeout(resolve, 1000));
                       const retry= await github.rest.pulls.get({
-                      owner: context.repo.owner,
+                      owner: process.env.OWNER,
                       repo: sub.repoName,
                       pull_number: prInfo.number
                     })
@@ -357,16 +490,45 @@ jobs:
 
                 const isMerged = prInfo.state === 'closed' && prInfo.merged === true;
                 // NOTE: mergable_state options are clean, dirty, unknown, blocked, behind, unstable, draft, has_hooks, cross_repo, dirty_ignored, undefined 
-                const isMergeableClean = prInfo.mergeable === true || (prInfo.mergeable_state === 'clean' || prInfo.mergeable_state === 'unstable' );
+                // Next section can be uncommented for addl check of blocks like approving reviewers or check_runs
+                // if(prInfo.mergeable_state == 'blocked'){
+                //  core.setFailed(`❌ Submodule ${sub.repoName} PR #${prInfo.number} mergeable_state is blocked`);
+                //  core.setOutput("failMsg", `❌ Submodule ${sub.repoName} PR #${prInfo.number} mergeable_state is blocked`);
+                //  return;
+                // }
+                const isMergeableClean = prInfo.mergeable === true || ( prInfo.mergeable_state === 'clean' || prInfo.mergeable_state === 'unstable' );
 
                 console.log(`🔎 Submodule ${sub.repoName} PR #${prInfo.number} merged=${isMerged}, mergeable = ${prInfo.mergeable}, mergeable_state=${prInfo.mergeable_state}, state = ${prInfo.state}`);
 
                 core.info(`Submodule ${sub.repoName} PR #${prInfo.number} (state=${prInfo.mergeable_state})`);
                 if (!isMergeableClean && !isMerged) {
                   core.setFailed(`❌ Submodule ${sub.repoName} PR #${prInfo.number} is not mergeable (state=${prInfo.mergeable_state})`);
+                  core.setOutput("failMsg", `❌ Submodule ${sub.repoName} PR #${prInfo.number} is not mergeable (state=${prInfo.mergeable_state})`);
                   return;
-                } 
+                }
 
+                //Confirm approvals for submodule PR 
+                const { data: reviews } = await github.rest.pulls.listReviews({
+                  owner: process.env.OWNER,
+                  repo: sub.repoName,
+                  pull_number: prInfo.number,
+                });
+
+                const latestByUser = {};
+                for (const review of reviews) {
+                  latestByUser[review.user.login] = review.state;
+                }
+                const approvedUsers = Object.values(latestByUser).filter(s => s === 'APPROVED');
+                const approvalCount = approvedUsers.length;
+
+                console.log(` Current approvals: ${approvalCount}/${process.env.MIN_REVIEWERS}`);
+
+                if (approvalCount < parseInt(process.env.MIN_REVIEWERS || '0', 10)) {
+                  core.setFailed(` Not enough submodule approvals (${approvalCount}/${process.env.MIN_REVIEWERS})`);
+                  core.setOutput("failMsg", `Not enough submodule approvals (${approvalCount}/${process.env.MIN_REVIEWERS})`);
+                  return;
+                }
+                
                 submodules.push({ 
                   name: sub.repoName, 
                   path: sub.path, 
@@ -374,12 +536,12 @@ jobs:
                   branch: sub.branch, 
                   merged: prInfo.merged, 
                   mergeable_state: prInfo.mergeable_state, 
-                  pr_number: prInfo.number 
+                  pr_number: prInfo.number, 
+                  prBranch: sub.prBranch,
+                  sha: sub.sha,
                 });
                 core.info(`🔎 Submodule ${sub.repoName} PR #${prInfo.number} merged=${isMerged}, mergeable_state=${prInfo.mergeable_state}`);
-              } else {
-                core.setFailed('Unable to list relevant submodule PR.');
-              }
+              } 
             }
 
             const submodulesJson = JSON.stringify(submodules, null, 2);
@@ -400,31 +562,31 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const commentId = context.payload.comment.id;
+            const commentId = process.env.COMMENT_ID;
             const { data: comment } = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               comment_id: commentId,
             });
             let newBody = comment.body;
             const unmergedSubmodules = process.env.UNMERGED_SUBMODULES;
-            const skip = unmergedSubmodules !== "[]";
-            if(skip){
+            const ifEmptyUnmergedArr = unmergedSubmodules == "[]";
+            if(ifEmptyUnmergedArr){
               newBody += "\n\n" + "**_(Step 2/5)_** Starting to merge submodules.";
             }
             else{
               newBody += "\n\n" + "**_(Step 2/5)_** Skipping submodule merge. All submodules are already merged";
             }
             await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               comment_id: commentId,
               body: newBody,
             });
 
       # MERGE SUBMODULES
       - name: Merge Submodules
-        if: ${{ steps.remove-submodule-objects.outputs.updated_git_modules != '{}' && steps.pre-check-submod.outputs.unmerged != '[]' && steps.pre-check-submod.conclusion == 'success' }}
+        if: ${{ steps.diff-submodules.outputs.updated_git_modules != '{}' && steps.pre-check-submod.outputs.unmerged != '[]' && steps.pre-check-submod.conclusion == 'success' }}
         id: merge-submodules
         uses: actions/github-script@v7
         env:
@@ -435,33 +597,43 @@ jobs:
             const submodules = JSON.parse(process.env.SUBMODULES);
             for (const sub of submodules){
               console.info(`🔎 Processing submodule: ${JSON.stringify(sub)}`);
-
+              let retryCount = 0;
               const url = new URL(sub.url);
               const [owner, repo] = url.pathname.replace(/^\//,'').replace(/\.git$/,'').split('/');
               const pr = sub.pr_number;
               const { data: prInfo } = await github.rest.pulls.get({ owner, repo, pull_number: pr });
-              const res = await github.rest.pulls.merge({
-                owner,
-                repo,
-                pull_number: pr,
-                merge_method: "squash",
-              });
+              while ( retryCount < 3){
+                try {
+                  const res = await github.rest.pulls.merge({
+                    owner,
+                    repo,
+                    pull_number: pr,
+                    merge_method: "squash",
+                  });
+                  break;
+                } catch (error) {
+                  retryCount++;
+                  console.error(`Failed to merge submodule ${sub.name} PR #${pr}: ${error.message}`);
+                  if (retryCount === 3) {
+                    throw error;
+                  }
+                }
+              }
             }
 
       - name: Comment after Merging submods 
-        if: ${{ steps.merge-submodules.conclusion == 'success' }}
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const commentId = context.payload.comment.id;
+            const commentId = process.env.COMMENT_ID;
             const { data: comment } = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               comment_id: commentId,
             });
             let newBody = comment.body + "\n";
-            const result = process.env.SUBMODULE_RESULT;
+            const result = "${{ steps.merge-submodules.conclusion }}";
             if( result == "skipped")
             {
               newBody = newBody + "\n\n**_(Step 3/5)_** Beginning to bump submodules for base PR branch.";
@@ -471,25 +643,15 @@ jobs:
               newBody = newBody + " - All submodules merged.\n\n**_(Step 3/5)_** Beginning to bump submodules for base PR branch.";
             }
             await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               comment_id: commentId,
               body: newBody,
             });
       
       # BUMP SUBSMODULES
-      - name: Authenticate submodules
-        if: ${{ steps.pre-check-submod.outputs.submodules != '[]' && steps.remove-submodule-objects.outputs.updated_git_modules != '{}'}}
-        run: |
-          git checkout "${{steps.pr.outputs.head_ref}}"
-          git config --global url."https://${{ env.RW_PAT }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
-          git submodule sync --recursive
-          git submodule update --init --recursive
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
       - name: Bump submodules
-        if: ${{ steps.pre-check-submod.outputs.submodules != '[]' && steps.remove-submodule-objects.outputs.updated_git_modules != '{}'}}
+        if: ${{ steps.pre-check-submod.outputs.submodules != '[]' && steps.diff-submodules.outputs.updated_git_modules != '{}'}}
         id: bump
         uses: actions/github-script@v7
         env:
@@ -503,9 +665,11 @@ jobs:
             const submodules = JSON.parse(process.env.SUBMODULES);
             let changed = false;
 
+            execSync(`git checkout "${{steps.pr.outputs.head_ref}}"`)
+            
             for (const sub of submodules) {
               const path = sub.path;
-              const org = context.repo.owner;
+              const org = process.env.OWNER;
               const repo = sub.name;
               const urlWithToken = `https://${process.env.TOKEN}@github.com/${org}/${repo}.git`;
 
@@ -553,24 +717,24 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const commentId = context.payload.comment.id;
+            const commentId = process.env.COMMENT_ID;
             const { data: comment } = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               comment_id: commentId,
             });
             let appendMsg = "\n - Submodules bumped \n\n";
             const mergeable = "${{ steps.pr.outputs.mergeable }}" === "true";
             if (mergeable) {
-              appendMsg = appendMsg + "**_(Step 4/5)_** Skipping suqash and rebase. (No conflicts detected)\n\n**_(Step 5/5)_** Starting to merge base."
+              appendMsg = appendMsg + "**_(Step 4/5)_** Skipping squash and rebase. (No conflicts detected)\n\n**_(Step 5/5)_** Starting to merge base."
             }
             else {
               appendMsg = appendMsg + "**_(Step 4/5)_** Starting to auto-resolve submodule conflicts with squash and rebase."
             }
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               comment_id: commentId,
               body: newBody,
             });
@@ -583,11 +747,9 @@ jobs:
           set -euo pipefail
           git fetch origin ${{ steps.pr.outputs.base_ref }}:refs/remotes/origin/${{ steps.pr.outputs.base_ref }}
           BASE=$(git merge-base HEAD origin/${{ steps.pr.outputs.base_ref }})
-
           MSGS=$(git log --reverse --pretty=format:"%s%b" "$BASE"..HEAD)
-
-          SUBJECT="${{ steps.pr.outputs.pr_title }}"
-          BODY=$(echo "$MSGS" | tail -n +2)
+          SUBJECT="${{ steps.pr.outputs.pr_title }} - Squashed"
+          BODY= "$MSGS"
           git reset --soft "$BASE"
 
           git commit -m "$SUBJECT" -m "$BODY"
@@ -600,7 +762,9 @@ jobs:
         run: |
           set -euo pipefail
           git checkout "${{steps.pr.outputs.head_ref}}"
+          git submodule update
           echo "⏳ Starting rebase onto ${{ steps.pr.outputs.base_ref }} ..."
+          git fetch origin ${{ steps.pr.outputs.base_ref }}:refs/remotes/origin/${{ steps.pr.outputs.base_ref }}
           git rebase "origin/${{ steps.pr.outputs.base_ref }}" || echo "⚠️ Rebase paused – conflicts detected"
 
           conflicted=$(git diff --name-only --diff-filter=U)
@@ -636,17 +800,17 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const commentId = context.payload.comment.id;
+            const commentId = process.env.COMMENT_ID;
             const { data: comment } = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               comment_id: commentId,
             });
             const appendMsg = "\n - Rebase pushed successfully. \n\n**_(Step 5/5)_** Starting to merge base.";
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               comment_id: commentId,
               body: newBody,
             });
@@ -662,10 +826,10 @@ jobs:
           script: |
             const { execSync } = require('child_process');
             await execSync(`git fetch origin ${process.env.BRANCH}`, { stdio: 'inherit' });
-            const prNumber = context.issue.number;
+            const prNumber = process.env.PR_NUMBER;
             await github.rest.pulls.merge({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               pull_number: prNumber,
               merge_method: 'squash'
             });
@@ -674,18 +838,18 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const commentId = context.payload.comment.id;
+            const commentId = process.env.COMMENT_ID;
               const { data: comment } = await github.rest.issues.getComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                owner: process.env.OWNER,
+                repo: process.env.REPO,
                 comment_id: commentId,
               });
 
               const appendMsg = "\n ### **🚀 Base PR merged successfully.** ### \n";
               const newBody = comment.body + appendMsg;
               await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                owner: process.env.OWNER,
+                repo: process.env.REPO,
                 comment_id: commentId,
                 body: newBody,
               });
@@ -695,53 +859,66 @@ jobs:
         uses: actions/github-script@v7
         env:
           JOB_NAME: ${{ github.job }}
+          FAIL_MSG_ORG_MEMBERSHIP: ${{ steps.org-membership.outputs.failMsg }}
+          FAIL_MSG_DIFF_SUBMOD: ${{ steps.diff-submodules.outputs.failMsg }}
+          FAIL_MSG_BASE_APPROVAL: ${{ steps.base-approvals.outputs.failMsg }}
+          FAIL_MSG_DETECT_CONFLICTS: ${{ steps.detect-conflicts.outputs.failMsg }}
+          FAIL_MSG_PRE_CHECK_SUBMOD: ${{ steps.pre-check-submod.outputs.failMsg }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const commentId = context.payload.comment.id;
+            const commentId = process.env.COMMENT_ID;
             const job = process.env.JOB_NAME;
             const { data: comment } = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               comment_id: commentId,
             });
-            let failureMsg = `❌ **Job \`${job}\` failed:** `;
+            failureMsg = "❌ **Job failed:** ";
             let appendMsg = "";
-            let resolutionSteps;
-            if('${{ steps.pr.conclusion }}' == 'failure'){
-              appendMsg = "API failed to get information on base pr. _Please try again later_";
-            } else if('${{ steps.read-modules-file.conclusion }}' == 'failure'){
-              appendMsg = "Failed to read the .gitmodules file. _Please try again later_";
-            } else if ('${{ steps.diff.conclusion }}' == 'failure' || '${{ steps.remove-submodule-objects.conclusion }}' == 'failure'){
-              appendMsg = "Failed to pull the changed files of this PR. _Please try again later_";
-            } else if ('${{ steps.base-approvals.conclusion }}' == 'failure'){
-              appendMsg = "Base PR does not have enough approvals.";
-            } else if ('${{ steps.detect-conflicts.conclusion }}' == 'failure'){
-              appendMsg = "Base PR has conflicts in non submodule files. Please locally resolve them with a rebase or merge, push up your changes, and try again.";
-            } else if ('${{ steps.pre-check-submod.conclusion }}' == 'failure'){
-              appendMsg = "Submodules failed pre-check. Please ensure there are no merge conflicts and you have enough approvals. ";
-            } else if ('${{ steps.merge-submodules.conclusion }}' == 'failure'){
-              appendMsg = "Submodule merge failed. Please check the job logs on **Actions** tab for more information. ";
-            } else if ('${{ steps.bump.conclusion }}' == 'failure') {
-              failureMsg = `❌ **Job Submodule bump failed**`;
-              resolutionSteps = `
-              Please check the submodule configuration and try again.
-              `;
-            } else if ('${{ steps.squash.conclusion }}' == 'failure' || '${{ steps.rebase.conclusion }}' == 'failure') {
-              failureMsg = `❌ **Job Rebase failed**`;
-              resolutionSteps = `
-              If the rebase fails, it's likely due to merge conflicts in the base repository. Please manually resolve these conflicts and push the branch back to continue.`;
-            } else if ('${{ steps.merge-base.conclusion }}' == 'failure') {
-              failureMsg = `❌ **Job Merge Basefailed**\n The PR likely has merge conflicts. Please manually resolve them and push the changes to this branch. `;
-            } 
-              else {
-              appendMsg = "Unknown error. Please check the job logs on **Actions** tab for more information. ";
-            }
-
-            const newBody = comment.body + "\n\n" + failureMsg+appendMsg + resolutionSteps;
+            let resolutionSteps = "";
+              if ('${{ steps.org-membership.conclusion }}' == 'failure'){
+                appendMsg = process.env.FAIL_MSG_ORG_MEMBERSHIP;
+                resolutionSteps = "_Please check that you have permissions to perform this action and try again later._";
+              } else if ('${{ steps.pr.conclusion }}' == 'failure'){
+                appendMsg = "API failed to get information on base pr.";
+                resolutionSteps = "_Please try again later._";
+              } else if ('${{ steps.read-modules-file.conclusion }}' == 'failure'){
+                appendMsg = "Failed to read the .gitmodules file.";
+                resolutionSteps = "_Please try again later._";
+              } else if ('${{ steps.auth.conclusion }}' == 'failure'){
+                appendMsg = "Failed to authenticate submodules with github. ";
+                resolutionSteps = "_Please confirm you have pushed up your submodule branches._";
+              } else if ('${{ steps.diff-submodules.conclusion }}' == 'failure'){
+                appendMsg = "Submodule diff failed. "+ process.env.FAIL_MSG_DIFF_SUBMOD;
+                resolutionSteps = "_Please try again later._";
+              } else if ('${{ steps.base-approvals.conclusion }}' == 'failure'){
+                appendMsg = "Base PR does not have enough approvals. "+ process.env.FAIL_MSG_BASE_APPROVAL;
+                resolutionSteps = "_Please ensure your code is reviewed then try again._";
+              } else if ('${{ steps.detect-conflicts.conclusion }}' == 'failure'){
+                appendMsg = "Could not detect base conflicts. "+ process.env.FAIL_MSG_DETECT_CONFLICTS;
+                resolutionSteps = "_Please locally resolve them with a rebase or merge, push up your changes, and try again._";
+              } else if ('${{ steps.pre-check-submod.conclusion }}' == 'failure'){
+                appendMsg = "Submodules failed pre-check. "+ process.env.FAIL_MSG_PRE_CHECK_SUBMOD;
+                resolutionSteps = "_Please ensure there are no merge conflicts in your submodules and you have enough approvals._";
+              } else if ('${{ steps.merge-submodules.conclusion }}' == 'failure'){
+                appendMsg = "Submodule merge failed. ";
+              } else if ('${{ steps.bump.conclusion }}' == 'failure') {
+                failureMsg = "❌ **Job Submodule bump failed**";
+                resolutionSteps = "_Please check the submodule configuration and try again. You can check the job logs on **Actions** tab for more information._";
+              } else if ('${{ steps.squash.conclusion }}' == 'failure' || '${{ steps.rebase.conclusion }}' == 'failure') {
+                failureMsg = "❌ **Job Rebase failed**";
+                resolutionSteps = "If the rebase fails, it's likely due to merge conflicts in the base repository. _Please manually resolve these conflicts and push the branch back to continue._";
+              } else if ('${{ steps.merge-base.conclusion }}' == 'failure') {
+                failureMsg = "❌ **Job Merge Base failed**\n The PR likely has merge conflicts. _Please manually resolve them and push the changes to this branch._";
+              } else {
+                appendMsg = "Unknown error. Please check the job logs on **Actions** tab for more information. ";
+              };            
+              
+            const newBody = comment.body + "\n\n" + failureMsg+appendMsg +"\n"+resolutionSteps;
             await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
               comment_id: commentId,
               body: newBody,
             });
