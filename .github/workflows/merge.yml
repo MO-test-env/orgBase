@@ -748,7 +748,7 @@ jobs:
           git fetch origin ${{ steps.pr.outputs.base_ref }}:refs/remotes/origin/${{ steps.pr.outputs.base_ref }}
           BASE=$(git merge-base HEAD origin/${{ steps.pr.outputs.base_ref }})
           MSGS=$(git log --reverse --pretty=format:"%s%b" "$BASE"..HEAD)
-          SUBJECT="${{ steps.pr.outputs.pr_title }} - Squashed"
+          SUBJECT="${{ steps.pr.outputs.pr_title }}"
           BODY=$(echo "$MSGS" | tail -n +2)
           git reset --soft "$BASE"
 
