@@ -571,7 +571,7 @@ jobs:
             let newBody = comment.body;
             const unmergedSubmodules = process.env.UNMERGED_SUBMODULES;
             const ifEmptyUnmergedArr = unmergedSubmodules == "[]";
-            if(ifEmptyUnmergedArr){
+            if(!ifEmptyUnmergedArr){
               newBody += "\n\n" + "**_(Step 2/5)_** Starting to merge submodules.";
             }
             else{
