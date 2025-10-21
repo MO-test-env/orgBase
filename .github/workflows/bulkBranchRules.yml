@@ -1,0 +1,244 @@
+name: Bulk Branch Rule creation
+
+on:
+  workflow_dispatch:
+    inputs:
+      org:
+        description: 'Organization name'
+        required: true
+        default: 'MO-test-env'
+      repo_filter:
+        description: 'Optional: comma-separated repos to include (empty = all repos)'
+        required: false
+        default: ''
+      branch:
+        description: 'Branch to protect (use "default" to use each repo default branch)'
+        required: true
+        default: 'default'
+      dry_run:
+        description: 'If "true", show what would be done without making requests'
+        required: false
+        default: 'false'
+      concurrency:
+        description: 'Max parallel requests (per job strategy.max-parallel)'
+        required: false
+        default: '6'
+
+permissions:
+  contents: read
+
+env:
+  RW_PAT: ${{ secrets.WORKFLOWS }}
+
+jobs:
+  # Job: list repositories in the org and produce JSON array of repo names
+  list-repos:
+    runs-on: ubuntu-latest
+    outputs:
+      repos_json: ${{ steps.set_repos.outputs.repos_json }}
+    steps:
+      - name: List organization repos (handle pagination)
+        id: set_repos
+        shell: bash
+        env:
+          ORG: ${{ github.event.inputs.org }}
+          GITHUB_API_VERSION: "2022-11-28"
+          PAT: ${{ env.RW_PAT }}
+        run: |
+          if [[ -z "$PAT" ]]; then
+            echo "ERROR: PAT secret is empty or not found."
+            exit 1
+          fi
+
+          page=1
+          per_page=100
+          repos=()
+
+          while :; do
+            resp=$(curl -sS -H "Accept: application/vnd.github+json" \
+                          -H "Authorization: Bearer $PAT" \
+                          -H "X-GitHub-Api-Version: $GITHUB_API_VERSION" \
+                          "https://api.github.com/orgs/$ORG/repos?per_page=$per_page&page=$page&type=all")
+
+            # If response is empty or an error, break with failure
+            if [[ -z "$resp" ]]; then
+              echo "Empty response from GitHub API listing repos"
+              exit 1
+            fi
+
+            names=$(echo "$resp" | jq -r '.[].name' )
+            if [[ -z "$names" ]]; then
+              break
+            fi
+
+            while read -r r; do
+              repos+=("$r")
+            done <<< "$names"
+
+            # If less than per_page items returned -> last page
+            count=$(echo "$resp" | jq 'length')
+            if [[ "$count" -lt "$per_page" ]]; then
+              break
+            fi
+            page=$((page+1))
+          done
+
+          # Allow optional repo_filter input to narrow scope
+          REPO_FILTER="${{ github.event.inputs.repo_filter }}"
+          if [[ -n "$REPO_FILTER" ]]; then
+            IFS=',' read -ra wanted <<< "$REPO_FILTER"
+            filtered=()
+            for r in "${repos[@]}"; do
+              for w in "${wanted[@]}"; do
+                if [[ "$r" == "$w" ]]; then
+                  filtered+=("$r")
+                fi
+              done
+            done
+            repos=("${filtered[@]}")
+          fi
+
+          # Output JSON array
+          repos_json=$(printf '%s\n' "${repos[@]}" | jq -R . | jq -s .)
+          echo "repos found: $(echo $repos_json | jq length)"
+          echo "repos_json=$repos_json" >> $GITHUB_OUTPUT
+
+  apply-protection:
+    needs: list-repos
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: ${{ fromJson(needs.list-repos.outputs.repos_json) }}
+      max-parallel: ${{ github.event.inputs.concurrency }}
+    env:
+      ORG: ${{ github.event.inputs.org }}
+      PAT: ${{ secrets[github.event.inputs.github_pat_secret] }}
+      BRANCH_INPUT: ${{ github.event.inputs.branch }}
+      DRY_RUN: ${{ github.event.inputs.dry_run }}
+      GITHUB_API_VERSION: "2022-11-28"
+    steps:
+      - name: Show which repo (log)
+        run: echo "Processing repo: ${{ matrix.repo }}"
+
+      - name: Fetch repo metadata (get default branch)
+        id: repo_info
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${{ matrix.repo }}"
+          resp=$(curl -sS -w "%{http_code}" -H "Accept: application/vnd.github+json" \
+                        -H "Authorization: Bearer $PAT" \
+                        -H "X-GitHub-Api-Version: $GITHUB_API_VERSION" \
+                        "https://api.github.com/repos/$ORG/$repo")
+          http=$(echo "$resp" | tail -c 4)
+          body=$(echo "$resp" | sed '$d')
+          if [[ "$http" != "200" ]]; then
+            echo "Failed to fetch repo $repo metadata: HTTP $http"
+            echo "body: $body"
+            exit 1
+          fi
+          default_branch=$(echo "$body" | jq -r '.default_branch')
+          echo "default_branch=$default_branch" >> $GITHUB_OUTPUT
+
+      - name: Determine branch to protect
+        id: chosen_branch
+        run: |
+          if [[ "$BRANCH_INPUT" == "default" ]]; then
+            echo "branch=${{ steps.repo_info.outputs.default_branch }}" >> $GITHUB_OUTPUT
+          else
+            echo "branch=$BRANCH_INPUT" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Apply or Update Branch Protection 
+        id: apply
+        shell: bash
+        script: |
+          set -euo pipefail
+
+          repo="${{ matrix.repo }}"
+          branch="${{ steps.chosen_branch.outputs.branch }}"
+          api_base="https://api.github.com"
+          protection_url="$api_base/repos/$ORG/$repo/branches/$branch/protection"
+
+          echo "Applying branch protection to: $ORG/$repo@$branch"
+          echo
+
+          # --- Define desired protection payload ---
+          PROTECTION_BODY=$(cat <<'JSON'
+          {
+            "required_status_checks": {
+              "strict": true,
+              "contexts": []
+            },
+            "enforce_admins": true,
+            "required_pull_request_reviews": {
+              "dismiss_stale_reviews": true,
+              "require_code_owner_reviews": true,
+              "required_approving_review_count": 1
+            },
+            "restrictions": null
+          }
+          JSON
+          )
+
+          echo "Target configuration:"
+          echo "$PROTECTION_BODY" | jq .
+          echo
+
+          # --- Handle dry-run mode ---
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "DRY RUN: No API requests made."
+            exit 0
+          fi
+
+          # --- Retry logic with exponential backoff ---
+          max_attempts=5
+          attempt=1
+          while [[ $attempt -le $max_attempts ]]; do
+            echo "Attempt $attempt: PUT $protection_url"
+            
+            http_resp=$(curl -sS -w "%{http_code}" -X PUT \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $PAT" \
+              -H "X-GitHub-Api-Version: $GITHUB_API_VERSION" \
+              -H "Content-Type: application/json" \
+              --data "$PROTECTION_BODY" \
+              "$protection_url")
+
+            http_code="${http_resp: -3}"
+            body="${http_resp%???}"
+
+            case "$http_code" in
+              200|201)
+                echo "✅ Success: protection applied to $repo@$branch (HTTP $http_code)"
+                echo "$body"
+                exit 0
+                ;;
+              422)
+                echo "⚠️  HTTP 422 Unprocessable Entity. Response:"
+                echo "$body"
+                echo "Tip: Ensure required status check contexts exist or adjust payload."
+                exit 1
+                ;;
+              *)
+                echo "❌ HTTP $http_code: $body"
+                if [[ "$attempt" -lt "$max_attempts" ]]; then
+                  sleep_time=$((attempt * 5))
+                  echo "Retrying in ${sleep_time}s..."
+                  sleep $sleep_time
+                else
+                  echo "Giving up after $attempt attempts."
+                  exit 1
+                fi
+                ;;
+            esac
+
+            attempt=$((attempt + 1))
+          done
+
+
+      - name: Done (log)
+        if: always()
+        run: echo "Finished ${{ matrix.repo }}"
+
