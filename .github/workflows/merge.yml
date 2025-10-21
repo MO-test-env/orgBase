@@ -749,7 +749,7 @@ jobs:
           BASE=$(git merge-base HEAD origin/${{ steps.pr.outputs.base_ref }})
           MSGS=$(git log --reverse --pretty=format:"%s%b" "$BASE"..HEAD)
           SUBJECT="${{ steps.pr.outputs.pr_title }}"
-          BODY=$(echo "$MSGS" | tail -n +2)
+          BODY=$(echo "$MSGS" | tail -n +1)
           git reset --soft "$BASE"
 
           git commit -m "$SUBJECT" -m "$BODY"
