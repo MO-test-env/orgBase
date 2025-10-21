@@ -78,9 +78,7 @@ jobs:
       matrix:
         repo: ${{ fromJson(needs.list-repos.outputs.repos_json) }}
       max-parallel: ${{ github.event.inputs.concurrency }}
-    permissions:
-      contents: write
-      administration: write
+
     steps:
       - name: Apply Branch Protection 
         id: protect
