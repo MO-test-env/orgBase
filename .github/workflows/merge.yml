@@ -426,7 +426,13 @@ jobs:
 
             //  Final validation and push 
             try {
-              run(`git rebase origin/${baseRef}`, { stdio: 'inherit' });
+              const finalRebase = run(`git rebase origin/${baseRef}`, { allowFail: true });
+              if (/up to date/i.test(finalRebase) || /no rebase in progress/i.test(finalRebase)) {
+                console.log('✅ Branch already up to date — skipping redundant rebase.');
+              } else if (finalRebase.includes('error') || finalRebase.includes('conflict')) {
+                core.setFailed('❌ Rebase failed — unresolved conflicts remain.');
+                process.exit(1);
+              }
             } catch (err) {
               core.setFailed('❌ Rebase failed — unresolved conflicts remain.');
               process.exit(1);
