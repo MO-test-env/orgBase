@@ -499,7 +499,7 @@ jobs:
                 break;
               }
 
-              core.warn(` Conflicts detected in: ${conflicted.join(', ')}`);
+              console.warn(` Conflicts detected in: ${conflicted.join(', ')}`);
 
               // Resolve submodule conflicts automatically
               const conflictedSubmodules = conflicted.filter(path => submodules.includes(path));
