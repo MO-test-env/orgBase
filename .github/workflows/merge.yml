@@ -471,7 +471,7 @@ jobs:
             const baseRef = '${{ steps.pr.outputs.base_ref }}';
             const headRef = '${{ steps.pr.outputs.head_ref }}';
             const gitModules = process.env.GIT_MODULES;
-            const submodules = gitModule ? Object.values(JSON.parse(gitModules)).map(m => m.path.trim().replace(/\/$/, '')) : [];
+            const submodules = gitModules ? Object.values(JSON.parse(gitModules)).map(m => m.path.trim().replace(/\/$/, '')) : [];
 
             run(`git checkout ${headRef}`);
             run(`git fetch origin ${baseRef}`);
