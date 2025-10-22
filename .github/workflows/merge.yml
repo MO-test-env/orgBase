@@ -333,177 +333,109 @@ jobs:
               console.log(' Required approvals met.');
             }
 
-      - name: Detect Base conflicts (dry-run merge)
-        if: ${{ steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.state == 'open' && steps.diff-submodules.outputs.updated_git_modules != '{}' }}
-        id: detect-conflicts
+      - name: Squash if needed and rebase onto base (with submodule conflict handling)
+        if: ${{ steps.pr.outputs.state == 'open' && steps.diff-submodules.outputs.updated_git_modules != '{}' }}
+        id: squash-rebase
         uses: actions/github-script@v7
         env:
-          BASE: ${{ steps.pr.outputs.base_ref }}  
+          BASE: ${{ steps.pr.outputs.base_ref }}
           PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
           TOKEN: ${{ env.RW_PAT }}
           GIT_MODULES: ${{ steps.diff-submodules.outputs.updated_git_modules }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
         with:
           script: |
             const { execSync } = require('child_process');
-            const fs = require('fs');
-            const gitModules = JSON.parse(process.env.GIT_MODULES);
 
             const run = (cmd, opts = {}) => {
               const stdio = opts.stdio ?? 'pipe';
               const encoding = opts.encoding ?? 'utf8';
-              return execSync(cmd, { stdio, encoding }).trim();
-            };
-
-            try {
-              run(`git fetch origin "${process.env.PR_BRANCH}"`);
-            } catch (e) {
-              core.setFailed(`Failed to fetch base branch ${process.env.PR_BRANCH}: ${e.message}`);
-              core.setOutput("failMsg", `Failed to fetch base branch ${process.env.PR_BRANCH}: ${e.message}`);
-              process.exit(1);
-            }
-
-            let submodulePaths = Object.keys(gitModules).map(key => gitModules[key].path);
-            console.log(` Found submodules: ${submodulePaths.join(', ')}`);
-
-            try {
-              run(`git merge --no-commit --no-ff "origin/${process.env.PR_BRANCH}"`, { stdio: 'inherit' });
-            } catch (_) {
-              // merge returned non-zero → likely conflicts - allow it to fall through
-            }
-
-            let conflictList = '';
-            try {
-              conflictList = run('git diff --name-only --diff-filter=U');
-            } catch (_) {
-              // No conflicted files → git diff returns nothing, keep empty string
-            }
-
-            if (!conflictList) {
-              console.log(' No conflicted files – this is unexpected when mergeable_state was “dirty”.');
-              core.setOutput('conflict_files', '[]');  
-            } else {
-              console.log(' Conflicted files (plain-text):');
-              console.log(conflictList);
-
-              const conflicts = conflictList
-                .split('\n')
-                .filter(Boolean)
-                .map(f => f.trim());
-
-              console.log(' Conflicted files:', conflicts);
-
-              const nonSubmoduleConflicts = conflicts.filter(f => {
-                return !submodulePaths.some(sub => f === sub || f.startsWith(`${sub}/`));
-              });
-
-              const json = JSON.stringify(conflicts);
-              core.setOutput('conflict_files', json);
-              
-              run('git merge --abort || true');
-
-              if (nonSubmoduleConflicts.length > 0) {
-                console.log(' Non-submodule conflicts detected:');
-                console.log(nonSubmoduleConflicts.join('\n'));
-                core.setFailed('Conflicts found in non-submodule paths.');
-                core.setOutput("failMsg", `Base repo has conflicts in non-submodule paths: ${nonSubmoduleConflicts.join('\n')}`);
-                return;
-              } else {
-                console.log(' Only submodule conflicts detected — not failing.');
-              }
-            }
-
-      - name: Squash all PR commits 
-        if: ${{ steps.pr.outputs.mergeable != 'true' }}
-        id: squash
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const { execSync } = require('child_process');
-            const run = (cmd, options = {}) => {
-              console.log(`$ ${cmd}`);
-              return execSync(cmd, { stdio: 'pipe', encoding: 'utf8', ...options }).trim();
-            };
-
-            try {
-              const baseRef = '${{ steps.pr.outputs.base_ref }}';
-              const prTitle = '${{ steps.pr.outputs.title }}';
-              const headRef = '${{ steps.pr.outputs.head_ref }}';
-
-              run(`git fetch origin ${baseRef}:refs/remotes/origin/${baseRef}`);
-              // find common commit 
-              const base = run(`git merge-base HEAD origin/${baseRef}`);
-
-              const msgs = run(`git log --reverse --pretty=format:"%s%n%b" ${base}..HEAD`);
-              const subject = `${prTitle} - Squash`;
-              const body = msgs;
-
-              // put all changes since common commit into working tree and commmit them 
-              run(`git reset --soft ${base}`);
-              run(`git commit -m "${subject}" -m "${body.replace(/"/g, '\\"')}"`);
-
-            } catch (error) {
-              console.error('❌ Squash step failed:', error.message);
-              process.exit(1);
-            }
-
-      - name: Rebase onto base branch & resolve submodule conflicts
-        id: rebase
-        if: ${{ steps.pr.outputs.mergeable != 'true' && steps.squash.conclusion == 'success' }}
-        uses: actions/github-script@v7
-        env:
-          GIT_MODULES:  ${{ steps.diff-submodules.outputs.updated_git_modules }}
-        with:
-          script: |
-            const { execSync } = require('child_process');
-            const run = (cmd, options = {}) => {
               console.log(`$ ${cmd}`);
               try {
-                return execSync(cmd, { stdio: 'pipe', encoding: 'utf8', ...options }).trim();
-              }
-              catch (err) {
-                console.warn(`⚠️ Command failed but continuing: ${cmd}`);
+                return execSync(cmd, { stdio, encoding }).trim();
+              } catch (err) {
+                if (!opts.allowFail) throw err;
+                console.warn(`⚠️ Command failed (continuing): ${cmd}`);
                 console.warn(err.stdout || err.message);
-                return ''; // return empty string so the job does not immediately exit when we hit the expected merge conflict 
+                return '';
               }
             };
 
-            const baseRef = '${{ steps.pr.outputs.base_ref }}';
-            const headRef = '${{ steps.pr.outputs.head_ref }}';
+            const baseRef = process.env.BASE;
+            const headRef = process.env.PR_BRANCH;
+            const prTitle = process.env.PR_TITLE;
             const gitModules = JSON.parse(process.env.GIT_MODULES);
-            const submodules = gitModules ? Object.values(gitModules).map(m => m.path.trim().replace(/\/$/, '')) : [];
+            const submodules = Object.values(gitModules).map(m => m.path.trim().replace(/\/$/, ''));
 
+            console.log(`Base: ${baseRef}, Head: ${headRef}`);
+            console.log(`Submodules: ${submodules.join(', ')}`);
+
+            //  Fetch latest base and head 
+            run(`git fetch origin ${baseRef}:refs/remotes/origin/${baseRef}`);
+            run(`git fetch origin ${headRef}:refs/remotes/origin/${headRef}`);
             run(`git checkout ${headRef}`);
-            run(`git fetch origin ${baseRef}`);
 
-            console.log(` Starting rebase onto origin/${baseRef} ...`);
+            //  Squash commits only if more than one 
+            const base = run(`git merge-base HEAD origin/${baseRef}`);
+            const commitCount = parseInt(run(`git rev-list --count ${base}..HEAD`), 10);
+            console.log(`Commit count in PR: ${commitCount}`);
 
-            const rebaseOutput = run(`git rebase origin/${baseRef}`);
-            if (rebaseOutput.includes('is up to date') || rebaseOutput.includes('Fast-forwarded')) {
-              console.log(' Rebase already up to date.');
+            if (commitCount > 1) {
+              console.log('🧹 Multiple commits detected — performing squash.');
+              const msgs = run(`git log --reverse --pretty=format:"%s%n%b" ${base}..HEAD`);
+              const subject = `${prTitle} - Squash`;
+              run(`git reset --soft ${base}`);
+              run(`git commit -m "${subject}" -m "${msgs.replace(/"/g, '\\"')}"`);
+            } else {
+              console.log(' Only one commit — skipping squash.');
             }
 
-            // Detect conflicted files
-            const conflicted = run(`git diff --name-only --diff-filter=U`).split('\n').filter(Boolean);
-            if (conflicted.length === 0) {
-              console.log(' No conflicts detected.');
-            }
-            console.log(` Conflicts detected in: ${conflicted.join(', ')}`);
+            //  Rebase onto base branch 
+            console.log(`Starting rebase onto origin/${baseRef} ...`);
+            const rebaseOutput = run(`git rebase origin/${baseRef}`, { allowFail: true });
 
-            const conflictedSubmodules = conflicted.filter(path => submodules.includes(path));
-            submodules.forEach(sub => run(`git add "${sub}"`));
-            run(`git commit --no-edit`);
-            run(`git rebase --continue`);
-            
-            // confirm the base is now up to date or exit
+            //  Detect and handle conflicts 
+            let conflicted = run(`git diff --name-only --diff-filter=U`, { allowFail: true })
+              .split('\n')
+              .filter(Boolean);
+
+            if (conflicted.length > 0) {
+              console.log(`⚠️ Rebase conflicts detected: ${conflicted.join(', ')}`);
+
+              const subConflicts = conflicted.filter(f =>
+                submodules.some(s => f === s || f.startsWith(`${s}/`))
+              );
+              const nonSubConflicts = conflicted.filter(f =>
+                !submodules.some(s => f === s || f.startsWith(`${s}/`))
+              );
+
+              if (nonSubConflicts.length > 0) {
+                core.setFailed(`❌ Rebase conflicts in non-submodule files:\n${nonSubConflicts.join('\n')}`);
+                process.exit(1);
+              }
+
+              if (subConflicts.length > 0) {
+                console.log(`Submodule conflicts only — auto-resolving.`);
+                subConflicts.forEach(sub => run(`git add "${sub}"`));
+                run(`git commit --no-edit`);
+                run(`git rebase --continue`, { allowFail: true });
+              }
+            } else {
+              console.log(' No rebase conflicts detected.');
+            }
+
+            //  Final validation and push 
             try {
-              execSync(`git rebase origin/${baseRef}`, { stdio: 'inherit' });
-            }catch (err) {
-              core.setFailed("Base still has conflicts");
-              return; 
+              run(`git rebase origin/${baseRef}`, { stdio: 'inherit' });
+            } catch (err) {
+              core.setFailed('❌ Rebase failed — unresolved conflicts remain.');
+              process.exit(1);
             }
 
             run(`git push --force-with-lease origin ${headRef}`);
             console.log(' Rebase and push completed successfully.');
+
+
 
       - name: Comment on submodule precheck
         if: ${{ steps.pr.outputs.merged == 'false' }}
@@ -528,7 +460,7 @@ jobs:
             } 
             const updatedGitModules = process.env.UPDATED_GIT_MODULES || '{}';
             if ( updatedGitModules != '{}') {
-              appendMsg = appendMsg + " - Running submodule pre-check.";
+              appendMsg = appendMsg + "\n - Running submodule pre-check.";
             }else {
               appendMsg = appendMsg + "\n\n - No submodules detected skipping to merge base.";
             }
@@ -584,7 +516,7 @@ jobs:
                 direction: 'desc',
                 per_page: 3,
               });
-              core.info(JSON.stringify(submodulePr.data, null, 2));
+
               if(!submodulePr.data || submodulePr.data.length == 0){
                 core.setFailed('No submodule PR found');
                 core.setOutput("failMsg", `No submodule PR found for submodule ${sub.repoName} with branch ${sub.prBranch} and base ${sub.branch}. Please confirm you have opened all submodule PRs and your base is pointing to the top of the correct branch.`);
@@ -594,9 +526,10 @@ jobs:
                 let prInfo = submodulePr.data[0];
                 if(!prInfo.merged && (prInfo.mergeable_state === undefined || prInfo.mergeable_state === 'unknown') ) // retry if undefined
                 {
-                  for (let i = 0; i < 3; i++) {
+                  for (let i = 0; i < 5; i++) {
                     console.log(`Retrying... ${i}`);
-                      await new Promise(resolve => setTimeout(resolve, 1000));
+                      const wait-ms = (i+1) * 1000;
+                      await new Promise(resolve => setTimeout(resolve, wait-ms));
                       const retry= await github.rest.pulls.get({
                       owner: process.env.OWNER,
                       repo: sub.repoName,
@@ -610,13 +543,6 @@ jobs:
                 }
 
                 const isMerged = prInfo.state === 'closed' && prInfo.merged === true;
-                // NOTE: mergable_state options are clean, dirty, unknown, blocked, behind, unstable, draft, has_hooks, cross_repo, dirty_ignored, undefined 
-                // Next section can be uncommented for addl check of blocks like approving reviewers or check_runs
-                // if(prInfo.mergeable_state == 'blocked'){
-                //  core.setFailed(`❌ Submodule ${sub.repoName} PR #${prInfo.number} mergeable_state is blocked`);
-                //  core.setOutput("failMsg", `❌ Submodule ${sub.repoName} PR #${prInfo.number} mergeable_state is blocked`);
-                //  return;
-                // }
                 const isMergeableClean = prInfo.mergeable === true || ( prInfo.mergeable_state === 'clean' || prInfo.mergeable_state === 'unstable' );
 
                 console.log(`🔎 Submodule ${sub.repoName} PR #${prInfo.number} merged=${isMerged}, mergeable = ${prInfo.mergeable}, mergeable_state=${prInfo.mergeable_state}, state = ${prInfo.state}`);
@@ -876,8 +802,7 @@ jobs:
             });
       
 
-
-      # this should never have to run because the logic has been moved up, but if there are race conditions we would like to know before merge fails 
+      # This was moved earlier in the workflow to ensure that nothing would get merged if the submodules could not be rebased cleanly. The next two steps should never have to run but they exist so that the rebase will be repeated if another user happens to push up a change within the same minute
       - name: Squash all PR commits 
         if: ${{ steps.pr-2.outputs.mergeable != 'true' }}
         id: final-squash
@@ -1018,7 +943,7 @@ jobs:
           FAIL_MSG_ORG_MEMBERSHIP: ${{ steps.org-membership.outputs.failMsg }}
           FAIL_MSG_DIFF_SUBMOD: ${{ steps.diff-submodules.outputs.failMsg }}
           FAIL_MSG_BASE_APPROVAL: ${{ steps.base-approvals.outputs.failMsg }}
-          FAIL_MSG_DETECT_CONFLICTS: ${{ steps.detect-conflicts.outputs.failMsg }}
+          FAIL_MSG_DETECT_CONFLICTS: ${{ steps.squash-rebase.outputs.failMsg }}
           FAIL_MSG_PRE_CHECK_SUBMOD: ${{ steps.pre-check-submod.outputs.failMsg }}
         with:
           github-token: ${{ env.RW_PAT }}
@@ -1051,9 +976,6 @@ jobs:
               } else if ('${{ steps.base-approvals.conclusion }}' == 'failure'){
                 appendMsg = "Base PR does not have enough approvals. "+ process.env.FAIL_MSG_BASE_APPROVAL;
                 resolutionSteps = "_Please ensure your code is reviewed then try again._";
-              } else if ('${{ steps.detect-conflicts.conclusion }}' == 'failure'){
-                appendMsg = "Could not detect base conflicts. "+ process.env.FAIL_MSG_DETECT_CONFLICTS;
-                resolutionSteps = "_Please locally resolve them with a rebase or merge, push up your changes, and try again._";
               } else if ('${{ steps.pre-check-submod.conclusion }}' == 'failure'){
                 appendMsg = "Submodules failed pre-check. "+ process.env.FAIL_MSG_PRE_CHECK_SUBMOD;
                 resolutionSteps = "_Please ensure there are no merge conflicts in your submodules and you have enough approvals._";
@@ -1062,9 +984,10 @@ jobs:
               } else if ('${{ steps.bump.conclusion }}' == 'failure') {
                 failureMsg = "❌ **Job Submodule bump failed**";
                 resolutionSteps = "_Please check the submodule configuration and try again. You can check the job logs on **Actions** tab for more information._";
-              } else if ('${{ steps.squash.conclusion }}' == 'failure' || '${{ steps.rebase.conclusion }}' == 'failure') {
+              } else if ('${{ steps.squash-rebase.conclusion }}' == 'failure') {
                 failureMsg = "❌ **Job Rebase failed**";
                 resolutionSteps = "If the rebase fails, it's likely due to merge conflicts in the base repository. _Please manually resolve these conflicts and push the branch back to continue._";
+                resolutionSteps += "\n_Please locally resolve them with a rebase or merge, push up your changes, and try again._";
               } else if ('${{ steps.merge-base.conclusion }}' == 'failure') {
                 failureMsg = "❌ **Job Merge Base failed**\n The PR likely has merge conflicts. _Please manually resolve them and push the changes to this branch._";
               } else {
