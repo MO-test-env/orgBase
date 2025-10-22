@@ -440,6 +440,9 @@ jobs:
 
           # Detect conflicts
           conflicted=$(git diff --name-only --diff-filter=U)
+          echo
+          echo "$conflicted"
+          echo
           submodule_paths=$(echo "$GIT_MODULES" | jq -r '.[] | .path')
           conflicted_submodules=""
           for sub in $submodule_paths; do
