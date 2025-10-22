@@ -472,7 +472,7 @@ jobs:
             const gitModules = JSON.parse(process.env.GIT_MODULES);
             console.log();
             console.log(gitModules);
-            const submodules = gitModules ? Object.values(JSON.parse(gitModules)).map(m => m.path.trim().replace(/\/$/, '')) : [];
+            const submodules = gitModules ? Object.values(gitModules).map(m => m.path.trim().replace(/\/$/, '')) : [];
 
             console.log();
             console.log(submodules);
