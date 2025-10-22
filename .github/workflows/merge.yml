@@ -504,8 +504,13 @@ jobs:
             run(`git commit --no-edit`);
             run(`git rebase --continue`);
             
-            console.log(' Non-submodule conflicts remain. Manual resolution needed.');
-            process.exit(1);
+            // confirm the base is now up to date or exit
+            try {
+              execSync(`git rebase origin/${baseRef}`, { stdio: 'inherit' });
+            }catch (err) {
+              core.setFailed("Base still has conflicts");
+              return; 
+            }
 
             // run(`git push --force-with-lease origin ${headRef}`);
 
