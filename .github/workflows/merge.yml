@@ -390,6 +390,138 @@ jobs:
               }
             }
 
+      # SQUASH AND REBASE
+      - name: Squash all PR commits 
+        if: ${{ steps.pr.outputs.mergeable != 'true' }}
+        id: squash
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const run = (cmd, options = {}) => {
+              console.log(`$ ${cmd}`);
+              return execSync(cmd, { stdio: 'pipe', encoding: 'utf8', ...options }).trim();
+            };
+
+            try {
+              const baseRef = '${{ steps.pr.outputs.base_ref }}';
+              const prTitle = '${{ steps.pr.outputs.pr_title }}';
+              const headRef = '${{ steps.pr.outputs.head_ref }}';
+
+              run(`git fetch origin ${baseRef}:refs/remotes/origin/${baseRef}`);
+              // find common commit 
+              const base = run(`git merge-base HEAD origin/${baseRef}`);
+
+              const msgs = run(`git log --reverse --pretty=format:"%s%n%b" ${base}..HEAD`);
+              const subject = `${prTitle} - Squash`;
+              const body = msgs;
+
+              // put all changes since common commit into working tree and commmit them 
+              run(`git reset --soft ${base}`);
+              run(`git commit -m "${subject}" -m "${body.replace(/"/g, '\\"')}"`);
+
+            } catch (error) {
+              console.error('❌ Squash step failed:', error.message);
+              process.exit(1);
+            }
+
+      - name: Rebase onto base branch & resolve submodule conflicts
+        id: rebase
+        if: ${{ steps.pr.outputs.mergeable != 'true' && steps.squash.conclusion == 'success' }}
+        uses: actions/github-script@v7
+        env:
+          GIT_MODULES: ${{ steps.pr.outputs.git_modules }}
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const run = (cmd, options = {}) => {
+              console.log(`$ ${cmd}`);
+              return execSync(cmd, { stdio: 'pipe', encoding: 'utf8', ...options }).trim();
+            };
+
+            const baseRef = '${{ steps.pr.outputs.base_ref }}';
+            const headRef = '${{ steps.pr.outputs.head_ref }}';
+            const gitModules = process.env.GIT_MODULES;
+            const submodules = gitModules ? JSON.parse(gitModules).map(m => m.path) : [];
+
+            run(`git checkout ${headRef}`);
+            run(`git fetch origin ${baseRef}`);
+
+            console.log(`⏳ Starting iterative rebase onto origin/${baseRef} ...`);
+
+            let attempt = 0;
+            const maxAttempts = 3;
+
+            while (attempt < maxAttempts) {
+              attempt++;
+              console.log(`\n Rebase attempt #${attempt}`); 
+              //break early if I cant easily resolve the submodule conflicts
+
+              const rebaseOutput = run(`git rebase origin/${baseRef}`);
+              if (rebaseOutput.includes('is up to date') || rebaseOutput.includes('Fast-forwarded')) {
+                console.log(' Rebase already up to date.');
+                break;
+              }
+
+              // Detect conflicted files
+              const conflicted = run(`git diff --name-only --diff-filter=U`).split('\n').filter(Boolean);
+              if (conflicted.length === 0) {
+                console.log(' No conflicts detected.');
+                break;
+              }
+
+              core.warn(` Conflicts detected in: ${conflicted.join(', ')}`);
+
+              // Resolve submodule conflicts automatically
+              const conflictedSubmodules = conflicted.filter(path => submodules.includes(path));
+              if (conflictedSubmodules.length > 0) {
+                console.log(`🔧 Resolving submodule conflicts: ${conflictedSubmodules.join(', ')}`);
+                conflictedSubmodules.forEach(sub => run(`git add "${sub}"`));
+
+                const hasStaged = run(`git diff --cached --name-only`).length > 0;
+                if (hasStaged) {
+                  run(`git commit --no-edit`);
+                }
+
+                run(`git rebase --continue`);
+                continue; // retry loop until clean
+              }
+
+              console.log(' Non-submodule conflicts remain. Manual resolution needed.');
+              process.exit(1);
+            }
+
+            if (attempt >= maxAttempts) {
+              console.error(' Max rebase attempts reached — still unresolved conflicts.');
+              process.exit(1);
+            }
+
+            run(`git push --force-with-lease origin ${headRef}`);
+
+            console.log(' Rebase and push completed successfully.');
+
+
+      - name: Comment after Rebase
+        if: ${{ steps.pr.outputs.mergeable != 'true' && steps.rebase.conclusion == 'success' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const commentId = process.env.COMMENT_ID;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
+              comment_id: commentId,
+            });
+            const appendMsg = "\n - Rebase pushed successfully. \n\n**_(Step 5/5)_** Starting to merge base.";
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
+              comment_id: commentId,
+              body: newBody,
+            });
+
       - name: Comment on submodule precheck
         if: ${{ steps.pr.outputs.merged == 'false' }}
         uses: actions/github-script@v7
@@ -788,53 +920,69 @@ jobs:
               return execSync(cmd, { stdio: 'pipe', encoding: 'utf8', ...options }).trim();
             };
 
-            try {
-              const baseRef = '${{ steps.pr.outputs.base_ref }}';
-              const headRef = '${{ steps.pr.outputs.head_ref }}';
-              const gitModules = process.env.GIT_MODULES;
+            const baseRef = '${{ steps.pr.outputs.base_ref }}';
+            const headRef = '${{ steps.pr.outputs.head_ref }}';
+            const gitModules = process.env.GIT_MODULES;
+            const submodules = gitModules ? JSON.parse(gitModules).map(m => m.path) : [];
 
-              run(`git checkout ${headRef}`);
+            run(`git checkout ${headRef}`);
+            run(`git fetch origin ${baseRef}`);
 
-              console.log(` Starting rebase onto origin/${baseRef} ...`);
-              run(`git fetch origin ${baseRef}`);
-              run(`git rebase origin/${baseRef}`);
+            console.log(`⏳ Starting iterative rebase onto origin/${baseRef} ...`);
+
+            let attempt = 0;
+            const maxAttempts = 3;
+
+            while (attempt < maxAttempts) {
+              attempt++;
+              console.log(`\n🔁 Rebase attempt #${attempt}`);
+
+              const rebaseOutput = run(`git rebase origin/${baseRef}`);
+              if (rebaseOutput.includes('is up to date') || rebaseOutput.includes('Fast-forwarded')) {
+                console.log('✅ Rebase already up to date.');
+                break;
+              }
 
               // Detect conflicted files
               const conflicted = run(`git diff --name-only --diff-filter=U`).split('\n').filter(Boolean);
+
               if (conflicted.length === 0) {
-                console.log('No conflicts detected.');
-              } else {
-                console.log(`Conflicts detected in: ${conflicted.join(', ')}`);
+                console.log(' No conflicts detected.');
+                break;
               }
 
-              // Parse submodule paths from PR output
-              const submodules = gitModules ? JSON.parse(gitModules).map(m => m.path) : [];
-              const conflictedSubmodules = conflicted.filter(path => submodules.includes(path));
+              console.log(`⚠️ Conflicts detected in: ${conflicted.join(', ')}`);
 
+              // Resolve submodule conflicts automatically
+              const conflictedSubmodules = conflicted.filter(path => submodules.includes(path));
               if (conflictedSubmodules.length > 0) {
                 console.log(`🔧 Resolving submodule conflicts: ${conflictedSubmodules.join(', ')}`);
-                conflictedSubmodules.forEach(sub => {
-                  run(`git add "${sub}"`);
-                });
+                conflictedSubmodules.forEach(sub => run(`git add "${sub}"`));
 
-                // Commit staged submodules if any
                 const hasStaged = run(`git diff --cached --name-only`).length > 0;
                 if (hasStaged) {
                   run(`git commit --no-edit`);
                 }
+
+                // Continue rebase
+                run(`git rebase --continue`);
+                continue; // retry loop until clean
               }
-              
-              run(`git rebase --continue`);
 
-              
-              run(`git push --force-with-lease origin ${headRef}`);
-
-              console.log('Rebase and push completed successfully.');
-
-            } catch (error) {
-              console.error(' Rebase step failed:', error.message);
+              console.log('❌ Non-submodule conflicts remain. Manual resolution needed.');
               process.exit(1);
             }
+
+            if (attempt >= maxAttempts) {
+              console.error('🚨 Max rebase attempts reached — still unresolved conflicts.');
+              process.exit(1);
+            }
+
+            console.log('🚀 Force-pushing rebased branch...');
+            run(`git push --force-with-lease origin ${headRef}`);
+
+            console.log('✅ Rebase and push completed successfully.');
+
 
       - name: Comment after Rebase
         if: ${{ steps.pr.outputs.mergeable != 'true' && steps.rebase.conclusion == 'success' }}
