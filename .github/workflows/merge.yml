@@ -485,14 +485,12 @@ jobs:
             const rebaseOutput = run(`git rebase origin/${baseRef}`);
             if (rebaseOutput.includes('is up to date') || rebaseOutput.includes('Fast-forwarded')) {
               console.log(' Rebase already up to date.');
-              break;
             }
 
             // Detect conflicted files
             const conflicted = run(`git diff --name-only --diff-filter=U`).split('\n').filter(Boolean);
             if (conflicted.length === 0) {
               console.log(' No conflicts detected.');
-              break;
             }
             console.log(` Conflicts detected in: ${conflicted.join(', ')}`);
 
