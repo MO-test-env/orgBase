@@ -451,7 +451,7 @@ jobs:
         if: ${{ steps.pr.outputs.mergeable != 'true' && steps.squash.conclusion == 'success' }}
         uses: actions/github-script@v7
         env:
-          GIT_MODULES: ${{ steps.pr.outputs.git_modules }}
+          GIT_MODULES:  ${{ steps.diff-submodules.outputs.updated_git_modules }}
         with:
           script: |
             const { execSync } = require('child_process');
@@ -469,7 +469,7 @@ jobs:
 
             const baseRef = '${{ steps.pr.outputs.base_ref }}';
             const headRef = '${{ steps.pr.outputs.head_ref }}';
-            const gitModules = process.env.GIT_MODULES;
+            const gitModules = JSON.parse(process.env.GIT_MODULES);
             console.log();
             console.log(gitModules);
             const submodules = gitModules ? Object.values(JSON.parse(gitModules)).map(m => m.path.trim().replace(/\/$/, '')) : [];
