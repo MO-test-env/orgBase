@@ -502,6 +502,12 @@ jobs:
 
               const normalize = path => path.trim().replace(/\/$/, ''); // Trim whitespace and trailing slashes
               const normalizedConflicted = conflicted.map(normalize);
+              console.log("\n Conflicted");
+              console.log(conflicted);
+              console.log("\n Normalized:")
+              console.log(normalizedConflicted);
+              console.log("\n SUBMODs");
+              console.log(submodules)
               const normalizedSubmodules = submodules.map(normalize);
 
               const conflictedSubmodules = normalizedConflicted.filter(path => normalizedSubmodules.includes(path));
