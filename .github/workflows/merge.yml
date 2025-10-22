@@ -426,7 +426,7 @@ jobs:
 
             try {
               const baseRef = '${{ steps.pr.outputs.base_ref }}';
-              const prTitle = '${{ steps.pr.outputs.pr_title }}';
+              const prTitle = '${{ steps.pr.outputs.title }}';
               const headRef = '${{ steps.pr.outputs.head_ref }}';
 
               run(`git fetch origin ${baseRef}:refs/remotes/origin/${baseRef}`);
@@ -832,34 +832,6 @@ jobs:
               console.log('✅ All submodules already up-to-date.');
             }
 
-      - name: Comment after Bump
-        if: ${{ steps.bump.conclusion == 'success' }}
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const commentId = process.env.COMMENT_ID;
-            const { data: comment } = await github.rest.issues.getComment({
-              owner: process.env.OWNER,
-              repo: process.env.REPO,
-              comment_id: commentId,
-            });
-            let appendMsg = "\n - Submodules bumped \n\n";
-            const mergeable = "${{ steps.pr.outputs.mergeable }}" === "true";
-            if (mergeable) {
-              appendMsg = appendMsg + "**_(Step 4/5)_** Skipping squash and rebase. (No conflicts detected)\n\n**_(Step 5/5)_** Starting to merge base."
-            }
-            else {
-              appendMsg = appendMsg + "**_(Step 4/5)_** Starting to auto-resolve submodule conflicts with squash and rebase."
-            }
-            const newBody = comment.body + appendMsg;
-            await github.rest.issues.updateComment({
-              owner: process.env.OWNER,
-              repo: process.env.REPO,
-              comment_id: commentId,
-              body: newBody,
-            });
-      
       - name: Check base mergeability again for race conditions
         id: pr-2
         uses: actions/github-script@v7
@@ -874,8 +846,38 @@ jobs:
             
             core.setOutput("mergeable", pr.data.mergeable);
             core.setOutput("mergeable_state", pr.data.mergeable_state);
+
+      - name: Comment after Bump
+        if: ${{ steps.bump.conclusion == 'success' }}
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const commentId = process.env.COMMENT_ID;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
+              comment_id: commentId,
+            });
+            let appendMsg = "\n - Submodules bumped \n\n";
+            const mergeable = "${{ steps.pr-2.outputs.mergeable }}" === "true";
+            if (mergeable) {
+              appendMsg = appendMsg + "**_(Step 4/5)_** Skipping final squash and rebase. (No conflicts detected)\n\n**_(Step 5/5)_** Starting to merge base."
+            }
+            else {
+              appendMsg = appendMsg + "**_(Step 4/5)_** Starting extra auto-resolve submodule conflicts with squash and rebase."
+            }
+            const newBody = comment.body + appendMsg;
+            await github.rest.issues.updateComment({
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
+              comment_id: commentId,
+              body: newBody,
+            });
       
-      
+
+
+      # this should never have to run because the logic has been moved up, but if there are race conditions we would like to know before merge fails 
       - name: Squash all PR commits 
         if: ${{ steps.pr-2.outputs.mergeable != 'true' }}
         id: final-squash
@@ -890,7 +892,7 @@ jobs:
 
             try {
               const baseRef = '${{ steps.pr.outputs.base_ref }}';
-              const prTitle = '${{ steps.pr.outputs.pr_title }}';
+              const prTitle = '${{ steps.pr.outputs.title }}';
               const headRef = '${{ steps.pr.outputs.head_ref }}';
 
               run(`git fetch origin ${baseRef}:refs/remotes/origin/${baseRef}`);
@@ -898,7 +900,7 @@ jobs:
               const base = run(`git merge-base HEAD origin/${baseRef}`);
 
               const msgs = run(`git log --reverse --pretty=format:"%s%n%b" ${base}..HEAD`);
-              const subject = `${prTitle} - Squash`;
+              const subject = `${prTitle} `;
               const body = msgs;
 
               // put all changes since common commit into working tree and commmit them 
@@ -968,8 +970,6 @@ jobs:
 
             run(`git push --force-with-lease origin ${headRef}`);
             console.log(' Rebase and push completed successfully.');
-
-      
 
       # MERGE BASE
       - name: Merge base PR
