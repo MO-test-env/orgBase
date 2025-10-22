@@ -512,10 +512,8 @@ jobs:
               return; 
             }
 
-            // run(`git push --force-with-lease origin ${headRef}`);
-
+            run(`git push --force-with-lease origin ${headRef}`);
             console.log(' Rebase and push completed successfully.');
-
 
       
       - name: Comment after Rebase
@@ -524,7 +522,6 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            core.setFailed("another one");
             const commentId = process.env.COMMENT_ID;
             const { data: comment } = await github.rest.issues.getComment({
               owner: process.env.OWNER,
