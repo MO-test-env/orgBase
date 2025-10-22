@@ -498,11 +498,13 @@ jobs:
                 console.log(' No conflicts detected.');
                 break;
               }
+              console.log(` Conflicts detected in: ${conflicted.join(', ')}`);
 
-              console.warn(` Conflicts detected in: ${conflicted.join(', ')}`);
+              const normalize = path => path.trim().replace(/\/$/, ''); // Trim whitespace and trailing slashes
+              const normalizedConflicted = conflicted.map(normalize);
+              const normalizedSubmodules = submodules.map(normalize);
 
-              // Resolve submodule conflicts automatically
-              const conflictedSubmodules = conflicted.filter(path => submodules.includes(path));
+              const conflictedSubmodules = normalizedConflicted.filter(path => normalizedSubmodules.includes(path));
               if (conflictedSubmodules.length > 0) {
                 console.log(`🔧 Resolving submodule conflicts: ${conflictedSubmodules.join(', ')}`);
                 conflictedSubmodules.forEach(sub => run(`git add "${sub}"`));
