@@ -470,54 +470,44 @@ jobs:
             const baseRef = '${{ steps.pr.outputs.base_ref }}';
             const headRef = '${{ steps.pr.outputs.head_ref }}';
             const gitModules = process.env.GIT_MODULES;
+            console.log();
+            console.log(gitModules);
             const submodules = gitModules ? Object.values(JSON.parse(gitModules)).map(m => m.path.trim().replace(/\/$/, '')) : [];
+
+            console.log();
+            console.log(submodules);
 
             run(`git checkout ${headRef}`);
             run(`git fetch origin ${baseRef}`);
 
             console.log(`⏳ Starting iterative rebase onto origin/${baseRef} ...`);
 
-            let attempt = 0;
-            const maxAttempts = 3;
-
-            while (attempt < maxAttempts) {
-              attempt++;
-              console.log(`\n Rebase attempt #${attempt}`); 
-              //break early if I cant easily resolve the submodule conflicts
-
-              const rebaseOutput = run(`git rebase origin/${baseRef}`);
-              if (rebaseOutput.includes('is up to date') || rebaseOutput.includes('Fast-forwarded')) {
-                console.log(' Rebase already up to date.');
-                break;
-              }
-
-              // Detect conflicted files
-              const conflicted = run(`git diff --name-only --diff-filter=U`).split('\n').filter(Boolean);
-              if (conflicted.length === 0) {
-                console.log(' No conflicts detected.');
-                break;
-              }
-              console.log(` Conflicts detected in: ${conflicted.join(', ')}`);
-
-              console.log("\n Conflicted");
-              console.log(conflicted);
-              console.log("\n SUBMODs");
-              console.log(submodules)
-
-              const conflictedSubmodules = conflicted.filter(path => submodules.includes(path));
-              submodules.forEach(sub => run(`git add "${sub}"`));
-              run(`git commit --no-edit`);
-              run(`git rebase --continue`);
-              continue; // retry loop until clean
-
-              console.log(' Non-submodule conflicts remain. Manual resolution needed.');
-              process.exit(1);
+            const rebaseOutput = run(`git rebase origin/${baseRef}`);
+            if (rebaseOutput.includes('is up to date') || rebaseOutput.includes('Fast-forwarded')) {
+              console.log(' Rebase already up to date.');
+              break;
             }
 
-            if (attempt >= maxAttempts) {
-              console.error(' Max rebase attempts reached — still unresolved conflicts.');
-              process.exit(1);
+            // Detect conflicted files
+            const conflicted = run(`git diff --name-only --diff-filter=U`).split('\n').filter(Boolean);
+            if (conflicted.length === 0) {
+              console.log(' No conflicts detected.');
+              break;
             }
+            console.log(` Conflicts detected in: ${conflicted.join(', ')}`);
+
+            console.log("\n Conflicted");
+            console.log(conflicted);
+            console.log("\n SUBMODs");
+            console.log(submodules)
+
+            const conflictedSubmodules = conflicted.filter(path => submodules.includes(path));
+            submodules.forEach(sub => run(`git add "${sub}"`));
+            run(`git commit --no-edit`);
+            run(`git rebase --continue`);
+            
+            console.log(' Non-submodule conflicts remain. Manual resolution needed.');
+            process.exit(1);
 
             // run(`git push --force-with-lease origin ${headRef}`);
 
