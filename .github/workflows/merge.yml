@@ -470,17 +470,12 @@ jobs:
             const baseRef = '${{ steps.pr.outputs.base_ref }}';
             const headRef = '${{ steps.pr.outputs.head_ref }}';
             const gitModules = JSON.parse(process.env.GIT_MODULES);
-            console.log();
-            console.log(gitModules);
             const submodules = gitModules ? Object.values(gitModules).map(m => m.path.trim().replace(/\/$/, '')) : [];
-
-            console.log();
-            console.log(submodules);
 
             run(`git checkout ${headRef}`);
             run(`git fetch origin ${baseRef}`);
 
-            console.log(`⏳ Starting iterative rebase onto origin/${baseRef} ...`);
+            console.log(` Starting rebase onto origin/${baseRef} ...`);
 
             const rebaseOutput = run(`git rebase origin/${baseRef}`);
             if (rebaseOutput.includes('is up to date') || rebaseOutput.includes('Fast-forwarded')) {
@@ -493,11 +488,6 @@ jobs:
               console.log(' No conflicts detected.');
             }
             console.log(` Conflicts detected in: ${conflicted.join(', ')}`);
-
-            console.log("\n Conflicted");
-            console.log(conflicted);
-            console.log("\n SUBMODs");
-            console.log(submodules)
 
             const conflictedSubmodules = conflicted.filter(path => submodules.includes(path));
             submodules.forEach(sub => run(`git add "${sub}"`));
@@ -515,28 +505,6 @@ jobs:
             run(`git push --force-with-lease origin ${headRef}`);
             console.log(' Rebase and push completed successfully.');
 
-      
-      - name: Comment after Rebase
-        if: ${{ steps.pr.outputs.mergeable != 'true' && steps.rebase.conclusion == 'success' }}
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const commentId = process.env.COMMENT_ID;
-            const { data: comment } = await github.rest.issues.getComment({
-              owner: process.env.OWNER,
-              repo: process.env.REPO,
-              comment_id: commentId,
-            });
-            const appendMsg = "\n - Rebase pushed successfully. \n\n**_(Step 5/5)_** Starting to merge base.";
-            const newBody = comment.body + appendMsg;
-            await github.rest.issues.updateComment({
-              owner: process.env.OWNER,
-              repo: process.env.REPO,
-              comment_id: commentId,
-              body: newBody,
-            });
-
       - name: Comment on submodule precheck
         if: ${{ steps.pr.outputs.merged == 'false' }}
         uses: actions/github-script@v7
@@ -551,7 +519,13 @@ jobs:
               repo: process.env.REPO,
               comment_id: commentId,
             });
-            let appendMsg = "\n - Base PR has enough approvals and no notable merge conflicts.\n";
+            let appendMsg = "\n - Base PR has enough approvals.";
+            if (`${{ steps.rebase.conclusion == 'success' }}`)
+            {
+              appendMsg = appendMsg + "\n - Commits squashed\n - Rebase pushed successfully resolving submodule conflicts. ";
+            } else {
+              appendMsg = appendMsg + "\n - Base has no conflicts. ";
+            } 
             const updatedGitModules = process.env.UPDATED_GIT_MODULES || '{}';
             if ( updatedGitModules != '{}') {
               appendMsg = appendMsg + " - Running submodule pre-check.";
@@ -885,6 +859,117 @@ jobs:
               comment_id: commentId,
               body: newBody,
             });
+      
+      - name: Check base mergeability again for race conditions
+        id: pr-2
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = process.env.PR_NUMBER;
+            const pr = await github.rest.pulls.get({
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
+              pull_number: prNumber,
+            });
+            
+            core.setOutput("mergeable", pr.data.mergeable);
+            core.setOutput("mergeable_state", pr.data.mergeable_state);
+      
+      
+      - name: Squash all PR commits 
+        if: ${{ steps.pr-2.outputs.mergeable != 'true' }}
+        id: final-squash
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const run = (cmd, options = {}) => {
+              console.log(`$ ${cmd}`);
+              return execSync(cmd, { stdio: 'pipe', encoding: 'utf8', ...options }).trim();
+            };
+
+            try {
+              const baseRef = '${{ steps.pr.outputs.base_ref }}';
+              const prTitle = '${{ steps.pr.outputs.pr_title }}';
+              const headRef = '${{ steps.pr.outputs.head_ref }}';
+
+              run(`git fetch origin ${baseRef}:refs/remotes/origin/${baseRef}`);
+              // find common commit 
+              const base = run(`git merge-base HEAD origin/${baseRef}`);
+
+              const msgs = run(`git log --reverse --pretty=format:"%s%n%b" ${base}..HEAD`);
+              const subject = `${prTitle} - Squash`;
+              const body = msgs;
+
+              // put all changes since common commit into working tree and commmit them 
+              run(`git reset --soft ${base}`);
+              run(`git commit -m "${subject}" -m "${body.replace(/"/g, '\\"')}"`);
+
+            } catch (error) {
+              console.error('❌ Squash step failed:', error.message);
+              process.exit(1);
+            }
+
+      - name: Rebase onto base branch & resolve submodule conflicts
+        id: final-rebase
+        if: ${{ steps.pr-2.outputs.mergeable != 'true' && steps.squash.conclusion == 'success' }}
+        uses: actions/github-script@v7
+        env:
+          GIT_MODULES:  ${{ steps.diff-submodules.outputs.updated_git_modules }}
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const run = (cmd, options = {}) => {
+              console.log(`$ ${cmd}`);
+              try {
+                return execSync(cmd, { stdio: 'pipe', encoding: 'utf8', ...options }).trim();
+              }
+              catch (err) {
+                console.warn(`⚠️ Command failed but continuing: ${cmd}`);
+                console.warn(err.stdout || err.message);
+                return ''; // return empty string so the job does not immediately exit when we hit the expected merge conflict 
+              }
+            };
+
+            const baseRef = '${{ steps.pr.outputs.base_ref }}';
+            const headRef = '${{ steps.pr.outputs.head_ref }}';
+            const gitModules = JSON.parse(process.env.GIT_MODULES);
+            const submodules = gitModules ? Object.values(gitModules).map(m => m.path.trim().replace(/\/$/, '')) : [];
+
+            run(`git checkout ${headRef}`);
+            run(`git fetch origin ${baseRef}`);
+
+            console.log(` Starting rebase onto origin/${baseRef} ...`);
+
+            const rebaseOutput = run(`git rebase origin/${baseRef}`);
+            if (rebaseOutput.includes('is up to date') || rebaseOutput.includes('Fast-forwarded')) {
+              console.log(' Rebase already up to date.');
+            }
+
+            // Detect conflicted files
+            const conflicted = run(`git diff --name-only --diff-filter=U`).split('\n').filter(Boolean);
+            if (conflicted.length === 0) {
+              console.log(' No conflicts detected.');
+            }
+            console.log(` Conflicts detected in: ${conflicted.join(', ')}`);
+
+            const conflictedSubmodules = conflicted.filter(path => submodules.includes(path));
+            submodules.forEach(sub => run(`git add "${sub}"`));
+            run(`git commit --no-edit`);
+            run(`git rebase --continue`);
+            
+            // confirm the base is now up to date or exit
+            try {
+              execSync(`git rebase origin/${baseRef}`, { stdio: 'inherit' });
+            }catch (err) {
+              core.setFailed("Base still has conflicts");
+              return; 
+            }
+
+            run(`git push --force-with-lease origin ${headRef}`);
+            console.log(' Rebase and push completed successfully.');
+
+      
 
       # MERGE BASE
       - name: Merge base PR
