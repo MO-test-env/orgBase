@@ -82,9 +82,9 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const org = core.getInput('org');
-            const dryRun = core.getInput('dry_run') === 'true';
-            const branchInput = core.getInput('branch');
+            const org = `${{ github.event.inputs.org }}`;
+            const dryRun = `${{ github.event.inputs.dry_run }}` === 'true';
+            const branchInput = `${{ github.event.inputs.branch }}`;
             const repo = '${{ matrix.repo }}';
 
             core.info(`Processing repository: ${org}/${repo}`);
