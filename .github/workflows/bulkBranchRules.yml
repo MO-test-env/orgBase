@@ -1,4 +1,4 @@
-name: Bulk Branch Rule Creation (GitHub REST)
+name: Bulk Branch Rule Management (GitHub REST)
 
 on:
   workflow_dispatch:
@@ -12,9 +12,13 @@ on:
         required: false
         default: ''
       branch:
-        description: 'Branch to protect (use "default" to use each repo default branch)'
+        description: 'Branch to inspect or protect (use "default" to use each repo default branch)'
         required: true
         default: 'default'
+      mode:
+        description: 'Mode: "read" to list protections, "apply" to enforce protections'
+        required: true
+        default: 'read'
       dry_run:
         description: 'If "true", show what would be done without making requests'
         required: false
@@ -66,7 +70,7 @@ jobs:
             core.info(`Repos found: ${filtered.length}`);
             core.setOutput('repos_json', JSON.stringify(filtered));
 
-  apply-protection:
+  manage-protection:
     needs: list-repos
     runs-on: ubuntu-latest
     strategy:
@@ -76,18 +80,21 @@ jobs:
       max-parallel: 4
 
     steps:
-      - name: Apply Branch Protection 
-        id: protect
+      - name: Read or Apply Branch Protection 
+        id: manage
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
+            const fs = require('fs');
             const org = `${{ github.event.inputs.org }}`;
+            const mode = `${{ github.event.inputs.mode }}`;
             const dryRun = `${{ github.event.inputs.dry_run }}` === 'true';
             const branchInput = `${{ github.event.inputs.branch }}`;
             const repo = '${{ matrix.repo }}';
+            const outputFile = './branch_protections.json';
 
-            core.info(`Processing repository: ${org}/${repo}`);
+            core.info(`Processing repository: ${org}/${repo} [mode=${mode}]`);
 
             // Get repo metadata
             const { data: repoInfo } = await github.rest.repos.get({
@@ -96,9 +103,39 @@ jobs:
             });
             const defaultBranch = repoInfo.default_branch;
             const branch = branchInput === 'default' ? defaultBranch : branchInput;
-
             core.info(`Target branch: ${branch}`);
 
+            // READ MODE — list existing protection
+            if (mode === 'read') {
+              try {
+                const { data: protection } = await github.rest.repos.getBranchProtection({
+                  owner: org,
+                  repo,
+                  branch,
+                });
+                core.startGroup(`🔒 Existing protection for ${org}/${repo}@${branch}`);
+                core.info(JSON.stringify(protection, null, 2));
+                core.endGroup();
+
+                // Save protection data to local file
+                let existing = [];
+                if (fs.existsSync(outputFile)) {
+                  existing = JSON.parse(fs.readFileSync(outputFile, 'utf8'));
+                }
+                existing.push({ repo, branch, protection });
+                fs.writeFileSync(outputFile, JSON.stringify(existing, null, 2));
+              } catch (error) {
+                if (error.status === 404) {
+                  core.warning(`⚠️ No branch protection for ${org}/${repo}@${branch}`);
+                } else {
+                  core.error(`Error reading protection for ${org}/${repo}@${branch}`);
+                  core.error(error);
+                }
+              }
+              return; // Skip apply mode
+            }
+
+            // APPLY MODE — create or update protection
             const protection = {
               required_status_checks: {
                 strict: true,
@@ -121,7 +158,6 @@ jobs:
               return;
             }
 
-            // Apply or update branch protection
             try {
               await github.rest.repos.updateBranchProtection({
                 owner: org,
@@ -136,7 +172,13 @@ jobs:
               throw error;
             }
 
+      - name: Upload protection data (only in read mode)
+        if: ${{ github.event.inputs.mode == 'read' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: branch-protection-data
+          path: ./branch_protections.json
+
       - name: Done (log)
         if: always()
-        run: |
-          echo "Finished processing ${{ matrix.repo }}"
+        run: echo "Finished processing ${{ matrix.repo }}"
