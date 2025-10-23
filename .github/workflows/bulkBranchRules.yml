@@ -42,8 +42,8 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const org = core.getInput('org');
-            const repoFilter = core.getInput('repo_filter');
+            const org = `${{ github.event.inputs.org }}`;
+            const repoFilter = `${{ github.event.inputs.repo_filter }}`;
             const repos = [];
             let page = 1;
             const per_page = 100;
