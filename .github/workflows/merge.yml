@@ -261,14 +261,9 @@ jobs:
                 continue;
               }
               
-              const path = submodules[name].path;
-              const url = submodules[name].url;
-              const configuredBranch = submodules[name].configuredBranch; // OK if undefined
-              
               // Extract repo name from URL for later API calls
               let repoName;
-              let newUrl;
-              
+
               // Handle different URL formats
               if (url.startsWith('https://github.com/')) {
                 // HTTPS URL format: https://github.com/org/repo.git
@@ -281,6 +276,7 @@ jobs:
                 }
               } else if (url.match(/^git@github\.com:/)) {
                 // SSH URL format: git@github.com:org/repo.git
+                core.info('ssh');
                 const parts = url.replace('git@github.com:', '').replace('.git', '').split('/');
                 if (parts.length >= 2) {
                   orgName = parts[0];
