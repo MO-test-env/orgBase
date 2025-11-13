@@ -274,7 +274,7 @@ jobs:
                 } else {
                   repoName = parts[0];
                 }
-              } else if (url.match(/^git@github\.com:/)) {
+              } else if (url.startsWith('git@github.com:')) {
                 // SSH URL format: git@github.com:org/repo.git
                 core.info('ssh');
                 const parts = url.replace('git@github.com:', '').replace('.git', '').split('/');
