@@ -158,9 +158,38 @@ jobs:
               const configuredBranch = submodules[name].configuredBranch; // This might be undefined
               
               // Extract repo name from URL
-              const repoName = url.replace('../', '').replace('.git', '');
-              const newUrl = `https://github.com/${owner}/${repoName}.git`;
-              
+              let repoName;
+
+              // Handle different URL formats
+              if (url.startsWith('https://github.com/')) {
+                // HTTPS URL format: https://github.com/org/repo.git
+                const parts = url.replace('https://github.com/', '').replace('.git', '').split('/');
+                if (parts.length >= 2) {
+                  orgName = parts[0];
+                  repoName = parts[1];
+                } else {
+                  repoName = parts[0];
+                }
+              } else if (url.startsWith('git@github.com:')) {
+                // SSH URL format: git@github.com:org/repo.git
+                core.info('ssh');
+                const parts = url.replace('git@github.com:', '').replace('.git', '').split('/');
+                if (parts.length >= 2) {
+                  orgName = parts[0];
+                  repoName = parts[1];
+                } else {
+                  repoName = parts[0];
+                }
+              } else if (url.startsWith('../')) {
+                // Relative URL format: ../repo.git
+                repoName = url.replace('../', '').replace('.git', '');
+                url = `https://github.com/${owner}/${repoName}.git`;
+              } else {
+                // Handle any other format
+                const parts = url.split(/[\/:]/).filter(Boolean);
+                repoName = parts[parts.length - 1].replace('.git', '');
+              }
+                
               core.info(`Processing submodule: ${name} with path ${path}, url ${url}, repoName ${repoName}`);
               if (configuredBranch) {
                 core.info(`Found configured branch in .gitmodules: ${configuredBranch}`);
