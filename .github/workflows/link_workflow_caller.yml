@@ -1,0 +1,28 @@
+name: Call dashboard workflow (on /link comment)
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: write
+
+concurrency:
+  group: ${{ github.event.comment.id }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch-submod-linker:
+    if: |
+      github.event.issue.pull_request != null &&
+      github.event.comment.body == '/link'
+    uses: MO-test-env/orgBase/.github/workflows/link.yml@main
+    with:
+      owner: ${{ github.repository_owner }}
+      repo: ${{ github.event.repository.name }}
+      pr_number: ${{ github.event.issue.number }}
+      comment_id: ${{ github.event.comment.id }}
+    secrets:
+      token: ${{ secrets.WORKFLOWS }}

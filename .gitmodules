@@ -4,5 +4,8 @@
 	branch = main
 [submodule "submod2"]
 	path = submod2
-	url = ../orgSubmod2.git
+	url = git@github.com:MO-test-env/orgSubmod2.git
 	branch = main
+[submodule "submod3"]
+	path = submod3
+	url = https://github.com/MO-test-env/orgSubmod2.git

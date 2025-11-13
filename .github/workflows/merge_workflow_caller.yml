@@ -1,0 +1,30 @@
+name: Call merge workflow (on /merge comment)
+
+on:
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: write
+
+concurrency:
+  group: ${{ github.event.comment.id }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch-merge:
+    if: |
+      github.event.issue.pull_request != null &&
+      github.event.issue.state == 'open' &&
+      github.event.comment.body == '/merge'
+    uses: MO-test-env/orgBase/.github/workflows/merge.yml@main
+    with:
+      username: ${{ github.actor }}
+      owner: ${{ github.repository_owner }}
+      repo: ${{ github.event.repository.name }}
+      pr_number: ${{ github.event.issue.number }}
+      comment_id: ${{ github.event.comment.id }}
+    secrets:
+      token: ${{ secrets.WORKFLOWS }}

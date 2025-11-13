@@ -105,7 +105,7 @@ jobs:
             if (changed) {
               console.log('Committing updated submodules...');
               execSync('git config user.name "github-actions[bot]"');
-              execSync('git config user.email "github-actions[bot]@users.noreply.dell.com"');
+              execSync('git config user.email "github-actions[bot]@users.noreply.github.com"');
               execSync(`git commit -m "Bump submodules to latest default branch"`);
               execSync(`git push origin ${process.env.GITHUB_REF_NAME}`);
             } else {

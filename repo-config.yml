@@ -1,0 +1,14 @@
+# This is the list of repositories to be used when running the apply-branch-protections workflow. 
+#
+# Each repo that does not specifically set branches to protect or lock will assume protections are only needed for main and master. 
+# API calls are used to dynamically determine which is default and which should be locked. 
+
+repositories:
+  - orgBase:
+    default:
+      - main
+      - feature/marissa
+    locked:
+      - master
+  - orgSubmod:
+  - orgSubmod2:
