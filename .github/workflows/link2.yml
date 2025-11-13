@@ -234,7 +234,7 @@ jobs:
                 };
                 
               } catch (error) {
-                core.warning(`Error processing submodule ${name} (${repoName}): ${error.message}`);
+                core.setFailed(`Error processing submodule ${name} (${repoName}): ${error.message}`);
                 delete submodules[name];
               }
             }
