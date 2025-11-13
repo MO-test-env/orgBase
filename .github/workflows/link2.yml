@@ -27,7 +27,7 @@ on:
 permissions:
   issues: write
   pull-requests: write
-  contents: read
+  contents: write
 
 env:
   RW_PAT: ${{ secrets.token }}
@@ -39,350 +39,645 @@ env:
 jobs:
   link-submods:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 3
     steps:
-      - name: Initialize and fetch PR data
-        id: init
+      - name: Comment start
         uses: actions/github-script@v7
         with:
-          github-token: ${{ env.RW_PAT }}
           script: |
+            const commentId = process.env.COMMENT_ID;
             const owner = process.env.OWNER;
             const repo = process.env.REPO;
-            const prNumber = process.env.PR_NUMBER;
-            const commentId = process.env.COMMENT_ID;
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
-            
-            // Update comment with start message and fetch PR data in parallel
-            const [_, prData, reviewData] = await Promise.all([
-              github.rest.issues.updateComment({
-                owner, repo, comment_id: commentId,
-                body: `\n# 🔗 Submodule Link Workflow\n[🖥️ View workflow](${runUrl})\n**_(Step 1/2)_** Analyzing submodules...`,
-              }),
-              github.rest.pulls.get({ owner, repo, pull_number: prNumber }),
-              github.rest.pulls.listRequestedReviewers({ owner, repo, pull_number: prNumber })
-            ]);
-            
-            const pr = prData.data;
-            core.setOutput("head_ref", pr.head.ref);
-            core.setOutput("base_ref", pr.base.ref);
-            core.setOutput("head_sha", pr.head.sha);
-            core.setOutput("base_sha", pr.base.sha);
-            core.setOutput("reviewers", JSON.stringify(reviewData.data.users?.map(u => u.login) || []));
-            core.setOutput("team_reviewers", JSON.stringify(reviewData.data.teams?.map(t => t.slug) || []));
-            core.setOutput("assignees", JSON.stringify(pr.assignees?.map(a => a.login) || []));
+            let appendMsg = "\n# 🔗 Submodule Link Workflow\n";
+            appendMsg += `[🖥️ View workflow](${runUrl})\n`;
+            appendMsg += "**_(Step 1/2)_** Fetching PR details and submodule info...";
+            await github.rest.issues.updateComment({
+              owner,
+              repo,
+              comment_id: commentId,
+              body: appendMsg,
+            });
 
-      - name: Analyze submodules and detect PRs
-        id: analyze
+      - name: Get BasePR details
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prNumber = process.env.PR_NUMBER;
+            const pr = await github.rest.pulls.get({
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
+              pull_number: prNumber,
+            });
+            
+            // Get reviewers for the PR
+            const { data: reviewData } = await github.rest.pulls.listRequestedReviewers({
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
+              pull_number: prNumber,
+            });
+            
+            // Get all reviewers (both users and teams)
+            const reviewers = reviewData.users ? reviewData.users.map(user => user.login) : [];
+            const teamReviewers = reviewData.teams ? reviewData.teams.map(team => team.slug) : [];
+            
+            // Get assignees
+            const assignees = pr.data.assignees ? pr.data.assignees.map(assignee => assignee.login) : [];
+            
+            core.setOutput("head_ref", pr.data.head.ref);
+            core.setOutput("base_ref", pr.data.base.ref);
+            core.setOutput("pr_number", pr.data.number);
+            core.setOutput("reviewers", JSON.stringify(reviewers));
+            core.setOutput("team_reviewers", JSON.stringify(teamReviewers));
+            core.setOutput("assignees", JSON.stringify(assignees));
+            
+            core.info(`Reviewers: ${JSON.stringify(reviewers)}`);
+            core.info(`Team Reviewers: ${JSON.stringify(teamReviewers)}`);
+            core.info(`Assignees: ${JSON.stringify(assignees)}`);
+
+      - name: Read gitmodules file
+        id: read-modules-file
         uses: actions/github-script@v7
         env:
-          BASE_REF: ${{ steps.init.outputs.base_ref }}
-          HEAD_REF: ${{ steps.init.outputs.head_ref }}
-          BASE_SHA: ${{ steps.init.outputs.base_sha }}
-          HEAD_SHA: ${{ steps.init.outputs.head_sha }}
+          RW_PAT: ${{ env.RW_PAT }}
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
+            const fs = require('fs');
+            const path = require('path');
             const owner = process.env.OWNER;
-            const repo = process.env.REPO;
             const baseRef = process.env.BASE_REF;
-            const headRef = process.env.HEAD_REF;
-            const baseSha = process.env.BASE_SHA;
-            const headSha = process.env.HEAD_SHA;
             
-            // Fetch .gitmodules, repo info, and comparison in parallel
-            const [gitmodulesResponse, repoData, comparison] = await Promise.all([
-              github.rest.repos.getContent({ owner, repo, path: '.gitmodules', ref: headRef }).catch(() => null),
-              github.rest.repos.get({ owner, repo }),
-              github.rest.repos.compareCommitsWithBasehead({ owner, repo, basehead: `${baseSha}...${headSha}` })
-            ]);
+            const gitmodulesContent = fs.readFileSync('.gitmodules', 'utf8');
+            const gitmodulesLines = gitmodulesContent.split('\n');
             
-            if (!gitmodulesResponse) {
-              core.setFailed('No .gitmodules file found');
-              return;
-            }
-            
-            // Parse .gitmodules
-            const gitmodulesContent = Buffer.from(gitmodulesResponse.data.content, 'base64').toString('utf8');
-            const lines = gitmodulesContent.split('\n');
             const submodules = {};
-            let current = null;
+            let currentSubmodule = null;
             
-            for (const line of lines) {
-              const subMatch = line.match(/\[submodule "(.*)"\]/);
-              const pathMatch = line.match(/\s*path\s*=\s*(.*)/);
-              const urlMatch = line.match(/\s*url\s*=\s*(.*)/);
-              const branchMatch = line.match(/\s*branch\s*=\s*(.*)/);
+            // Process the .gitmodules file line by line to extract all information
+            gitmodulesLines.forEach(line => {
+              const submoduleMatch = line.match(/\[submodule "(.*)"\]/);
+              const pathMatch = line.match(/\s*path = (.*)/);
+              const urlMatch = line.match(/\s*url = (.*)/);
+              const branchMatch = line.match(/\s*branch = (.*)/);
               
-              if (subMatch) {
-                current = subMatch[1];
-                submodules[current] = {};
-              } else if (current) {
-                if (pathMatch) submodules[current].path = pathMatch[1].trim();
-                else if (urlMatch) submodules[current].url = urlMatch[1].trim();
-                else if (branchMatch) submodules[current].configuredBranch = branchMatch[1].trim();
+              if (submoduleMatch) {
+                currentSubmodule = submoduleMatch[1];
+                submodules[currentSubmodule] = {};
+              } else if (currentSubmodule && pathMatch) {
+                submodules[currentSubmodule].path = pathMatch[1].trim();
+              } else if (currentSubmodule && urlMatch) {
+                submodules[currentSubmodule].url = urlMatch[1].trim();
+              } else if (currentSubmodule && branchMatch) {
+                // Store the branch from .gitmodules if it exists
+                submodules[currentSubmodule].configuredBranch = branchMatch[1].trim();
+                core.info(`Found configured branch in .gitmodules: ${branchMatch[1].trim()} for submodule ${currentSubmodule}`);
               }
-            }
+            });
             
-            // Extract changed submodules from comparison
-            const changedSubmodules = {};
-            for (const file of comparison.data.files || []) {
-              if (file.filename in Object.values(submodules).map(s => s.path)) {
-                // Extract SHA from patch
-                const shaMatch = file.patch?.match(/\+Subproject commit ([0-9a-f]{40})/);
-                if (shaMatch) {
-                  changedSubmodules[file.filename] = shaMatch[1];
-                }
-              }
-            }
-            
-            // Parse repo names and determine base branches
-            const isDefaultBranch = baseRef === repoData.data.default_branch;
-            const repoCache = new Map();
-            const submodulesList = [];
-            
-            for (const [name, sub] of Object.entries(submodules)) {
-              if (!sub.path || !sub.url || !changedSubmodules[sub.path]) {
-                continue; // Skip unchanged or incomplete submodules
+            // Process each submodule to set up the complete information
+            for (const name in submodules) {
+              if (!submodules[name].path || !submodules[name].url) {
+                core.warning(`Incomplete submodule information for ${name}, skipping`);
+                delete submodules[name];
+                continue;
               }
               
-              // Parse repo name from URL
+              const path = submodules[name].path;
+              let url = submodules[name].url;
+              const configuredBranch = submodules[name].configuredBranch; // This might be undefined
+              
+              // Extract repo name from URL
               let repoName;
-              if (sub.url.startsWith('https://github.com/')) {
-                repoName = sub.url.replace('https://github.com/', '').replace('.git', '').split('/')[1] || sub.url.split('/').pop().replace('.git', '');
-              } else if (sub.url.startsWith('git@github.com:')) {
-                repoName = sub.url.replace('git@github.com:', '').replace('.git', '').split('/')[1] || sub.url.split('/').pop().replace('.git', '');
-              } else if (sub.url.startsWith('../')) {
-                repoName = sub.url.replace('../', '').replace('.git', '');
-              } else {
-                repoName = sub.url.split(/[\/:]/).filter(Boolean).pop().replace('.git', '');
-              }
-              
-              // Get submodule repo info (cached)
-              if (!repoCache.has(repoName)) {
-                try {
-                  const subRepoData = await github.rest.repos.get({ owner, repo: repoName });
-                  repoCache.set(repoName, subRepoData.data);
-                } catch (error) {
-                  core.warning(`Cannot access repo ${repoName}: ${error.message}`);
-                  continue;
-                }
-              }
-              
-              const subRepo = repoCache.get(repoName);
-              const baseBranch = isDefaultBranch ? subRepo.default_branch : baseRef;
-              const sha = changedSubmodules[sub.path];
-              
-              // Find PR for this submodule
-              let prInfo = null;
-              let prBranch = null;
-              
-              try {
-                // Try to find PR by commit SHA
-                const prsWithCommit = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                  owner, repo: repoName, commit_sha: sha
-                });
-                
-                prInfo = prsWithCommit.data.find(pr => pr.base.ref === baseBranch);
-                
-                // If PR found, use its head branch
-                if (prInfo) {
-                  prBranch = prInfo.head.ref;
+
+              // Handle different URL formats
+              if (url.startsWith('https://github.com/')) {
+                // HTTPS URL format: https://github.com/org/repo.git
+                const parts = url.replace('https://github.com/', '').replace('.git', '').split('/');
+                if (parts.length >= 2) {
+                  orgName = parts[0];
+                  repoName = parts[1];
                 } else {
-                  // Try to find branch containing this SHA via refs API
-                  try {
-                    const branches = await github.rest.repos.listBranches({ owner, repo: repoName, per_page: 100 });
-                    for (const branch of branches.data) {
-                      if (branch.commit.sha === sha) {
-                        prBranch = branch.name;
-                        break;
-                      }
-                    }
-                  } catch (e) {
-                    core.warning(`Could not determine branch for ${repoName} SHA ${sha}`);
+                  repoName = parts[0];
+                }
+              } else if (url.startsWith('git@github.com:')) {
+                // SSH URL format: git@github.com:org/repo.git
+                core.info('ssh');
+                const parts = url.replace('git@github.com:', '').replace('.git', '').split('/');
+                if (parts.length >= 2) {
+                  orgName = parts[0];
+                  repoName = parts[1];
+                } else {
+                  repoName = parts[0];
+                }
+              } else if (url.startsWith('../')) {
+                // Relative URL format: ../repo.git
+                repoName = url.replace('../', '').replace('.git', '');
+                url = `https://github.com/${owner}/${repoName}.git`;
+              } else {
+                // Handle any other format
+                const parts = url.split(/[\/:]/).filter(Boolean);
+                repoName = parts[parts.length - 1].replace('.git', '');
+              }
+
+              core.info(`Processing submodule: ${name} with path ${path}, url ${url}, repoName ${repoName}`);
+              if (configuredBranch) {
+                core.info(`Found configured branch in .gitmodules: ${configuredBranch}`);
+              }
+              
+              // Check if base_ref of base PR is default branch
+              let isDefaultBranch = false;
+              // Get the default branch for the repository
+              const { data: repo } = await github.rest.repos.get({
+                owner: process.env.OWNER,
+                repo: process.env.REPO
+              });
+              
+              const defaultBranch = repo.default_branch;
+              isDefaultBranch = (baseRef === defaultBranch);
+              core.info(`Base ref: ${baseRef}, Default branch: ${defaultBranch}, Is default: ${isDefaultBranch}`);
+              
+              // Get the default branch for the submodule
+              const { data: subRepo } = await github.rest.repos.get({
+                owner: process.env.OWNER,
+                repo: repoName
+              });
+              
+              const subDefaultBranch = subRepo.default_branch;
+              
+              // Branch selection logic: If PR is base_ref is default branch, use the default branch of the submodule, otherwise use the same branch name as base_ref
+              let branch;
+              if (isDefaultBranch) {
+                branch = subDefaultBranch;
+                core.info(`Using default branch '${branch}' for submodule ${name}`);
+              } else {
+                branch = baseRef;
+                core.info(`Using base_ref '${branch}' for submodule ${name}`);
+              }
+              
+              submodules[name] = {
+                path,
+                url,
+                baseBranch: branch,
+                configuredBranch,
+                subDefaultBranch,
+                repoName: repoName,
+              };
+            }
+            
+            if (Object.keys(submodules).length === 0) {
+              core.info("No submodules found in .gitmodules file.");
+            }
+            
+            const json = JSON.stringify(submodules, null, 2);
+            core.info("Submodules JSON:");
+            core.info(json);
+            core.setOutput('git_modules', json);
+      
+      - name: Update submodules with SHA and PR branch
+        id: diff-submodules
+        uses: actions/github-script@v7
+        env:
+          GIT_MODULES: ${{ steps.read-modules-file.outputs.git_modules }}
+          PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
+          BASE_BRANCH: ${{ steps.pr.outputs.base_ref }}
+        with:
+          script: |
+            const gitModules = JSON.parse(process.env.GIT_MODULES);
+            const updatedModules = {};
+            const errors = [];
+
+            // Get the list of changed files in the PR
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
+              pull_number: process.env.PR_NUMBER,
+              per_page: 100
+            });
+
+            // Process each submodule
+            for (const [submodule, submoduleData] of Object.entries(gitModules)) {
+              try {
+                // Get the submodule's content from the PR branch
+                const { data: prContent } = await github.rest.repos.getContent({
+                  owner: process.env.OWNER,
+                  repo: process.env.REPO,
+                  path: submoduleData.path,
+                  ref: process.env.PR_BRANCH
+                });
+
+                if (prContent && prContent.type === 'submodule') {
+                  const sha = prContent.sha;
+                  
+                  // Find branches that contain this commit
+                  const { data: branches } = await github.rest.repos.listBranchesForHeadCommit({
+                    owner: process.env.OWNER,
+                    repo: submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git', ''),
+                    commit_sha: sha
+                  });
+
+                  const normalizedBranches = branches
+                    .map(branch => branch.name)
+                    .filter(branch => branch !== 'HEAD' && !branch.startsWith('origin/'));
+
+                  if (normalizedBranches.length === 0) {
+                    core.warning(`No branches found for submodule ${submodule} with SHA ${sha}`);
+                    continue;
                   }
+
+                  if (normalizedBranches.length > 1) {
+                    errors.push(`Submodule ${submodule} with SHA ${sha} is present on multiple branches: ${normalizedBranches.join(', ')}`);
+                    continue;
+                  }
+
+                  core.info(`Updating submodule ${submodule}: SHA=${sha}, Branch=${normalizedBranches[0]}`);
+                  updatedModules[submodule] = {
+                    ...submoduleData,
+                    sha,
+                    prBranch: normalizedBranches[0]
+                  };
                 }
               } catch (error) {
-                core.warning(`Error finding PR for ${repoName}: ${error.message}`);
+                core.warning(`Error processing submodule ${submodule}: ${error.message}`);
+                continue;
+              }
+            }
+
+            // Handle any errors
+            if (errors.length > 0) {
+              const errorMsg = errors.join('\n');
+              core.setFailed('The following errors occurred while processing submodules:\n' + errorMsg);
+              core.setOutput('failMsg', errorMsg);
+              return;
+            }
+
+            const updatedGitModulesJSON = JSON.stringify(updatedModules, null, 2);
+            core.info("Updated git_modules JSON:");
+            core.info(updatedGitModulesJSON);
+
+            core.setOutput('updated_git_modules', updatedGitModulesJSON);
+
+      - name: Detect submod PR numbers and Pre-check all Submodules
+        id: pre-check-submod
+        uses: actions/github-script@v7
+        env:
+          SUBMODULES_JSON: ${{ steps.diff-submodules.outputs.updated_git_modules }}
+          PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
+          BASE_BRANCH: ${{ steps.pr.outputs.base_ref }}
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const submods = JSON.parse(process.env.SUBMODULES_JSON);
+            const submodules = {};
+            const prBranchName = process.env.PR_BRANCH;
+            const baseBranchName = process.env.BASE_BRANCH;
+            
+            for (const [name, sub] of Object.entries(submods)) {
+              let prBranch = (sub.prBranch || '').replace(/^origin\//, '');
+              
+              if (prBranch === sub.baseBranch) {
+                submodules[name] = {
+                  ...sub,
+                  pr_number: '0',
+                  prLink: null,
+                  isBranchExist: true,
+                  isPRCreated: false,
+                  approvals: null,
+                  merged: true,
+                  mergeable_state: 'clean',
+                  sha: sub.sha,
+                };
+                continue;
               }
               
-              // Build submodule info
-              const submoduleInfo = {
-                name,
-                path: sub.path,
-                repoName,
-                baseBranch,
-                sha,
-                prBranch: prBranch || baseBranch,
-                isPRCreated: !!prInfo,
-                merged: prInfo?.merged || (prBranch === baseBranch),
-                pr_number: prInfo?.number || 0,
-                prLink: prInfo?.html_url || null,
-                prState: prInfo ? (prInfo.merged_at ? 'merged' : prInfo.state) : null,
-                mergeable_state: prInfo?.mergeable_state || 'unknown',
-                approvals: 0,
-                changeRequests: 0
+              // Start with base submodule info
+              submodules[name] = {
+                ...sub,
+                directory: sub.repoName,
+                branchName: prBranchName,
+                isBranchExist: true,
+                isPRCreated: false,
+                merged: false
               };
               
-              // Get review info if PR exists
-              if (prInfo && !prInfo.merged) {
-                try {
-                  const reviews = await github.rest.pulls.listReviews({
-                    owner, repo: repoName, pull_number: prInfo.number
+              try {
+                // Try to find PR by commit SHA first (most accurate)
+                const prsWithCommit = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner: process.env.OWNER,
+                  repo: sub.repoName,
+                  commit_sha: sub.sha
+                });
+
+                let relevantPr = prsWithCommit.data.find(pr => pr.base.ref === sub.baseBranch);
+
+                // If no PR found but we know the branch name, check if the SHA is in that branch's history
+                if (!relevantPr && prBranch) {
+                  // Use the branch-based approach as fallback
+                  let branchPrs = await github.rest.pulls.list({
+                    owner: process.env.OWNER,
+                    repo: sub.repoName,
+                    head: `${process.env.OWNER}:${prBranch}`,
+                    base: sub.baseBranch,
+                    state: 'all',
+                    sort: 'updated', 
+                    direction: 'desc',
+                    per_page: 4,
                   });
                   
-                  const latestByUser = {};
-                  for (const review of reviews.data) {
-                    latestByUser[review.user.login] = review.state;
+                  // For each PR from this branch, check if it contains our SHA
+                  for (const pr of branchPrs.data) {
+                    const commits = await github.rest.pulls.listCommits({
+                      owner: process.env.OWNER,
+                      repo: sub.repoName,
+                      pull_number: pr.number
+                    });
+                    
+                    if (commits.data.some(commit => commit.sha === sub.sha)) {
+                      relevantPr = pr;
+                      break;
+                    }
                   }
-                  submoduleInfo.approvals = Object.values(latestByUser).filter(s => s === 'APPROVED').length;
-                  submoduleInfo.changeRequests = Object.values(latestByUser).filter(s => s === 'CHANGES_REQUESTED').length;
-                } catch (e) {
-                  core.warning(`Could not fetch reviews for ${repoName}#${prInfo.number}`);
                 }
+
+                // If no PR found, keep the default values set earlier
+                if (!relevantPr) {
+                  continue;
+                }
+                
+                let prInfo = relevantPr;
+                if (!prInfo.merged && (prInfo.mergeable_state === undefined || prInfo.mergeable_state === 'unknown')) {
+                  for (let i = 0; i < 3; i++) {
+                    console.log(`Retrying... ${i}`);
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    const retry = await github.rest.pulls.get({
+                      owner: process.env.OWNER,
+                      repo: sub.repoName,
+                      pull_number: prInfo.number
+                    });
+                    prInfo = retry.data;
+                    if (prInfo.merged === true || (prInfo.mergeable_state !== undefined && prInfo.mergeable_state !== 'unknown')) {
+                      break;
+                    }
+                  }
+                }
+                
+                const { data: reviews } = await github.rest.pulls.listReviews({
+                  owner: process.env.OWNER,
+                  repo: sub.repoName,
+                  pull_number: prInfo.number,
+                });
+                
+                const latestByUser = {};
+                for (const review of reviews) {
+                  latestByUser[review.user.login] = review.state;
+                }
+                const approvedUsers = Object.values(latestByUser).filter(s => s === 'APPROVED');
+                const approvalCount = approvedUsers.length;
+                const changeRequestCount = Object.values(latestByUser).filter(s => s === 'CHANGES_REQUESTED').length;
+                const prState = prInfo.merged_at ? 'merged' : prInfo.state === 'closed' ? 'closed' : 'open';
+                
+                // Update the submodule with PR information
+                submodules[name] = {
+                  ...submodules[name],
+                  pr_number: prInfo.number,
+                  ticketNum: prInfo.number,
+                  prLink: prInfo.html_url,
+                  isPRCreated: true,
+                  approvals: approvalCount,
+                  changeRequests: changeRequestCount,
+                  prState: prState,
+                  merged: prInfo.merged,
+                  mergeable_state: prInfo.mergeable_state
+                };
+              } catch (error) {
+                console.log(`Error processing submodule ${name}: ${error.message}`);
               }
-              
-              submodulesList.push(submoduleInfo);
             }
             
-            core.setOutput('submodules', JSON.stringify(submodulesList));
+            // Convert object to array for output
+            const submodulesArray = Object.values(submodules);
+            const submodulesJson = JSON.stringify(submodulesArray, null, 2);
+            core.info("Submodule JSON:");
+            core.info(submodulesJson);
+            core.setOutput('submodules', submodulesJson);
+            
+            // Filter only unmerged submodules
+            const unmerged = submodulesArray.filter(s => s.merged === false);
+            const unmergedJson = JSON.stringify(unmerged, null, 2);
+            core.info("Unmerged submodules:");
+            core.info(unmergedJson);
+            core.setOutput('unmerged', unmergedJson);
 
-      - name: Add reviewers to submodule PRs
+      - name: Add reviewers and assignees to submodule PRs
         id: add-reviewers
         uses: actions/github-script@v7
         env:
-          SUBMODULES_JSON: ${{ steps.analyze.outputs.submodules }}
-          REVIEWERS: ${{ steps.init.outputs.reviewers }}
-          TEAM_REVIEWERS: ${{ steps.init.outputs.team_reviewers }}
-          ASSIGNEES: ${{ steps.init.outputs.assignees }}
+          SUBMODULES_JSON: ${{ steps.pre-check-submod.outputs.submodules }}
+          REVIEWERS: ${{ steps.pr.outputs.reviewers }}
+          TEAM_REVIEWERS: ${{ steps.pr.outputs.team_reviewers }}
+          ASSIGNEES: ${{ steps.pr.outputs.assignees }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const submodules = JSON.parse(process.env.SUBMODULES_JSON || '[]');
-            const reviewers = JSON.parse(process.env.REVIEWERS || '[]');
-            const teamReviewers = JSON.parse(process.env.TEAM_REVIEWERS || '[]');
-            const assignees = JSON.parse(process.env.ASSIGNEES || '[]');
+            const submodules = JSON.parse(process.env.SUBMODULES_JSON);
+            const reviewers = JSON.parse(process.env.REVIEWERS);
+            const teamReviewers = JSON.parse(process.env.TEAM_REVIEWERS);
+            const assignees = JSON.parse(process.env.ASSIGNEES);
             const owner = process.env.OWNER;
             
-            const prsWithReviewersAdded = [];
+            core.info(`Adding reviewers ${JSON.stringify(reviewers)} and team reviewers ${JSON.stringify(teamReviewers)} to submodule PRs`);
+            core.info(`Adding assignees ${JSON.stringify(assignees)} to submodule PRs`);
             
-            // Process each submodule with an open PR
-            for (const sub of submodules) {
-              if (sub.isPRCreated && sub.prState === 'open' && sub.pr_number) {
+            // Process each submodule that has an open PR
+            for (const submodule of submodules) {
+              if (submodule.isPRCreated && submodule.prState === 'open' && submodule.pr_number) {
+                core.info(`Processing PR #${submodule.pr_number} for ${submodule.repoName}`);
+                
                 try {
-                  // Add reviewers and assignees in parallel
-                  const promises = [];
+                  // Add reviewers if there are any
                   if (reviewers.length > 0 || teamReviewers.length > 0) {
-                    promises.push(
-                      github.rest.pulls.requestReviewers({
-                        owner, repo: sub.repoName, pull_number: sub.pr_number,
-                        reviewers, team_reviewers: teamReviewers
-                      }).catch(e => core.warning(`Failed to add reviewers to ${sub.repoName}#${sub.pr_number}: ${e.message}`))
-                    );
+                    await github.rest.pulls.requestReviewers({
+                      owner: process.env.OWNER,
+                      repo: submodule.repoName,
+                      pull_number: submodule.pr_number,
+                      reviewers: reviewers,
+                      team_reviewers: teamReviewers
+                    });
+                    core.info(`Added reviewers to PR #${submodule.pr_number} for ${submodule.repoName}`);
                   }
+                  
+                  // Add assignees if there are any
                   if (assignees.length > 0) {
-                    promises.push(
-                      github.rest.issues.addAssignees({
-                        owner, repo: sub.repoName, issue_number: sub.pr_number, assignees
-                      }).catch(e => core.warning(`Failed to add assignees to ${sub.repoName}#${sub.pr_number}: ${e.message}`))
-                    );
+                    await github.rest.issues.addAssignees({
+                      owner: process.env.OWNER,
+                      repo: submodule.repoName,
+                      issue_number: submodule.pr_number,
+                      assignees: assignees
+                    });
+                    core.info(`Added assignees to PR #${submodule.pr_number} for ${submodule.repoName}`);
                   }
-                  await Promise.all(promises);
-                  prsWithReviewersAdded.push({ repo: sub.repoName, pr: sub.pr_number });
                 } catch (error) {
-                  core.warning(`Error processing ${sub.repoName}#${sub.pr_number}: ${error.message}`);
+                  core.warning(`Error adding reviewers/assignees to PR #${submodule.pr_number} for ${submodule.repoName}: ${error.message}`);
                 }
               }
             }
             
+            // Store information about which PRs had reviewers added
+            const prsWithReviewersAdded = submodules
+              .filter(s => s.isPRCreated && s.prState === 'open' && s.pr_number)
+              .map(s => ({ repo: s.repoName, pr: s.pr_number }));
+            
             core.setOutput('prs_with_reviewers_added', JSON.stringify(prsWithReviewersAdded));
 
-      - name: Update comment with dashboard
+      - name: Update comment with submodule PR links
+        id: update-comment
         uses: actions/github-script@v7
         env:
-          SUBMODULES_JSON: ${{ steps.analyze.outputs.submodules }}
+          SUBMODULES_JSON: ${{ steps.pre-check-submod.outputs.submodules }}
           PRS_WITH_REVIEWERS: ${{ steps.add-reviewers.outputs.prs_with_reviewers_added }}
-          REVIEWERS: ${{ steps.init.outputs.reviewers }}
-          TEAM_REVIEWERS: ${{ steps.init.outputs.team_reviewers }}
-          ASSIGNEES: ${{ steps.init.outputs.assignees }}
-          HEAD_REF: ${{ steps.init.outputs.head_ref }}
+          REVIEWERS: ${{ steps.pr.outputs.reviewers }}
+          TEAM_REVIEWERS: ${{ steps.pr.outputs.team_reviewers }}
+          ASSIGNEES: ${{ steps.pr.outputs.assignees }}
         with:
           script: |
             const commentId = process.env.COMMENT_ID;
             const owner = process.env.OWNER;
             const repo = process.env.REPO;
-            const headRef = process.env.HEAD_REF;
-            const submodules = JSON.parse(process.env.SUBMODULES_JSON || '[]');
+            const submodules = JSON.parse(process.env.SUBMODULES_JSON);
             const prsWithReviewers = JSON.parse(process.env.PRS_WITH_REVIEWERS || '[]');
             
-            const { data: comment } = await github.rest.issues.getComment({ owner, repo, comment_id: commentId });
+            const { data: comment } = await github.rest.issues.getComment({
+              owner,
+              repo,
+              comment_id: commentId,
+            });
             
-            // Build dashboard
-            let appendMsg = "\n**_(Step 2/2)_** Submodule Analysis:\n\n";
-            appendMsg += "| Status | Submodule | Branch | PR | Approvals | State |\n";
-            appendMsg += "|--------|-----------|--------|----|-----------|---------|\n";
-            
-            for (const sub of submodules) {
-              const icon = sub.merged ? '✅' : (sub.isPRCreated ? (sub.approvals > 0 ? '✅' : '⏳') : '🔄');
-              const prDisplay = sub.isPRCreated ? `[#${sub.pr_number}](${sub.prLink})` : (sub.merged ? 'default' : 'none');
-              const approvalsDisplay = sub.isPRCreated && !sub.merged ? `${sub.approvals}` : '-';
-              const stateDisplay = sub.merged ? 'merged' : (sub.prState || '-');
-              appendMsg += `| ${icon} | \`${sub.path}\` | \`${sub.prBranch}\` | ${prDisplay} | ${approvalsDisplay} | ${stateDisplay} |\n`;
+            function getStatusIcon(sub) {
+              if (!sub.isBranchExist) return '❌';
+              if (!sub.isPRCreated) return '🔄';
+              if (sub.approvals !== null && (sub.approvals === 0 || sub.changeRequests > 0)) return '⏳';
+              if (sub.isPRCreated) return '✅';
+              return '❓';
             }
             
-            // Action items
-            appendMsg += "\n### 🎯 Action Items\n\n";
-            const missingPRs = submodules.filter(s => !s.isPRCreated && !s.merged);
-            const pendingApprovals = submodules.filter(s => s.isPRCreated && !s.merged && (sub.approvals === 0 || s.changeRequests > 0));
+            function getStatusText(sub) {
+              if (!sub.isBranchExist) return '**Branch missing**';
+              if (!sub.isPRCreated) return '**PR missing**';
+              if (sub.approvals !== null) {
+                if (sub.approvals === 0) return '**Pending approval**';
+                if (sub.changeRequests > 0) return '**Changes requested**';
+                return '**Approved**';
+              }
+              return '**PR exists**';
+            }
             
+            let appendMsg = "\n**_(Step 2/2)_** Submodule Analysis:\n\n";
+            appendMsg += "| Status | Submodule | Branch | PR | Approvals | State |\n";
+            appendMsg += "|--------|-----------|--------|----|-----------|---------| \n";
+            
+            submodules.forEach(sub => {
+              const icon = getStatusIcon(sub);
+              const prDisplay = sub.isPRCreated ? `[#${sub.pr_number}](${sub.prLink})` : (sub.pr_number === '0' ? 'default' : 'none');
+              const approvalsDisplay = sub.approvals !== null ? `${sub.approvals}` : '-';
+              const stateDisplay = sub.merged || sub.prState || '-';
+              appendMsg += `| ${icon} | \`${sub.path}\` | \`${sub.prBranch}\` | ${prDisplay} | ${approvalsDisplay} | ${stateDisplay} |\n`;
+            });
+            
+            appendMsg += "\n### 🎯 Action Items\n\n";
+            const missingBranches = submodules.filter(s => !s.isBranchExist);
+            const missingPRs = submodules.filter(s => s.isBranchExist && !s.isPRCreated);
+            const pendingApprovals = submodules.filter(s => s.isPRCreated && (s.approvals === 0 || s.changeRequests > 0));
+            
+            // Check if reviewers were added to any PRs
+            const reviewersAdded = prsWithReviewers.length > 0;
+            
+            if (missingBranches.length > 0) {
+              appendMsg += `🌿 **Create branches**: ${missingBranches.map(s => '`' + s.directory + '`').join(', ')}\n`;
+            }
             if (missingPRs.length > 0) {
               appendMsg += `🔄 **Create PRs**:\n`;
               for (const sub of missingPRs) {
-                const compareUrl = `https://github.com/${owner}/${sub.repoName}/compare/${sub.baseBranch}...${headRef}?expand=1`;
-                appendMsg += `- [Create PR for ${sub.repoName}](${compareUrl}) (${sub.baseBranch} ← ${headRef})\n`;
+                // Extract the branch name from the prBranch property if available
+                // Otherwise use the PR branch name from the base PR
+                const prBranch = sub.prBranch ? sub.prBranch.replace(/^origin\//, '') : `${{ steps.pr.outputs.head_ref}}`;
+                const compareUrl = `https://github.com/${owner}/${sub.directory}/compare/${sub.baseBranch}...${prBranch}?expand=1`;
+                appendMsg += `- [Create PR for ${sub.directory}](${compareUrl}) (${sub.baseBranch} ← ${prBranch})\n`;
               }
             }
             if (pendingApprovals.length > 0) {
-              appendMsg += `👀 **Pending reviews**: ${pendingApprovals.map(s => `[${s.repoName}#${s.pr_number}](${s.prLink})`).join(', ')}\n`;
+              appendMsg += `👀 **Request reviews**: ${pendingApprovals.map(s => '[' + s.directory + '#' + s.pr_number + '](' + s.prLink + ')').join(', ')}\n`;
             }
-            if (prsWithReviewers.length > 0) {
+            if (reviewersAdded) {
               const reviewersList = JSON.parse(process.env.REVIEWERS || '[]');
               const teamReviewersList = JSON.parse(process.env.TEAM_REVIEWERS || '[]');
               const assigneesList = JSON.parse(process.env.ASSIGNEES || '[]');
               
+              let reviewersInfo = '';
               if (reviewersList.length > 0 || teamReviewersList.length > 0) {
-                appendMsg += `👥 **Reviewers added**: ${reviewersList.join(', ')}${teamReviewersList.length > 0 ? ` (teams: ${teamReviewersList.join(', ')})` : ''}\n`;
+                reviewersInfo += `👥 **Reviewers added**: `;
+                if (reviewersList.length > 0) reviewersInfo += `Users: ${reviewersList.join(', ')} `;
+                if (teamReviewersList.length > 0) reviewersInfo += `Teams: ${teamReviewersList.join(', ')}`;
+                reviewersInfo += '\n';
               }
               if (assigneesList.length > 0) {
-                appendMsg += `👤 **Assignees added**: ${assigneesList.join(', ')}\n`;
+                reviewersInfo += `👤 **Assignees added**: ${assigneesList.join(', ')}\n`;
               }
-              appendMsg += `✅ **Updated PRs**: ${prsWithReviewers.map(pr => `[${pr.repo}#${pr.pr}](https://github.com/${owner}/${pr.repo}/pull/${pr.pr})`).join(', ')}\n`;
+              
+              appendMsg += reviewersInfo;
+              appendMsg += `✅ **Reviewers/assignees added to**: ${prsWithReviewers.map(pr => '[' + pr.repo + '#' + pr.pr + '](' + `https://github.com/${owner}/${pr.repo}/pull/${pr.pr}` + ')').join(', ')}\n`;
             }
-            if (missingPRs.length === 0 && pendingApprovals.length === 0) {
+            if (missingBranches.length === 0 && missingPRs.length === 0 && pendingApprovals.length === 0) {
               appendMsg += `✅ All submodules are ready! Type /merge to merge everything.\n`;
             }
             
-            appendMsg += "\n✅ Workflow complete";
+            appendMsg += "\n Workflow complete ";
             
+            const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
-              owner, repo, comment_id: commentId,
-              body: comment.body + appendMsg
+              owner,
+              repo,
+              comment_id: commentId,
+              body: newBody,
             });
 
-      - name: Comment on failure
-        if: failure()
+      - name: Comment on Failure
+        if: ${{ failure() }}
         uses: actions/github-script@v7
+        env:
+          JOB_NAME: ${{ github.job }}
+          FAIL_MSG_DIFF_SUBMODULES: ${{ steps.diff-submodules.outputs.failMsg }}
+          FAIL_MSG_PRE_CHECK_SUBMOD: ${{ steps.pre-check-submod.outputs.failMsg }}
         with:
           script: |
             const commentId = process.env.COMMENT_ID;
-            const owner = process.env.OWNER;
-            const repo = process.env.REPO;
+            const job = process.env.JOB_NAME;
+            const { data: comment } = await github.rest.issues.getComment({
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
+              comment_id: commentId,
+            });
             
-            const { data: comment } = await github.rest.issues.getComment({ owner, repo, comment_id: commentId });
+            let failureMsg = "❌ **Job failed:** ";
+            let appendMsg = "";
+            let resolutionSteps = "";
             
-            const failureMsg = "\n\n❌ **Workflow failed**\nPlease check the [workflow logs](https://github.com/${owner}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}) for details.";
+            if ('${{ steps.diff-submodules.conclusion }}' == 'failure'){
+              appendMsg = "Submodule diff failed. " + (process.env.FAIL_MSG_DIFF_SUBMODULES || "");
+              resolutionSteps = "_Please ensure you have pushed up your branches or ensure that the base sha is pointing to the right place._";
+            } else if ('${{ steps.pre-check-submod.conclusion }}' == 'failure'){
+              appendMsg = "Submodule pre-check failed. " + (process.env.FAIL_MSG_PRE_CHECK_SUBMOD || "");
+              resolutionSteps = "_Please ensure all submodule PRs are created and properly linked._";
+            } else {
+              appendMsg = "Unknown error. Please check the job logs on **Actions** tab for more information.";
+              resolutionSteps = "_Please try again later._";
+            }
             
+            const newBody = comment.body + "\n\n" + failureMsg + appendMsg + "\n" + resolutionSteps;
             await github.rest.issues.updateComment({
-              owner, repo, comment_id: commentId,
-              body: comment.body + failureMsg
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
+              comment_id: commentId,
+              body: newBody,
             });
