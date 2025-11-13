@@ -273,29 +273,36 @@ jobs:
               if (url.startsWith('https://github.com/')) {
                 // HTTPS URL format: https://github.com/org/repo.git
                 const parts = url.replace('https://github.com/', '').replace('.git', '').split('/');
-                repoName = parts[parts.length - 1];
-                newUrl = `https://github.com/${owner}/${repoName}.git`;
+                if (parts.length >= 2) {
+                  orgName = parts[0];
+                  repoName = parts[1];
+                } else {
+                  repoName = parts[0];
+                }
               } else if (url.match(/^git@github\.com:/)) {
                 // SSH URL format: git@github.com:org/repo.git
                 const parts = url.replace('git@github.com:', '').replace('.git', '').split('/');
-                repoName = parts[parts.length - 1];
-                newUrl = `https://github.com/${owner}/${repoName}.git`;
+                if (parts.length >= 2) {
+                  orgName = parts[0];
+                  repoName = parts[1];
+                } else {
+                  repoName = parts[0];
+                }
               } else if (url.startsWith('../')) {
                 // Relative URL format: ../repo.git
                 repoName = url.replace('../', '').replace('.git', '');
-                newUrl = `https://github.com/${owner}/${repoName}.git`;
+                url = `https://github.com/${owner}/${repoName}.git`;
               } else {
-                // Handle any other format - extract the last part as repo name
+                // Handle any other format
                 const parts = url.split(/[\/:]/).filter(Boolean);
                 repoName = parts[parts.length - 1].replace('.git', '');
-                newUrl = `https://github.com/${owner}/${repoName}.git`;
               }
 
               core.info(`Processing submodule: ${name} with path ${path}, url ${url}, repoName ${repoName}`);
               submodules[name] = {
                 repoName,
                 path,
-                url: newUrl,
+                url,
                 configuredBranch, // again ok if undefined
               };
             }
