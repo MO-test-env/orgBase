@@ -154,7 +154,7 @@ jobs:
               }
               
               const path = submodules[name].path;
-              const url = submodules[name].url;
+              let url = submodules[name].url;
               const configuredBranch = submodules[name].configuredBranch; // This might be undefined
               
               // Extract repo name from URL
@@ -189,7 +189,7 @@ jobs:
                 const parts = url.split(/[\/:]/).filter(Boolean);
                 repoName = parts[parts.length - 1].replace('.git', '');
               }
-                
+
               core.info(`Processing submodule: ${name} with path ${path}, url ${url}, repoName ${repoName}`);
               if (configuredBranch) {
                 core.info(`Found configured branch in .gitmodules: ${configuredBranch}`);
