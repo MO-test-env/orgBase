@@ -283,11 +283,15 @@ jobs:
                   const sha = prContent.sha;
                   
                   // Find branches that contain this commit
-                  const { data: branches } = await github.rest.repos.listBranchesForHeadCommit({
+                  const { data: refs } = await github.rest.git.listMatchingRefs({
                     owner: process.env.OWNER,
                     repo: submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git', ''),
-                    commit_sha: sha
+                    ref: sha
                   });
+
+                  const branches = refs
+                    .filter(ref => ref.ref.startsWith('refs/heads/'))
+                    .map(ref => ref.ref.replace('refs/heads/', ''));
 
                   const normalizedBranches = branches
                     .map(branch => branch.name)
