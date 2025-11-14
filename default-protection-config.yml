@@ -17,9 +17,13 @@ branch_protection:
     bypass_pull_request_allowances:
       users:
       - MOvenshire
+      teams:
+      - ant-man21
   restrictions: # Required field for push access 
     users:
     - ant-man21
+    teams:
+    - MOVENSHIRESFDFSF
   required_signatures: true
   enforce_admins: false
   required_linear_history: true
