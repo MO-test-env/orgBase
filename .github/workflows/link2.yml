@@ -53,12 +53,7 @@ jobs:
             let appendMsg = "\n# 🔗 Submodule Link Workflow\n";
             appendMsg += `[🖥️ View workflow](${runUrl})\n`;
             appendMsg += "**_(Step 1/2)_** Fetching PR details and submodule info...";
-            await github.rest.issues.updateComment({
-              owner,
-              repo,
-              comment_id: commentId,
-              body: appendMsg,
-            });
+            await github.rest.issues.updateComment({ owner, repo, comment_id: commentId, body: appendMsg, });
 
       - name: Get BasePR details
         id: pr
@@ -183,7 +178,6 @@ jobs:
                 }
               } else if (url.startsWith('git@github.com:')) {
                 // SSH URL format: git@github.com:org/repo.git
-                core.info('ssh');
                 const parts = url.replace('git@github.com:', '').replace('.git', '').split('/');
                 if (parts.length >= 2) {
                   orgName = parts[0];
@@ -202,9 +196,6 @@ jobs:
               }
 
               core.info(`Processing submodule: ${name} with path ${path}, url ${url}, repoName ${repoName}`);
-              if (configuredBranch) {
-                core.info(`Found configured branch in .gitmodules: ${configuredBranch}`);
-              }
               
               try {
                 // Get the default branch for the submodule repository
@@ -283,25 +274,135 @@ jobs:
                 if (prContent && prContent.type === 'submodule') {
                   const sha = prContent.sha;
                   
-                  // Find branches that contain this commit
-                  const { data: branches } = await github.rest.repos.listBranchesForHeadCommit({
-                    owner: process.env.OWNER,
-                    repo: submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git', ''),
-                    commit_sha: sha
-                  });
+                  // Step 1: Try to find branches where the SHA is at the head (most accurate)
+                  let normalizedBranches = [];
+                  try {
+                    const { data: branches } = await github.rest.repos.listBranchesForHeadCommit({
+                      owner: process.env.OWNER,
+                      repo: submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git', ''),
+                      commit_sha: sha
+                    });
 
-                  const normalizedBranches = branches
-                    .map(branch => branch.name)
-                    .filter(branch => branch !== 'HEAD' && !branch.startsWith('origin/'));
+                    normalizedBranches = branches
+                      .map(branch => branch.name)
+                      .filter(branch => branch !== 'HEAD' && !branch.startsWith('origin/'));
+                  } catch (error) {
+                    core.warning(`Error finding branches for head commit ${sha}: ${error.message}`);
+                  }
+
+                  // Step 2: If no branches found, try to find PRs containing this SHA
+                  if (normalizedBranches.length === 0) {
+                    core.info(`No branches with SHA ${sha} as head found for submodule ${submodule}. Looking for PRs containing this SHA...`);
+                    try {
+                      const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                        owner: process.env.OWNER,
+                        repo: submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git', ''),
+                        commit_sha: sha
+                      });
+                      
+                      if (prs.length > 0) {
+                        // Extract branch names from PRs
+                        const prBranches = prs.map(pr => pr.head.ref);
+                        normalizedBranches = prBranches.filter(branch => branch !== 'HEAD' && !branch.startsWith('origin/'));
+                        core.info(`Found PRs with branches: ${normalizedBranches.join(', ')} containing SHA ${sha}`);
+                      }
+                    } catch (error) {
+                      core.warning(`Error finding PRs for commit ${sha}: ${error.message}`);
+                    }
+                  }
+
+                  // Step 3: If still no branches found, try to search through all branches (this can be expensive with hundreds of branches)
+                  if (normalizedBranches.length === 0) {
+                    core.info(`No PRs found with SHA ${sha} for submodule ${submodule}. Searching through branches...`);
+                    try {
+                      // Get list of branches (limit to 100 to avoid excessive API calls)
+                      const { data: allBranches } = await github.rest.repos.listBranches({
+                        owner: process.env.OWNER,
+                        repo: submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git', ''),
+                        per_page: 100
+                      });
+                      
+                      // For each branch, check if it contains our commit
+                      // We'll limit this to avoid excessive API calls
+                      const branchesToCheck = allBranches.slice(0, 30); // Check up to 30 branches
+                      
+                      for (const branch of branchesToCheck) {
+                        try {
+                          const { data: comparison } = await github.rest.repos.compareCommits({
+                            owner: process.env.OWNER,
+                            repo: submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git', ''),
+                            base: sha,
+                            head: branch.name
+                          });
+                          
+                          // If the comparison shows our SHA is an ancestor of the branch head
+                          if (comparison.status === 'ahead' || comparison.status === 'identical') {
+                            normalizedBranches.push(branch.name);
+                            core.info(`Found branch ${branch.name} containing SHA ${sha}`);
+                            break; // Found one branch, that's enough
+                          }
+                        } catch (error) {
+                          // Skip errors for individual branches
+                          continue;
+                        }
+                      }
+                    } catch (error) {
+                      core.warning(`Error searching branches for commit ${sha}: ${error.message}`);
+                    }
+                  }
 
                   if (normalizedBranches.length === 0) {
-                    core.warning(`No branches found for submodule ${submodule} with SHA ${sha}`);
-                continue;
-              }
+                    core.warning(`No branches found for submodule ${submodule} with SHA ${sha} after extensive search`);
+                    continue;
+                  }
               
                   if (normalizedBranches.length > 1) {
-                    errors.push(`Submodule ${submodule} with SHA ${sha} is present on multiple branches: ${normalizedBranches.join(', ')}`);
-                    continue;
+                    core.info(`Submodule ${submodule} with SHA ${sha} is present on multiple branches: ${normalizedBranches.join(', ')}. Selecting best match.`);
+                    
+                    // Try to find a branch that matches the PR branch name pattern
+                    const prBranchName = process.env.PR_BRANCH;
+                    
+                    // Priority order for branch selection:
+                    // 1. Exact match with PR branch name
+                    // 2. Contains PR branch name
+                    // 3. Contains 'feature/' or 'bugfix/' prefix
+                    // 4. Is not 'main', 'master', or 'develop'
+                    // 5. First in the list
+                    
+                    // Check for exact match with PR branch name
+                    const exactMatch = normalizedBranches.find(branch => branch === prBranchName);
+                    if (exactMatch) {
+                      core.info(`Found exact match with PR branch name: ${exactMatch}`);
+                      normalizedBranches = [exactMatch];
+                    } else {
+                      // Check for branch containing PR branch name
+                      const containsMatch = normalizedBranches.find(branch => 
+                        branch.includes(prBranchName) || prBranchName.includes(branch));
+                      if (containsMatch) {
+                        core.info(`Found branch containing PR branch name: ${containsMatch}`);
+                        normalizedBranches = [containsMatch];
+                      } else {
+                        // Check for feature or bugfix branches
+                        const featureBranch = normalizedBranches.find(branch => 
+                          branch.startsWith('feature/') || branch.startsWith('bugfix/'));
+                        if (featureBranch) {
+                          core.info(`Selected feature/bugfix branch: ${featureBranch}`);
+                          normalizedBranches = [featureBranch];
+                        } else {
+                          // Exclude main branches if possible
+                          const nonMainBranches = normalizedBranches.filter(branch => 
+                            !['main', 'master', 'develop'].includes(branch));
+                          if (nonMainBranches.length > 0) {
+                            core.info(`Selected non-main branch: ${nonMainBranches[0]}`);
+                            normalizedBranches = [nonMainBranches[0]];
+                          } else {
+                            // Fall back to first branch
+                            core.info(`Falling back to first branch: ${normalizedBranches[0]}`);
+                            normalizedBranches = [normalizedBranches[0]];
+                          }
+                        }
+                      }
+                    }
                   }
 
                   core.info(`Updating submodule ${submodule}: SHA=${sha}, Branch=${normalizedBranches[0]}`);
@@ -505,8 +606,7 @@ jobs:
             // Process each submodule that has an open PR
             for (const submodule of submodules) {
               if (submodule.isPRCreated && submodule.prState === 'open' && submodule.pr_number) {
-                core.info(`Processing PR #${submodule.pr_number} for ${submodule.repoName}`);
-                
+
                 try {
                   // Add reviewers if there are any
                   if (reviewers.length > 0 || teamReviewers.length > 0) {
@@ -517,7 +617,6 @@ jobs:
                       reviewers: reviewers,
                       team_reviewers: teamReviewers
                     });
-                    core.info(`Added reviewers to PR #${submodule.pr_number} for ${submodule.repoName}`);
                   }
                   
                   // Add assignees if there are any
@@ -528,7 +627,6 @@ jobs:
                       issue_number: submodule.pr_number,
                       assignees: assignees
                     });
-                    core.info(`Added assignees to PR #${submodule.pr_number} for ${submodule.repoName}`);
                   }
                 } catch (error) {
                   core.warning(`Error adding reviewers/assignees to PR #${submodule.pr_number} for ${submodule.repoName}: ${error.message}`);
@@ -560,11 +658,7 @@ jobs:
             const submodules = JSON.parse(process.env.SUBMODULES_JSON);
             const prsWithReviewers = JSON.parse(process.env.PRS_WITH_REVIEWERS || '[]');
             
-            const { data: comment } = await github.rest.issues.getComment({
-              owner,
-              repo,
-              comment_id: commentId,
-            });
+            const { data: comment } = await github.rest.issues.getComment({ owner, repo, comment_id: commentId, });
             
             function getStatusIcon(sub) {
               if (!sub.isBranchExist) return '❌';
@@ -628,9 +722,8 @@ jobs:
               
               let reviewersInfo = '';
               if (reviewersList.length > 0 || teamReviewersList.length > 0) {
-                reviewersInfo += `👥 **Reviewers Synced**: `;
+                reviewersInfo += `👥 **Reviewers In Sync** `;
               }
-              
               appendMsg += reviewersInfo;
             }
             if (missingBranches.length === 0 && missingPRs.length === 0 && pendingApprovals.length === 0) {
@@ -640,12 +733,7 @@ jobs:
             appendMsg += "\n Workflow complete ";
             
             const newBody = comment.body + appendMsg;
-            await github.rest.issues.updateComment({
-              owner,
-              repo,
-              comment_id: commentId,
-              body: newBody,
-            });
+            await github.rest.issues.updateComment({ owner, repo, comment_id: commentId, body: newBody, });
 
       - name: Comment on Failure
         if: ${{ failure() }}
@@ -658,11 +746,7 @@ jobs:
           script: |
             const commentId = process.env.COMMENT_ID;
             const job = process.env.JOB_NAME;
-            const { data: comment } = await github.rest.issues.getComment({
-              owner: process.env.OWNER,
-              repo: process.env.REPO,
-              comment_id: commentId,
-            });
+            const { data: comment } = await github.rest.issues.getComment({ owner: process.env.OWNER, repo: process.env.REPO, comment_id: commentId, });
             
             let failureMsg = "❌ **Job failed:** ";
             let appendMsg = "";
@@ -680,9 +764,4 @@ jobs:
             }
             
             const newBody = comment.body + "\n\n" + failureMsg + appendMsg + "\n" + resolutionSteps;
-            await github.rest.issues.updateComment({
-              owner: process.env.OWNER,
-              repo: process.env.REPO,
-              comment_id: commentId,
-              body: newBody,
-            });
+            await github.rest.issues.updateComment({ owner: process.env.OWNER, repo: process.env.REPO, comment_id: commentId, body: newBody, });
