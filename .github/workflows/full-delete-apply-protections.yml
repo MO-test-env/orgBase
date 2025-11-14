@@ -319,7 +319,9 @@ jobs:
                     }
                   }
                 }
-                
+                core.info(bypassPullRequestActorIds);
+                core.info('\n');
+                core.info(pushActorIds);
                 // Create branch protection rule using GraphQL
                 const createMutation = `
                   mutation(
