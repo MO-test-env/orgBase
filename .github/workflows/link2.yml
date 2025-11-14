@@ -353,6 +353,8 @@ jobs:
 
                   if (normalizedBranches.length === 0) {
                     core.warning(`No branches found for submodule ${submodule} with SHA ${sha} after extensive search`);
+                    core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha} after extensive search`);
+                    core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha} after extensive search. \n Please ensure that you have pushed up your submodule branch.`);
                     continue;
                   }
               
