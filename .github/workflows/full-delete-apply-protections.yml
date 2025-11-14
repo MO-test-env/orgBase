@@ -216,7 +216,8 @@ jobs:
                   core.info(`[DRY RUN] Would APPLY ${protectionType} protection to ${org}/${repo}@${branch}`);
                   return;
                 }
-                // Get repository ID and existing rules using GraphQL
+                
+                // Get repository ID using GraphQL
                 const repoQuery = `
                   query($owner: String!, $name: String!) {
                     repository(owner: $owner, name: $name) {
@@ -262,210 +263,9 @@ jobs:
                   });
                   core.info(`Deleted existing rule for pattern '${branch}'`);
                 }
-
-                // Prepare bypass actor inputs if configured
-                const bypassPullRequestActorIds = [];
                 
-                if (protectionType === 'DEFAULT' && config.bypass_pull_request_allowances) {
-                  // Get user IDs for bypass users
-                  if (config.bypass_pull_request_allowances.users?.length > 0) {
-                    const userQuery = `
-                      query($logins: String!) {
-                        search(query: $logins, type: USER, first: 100) {
-                          nodes {
-                            ... on User {
-                              id
-                              login
-                            }
-                          }
-                        }
-                      }
-                    `;
-                    const userResult = await github.graphql(userQuery, {
-                      logins: config.bypass_pull_request_allowances.users.join(' ')
-                    });
-                    
-                    if (userResult.search?.nodes) {
-                      bypassPullRequestActorIds.push(...userResult.search.nodes.map(user => user.id));
-                    }
-                  }
-                  
-                  // Get team IDs for bypass teams
-                  if (config.bypass_pull_request_allowances.teams?.length > 0) {
-                    const teamQuery = `
-                      query($org: String!, $teamSlugs: String!) {
-                        organization(login: $org) {
-                          teams(first: 100, query: $teamSlugs) {
-                            nodes {
-                              id
-                              slug
-                            }
-                          }
-                        }
-                      }
-                    `;
-                    const teamResult = await github.graphql(teamQuery, {
-                      org: org,
-                      teamSlugs: config.bypass_pull_request_allowances.teams.join(' ')
-                    });
-                    
-                    if (teamResult.organization?.teams?.nodes) {
-                      bypassPullRequestActorIds.push(...teamResult.organization.teams.nodes.map(team => team.id));
-                    }
-                  }
-                }
-                
-                // Prepare push allowance inputs if configured
-                const pushActorIds = [];
-                
-                if (protectionType === 'DEFAULT' && config.restrictions) {
-                  // Get user IDs for push allowlist
-                  if (config.restrictions.users?.length > 0) {
-                    const userQuery = `
-                      query($logins: String!) {
-                        search(query: $logins, type: USER, first: 100) {
-                          nodes {
-                            ... on User {
-                              id
-                              login
-                            }
-                          }
-                        }
-                      }
-                    `;
-                    const userResult = await github.graphql(userQuery, {
-                      logins: config.restrictions.users.join(' ')
-                    });
-                    
-                    if (userResult.search?.nodes) {
-                      pushActorIds.push(...userResult.search.nodes.map(user => user.id));
-                    }
-                  }
-                  
-                  // Get team IDs for push allowlist
-                  if (config.restrictions.teams?.length > 0) {
-                    const teamQuery = `
-                      query($org: String!, $teamSlugs: String!) {
-                        organization(login: $org) {
-                          teams(first: 100, query: $teamSlugs) {
-                            nodes {
-                              id
-                              slug
-                            }
-                          }
-                        }
-                      }
-                    `;
-                    const teamResult = await github.graphql(teamQuery, {
-                      org: org,
-                      teamSlugs: config.restrictions.teams.join(' ')
-                    });
-                    
-                    if (teamResult.organization?.teams?.nodes) {
-                      pushActorIds.push(...teamResult.organization.teams.nodes.map(team => team.id));
-                    }
-                  }
-                }
-
-                // Prepare required status check contexts if configured
-                const requiredStatusCheckContexts = [];
-                if (protectionType === 'DEFAULT' && config.required_status_checks?.contexts?.length > 0) {
-                  requiredStatusCheckContexts.push(...config.required_status_checks.contexts);
-                }
-
-                // Create branch protection rule with all options using GraphQL
-                const createMutation = `
-                  mutation(
-                    $repositoryId: ID!,
-                    $pattern: String!,
-                    $requiresApprovingReviews: Boolean!,
-                    $requiredApprovingReviewCount: Int,
-                    $dismissesStaleReviews: Boolean,
-                    $requiresCodeOwnerReviews: Boolean,
-                    $requiresCommitSignatures: Boolean,
-                    $isAdminEnforced: Boolean,
-                    $requiresLinearHistory: Boolean,
-                    $allowsForcePushes: Boolean,
-                    $allowsDeletions: Boolean,
-                    $blocksCreations: Boolean,
-                    $requiresConversationResolution: Boolean,
-                    $lockBranch: Boolean,
-                    $bypassPullRequestActorIds: [ID!],
-                    $pushActorIds: [ID!],
-                    $requiresStatusChecks: Boolean,
-                    $requiresStrictStatusChecks: Boolean,
-                    $requiredStatusCheckContexts: [String!]
-                  ) {
-                    createBranchProtectionRule(input: {
-                      repositoryId: $repositoryId,
-                      pattern: $pattern,
-                      requiresApprovingReviews: $requiresApprovingReviews,
-                      requiredApprovingReviewCount: $requiredApprovingReviewCount,
-                      dismissesStaleReviews: $dismissesStaleReviews,
-                      requiresCodeOwnerReviews: $requiresCodeOwnerReviews,
-                      requiresCommitSignatures: $requiresCommitSignatures,
-                      isAdminEnforced: $isAdminEnforced,
-                      requiresLinearHistory: $requiresLinearHistory,
-                      allowsForcePushes: $allowsForcePushes,
-                      allowsDeletions: $allowsDeletions,
-                      blocksCreations: $blocksCreations,
-                      requiresConversationResolution: $requiresConversationResolution,
-                      lockBranch: $lockBranch,
-                      pushActorIds: $pushActorIds,
-                      bypassPullRequestActorIds: $bypassPullRequestActorIds,
-                      requiresStatusChecks: $requiresStatusChecks,
-                      requiresStrictStatusChecks: $requiresStrictStatusChecks,
-                      requiredStatusCheckContexts: $requiredStatusCheckContexts
-                    }) {
-                      branchProtectionRule {
-                        id
-                        pattern
-                        requiresApprovingReviews
-                        requiredApprovingReviewCount
-                        dismissesStaleReviews
-                        requiresCodeOwnerReviews
-                        requiresCommitSignatures
-                        isAdminEnforced
-                        requiresLinearHistory
-                        allowsForcePushes
-                        allowsDeletions
-                        blocksCreations
-                        requiresConversationResolution
-                        lockBranch
-                        bypassPullRequestAllowances(first: 10) {
-                          nodes {
-                            actor {
-                              ... on User {
-                                login
-                              }
-                              ... on Team {
-                                name
-                              }
-                            }
-                          }
-                        }
-                        pushAllowances(first: 10) {
-                          nodes {
-                            actor {
-                              ... on User {
-                                login
-                              }
-                              ... on Team {
-                                name
-                              }
-                            }
-                          }
-                        }
-                        requiredStatusCheckContexts
-                      }
-                    }
-                  }
-                `;
-                
-                // Create the branch protection rule with all options
-                const mutationParams = {
-                  repositoryId,
-                  pattern: branch,
+                // Convert REST API config to GraphQL format
+                const graphqlConfig = {
                   requiresApprovingReviews: config.required_pull_request_reviews ? true : false,
                   requiredApprovingReviewCount: config.required_pull_request_reviews?.required_approving_review_count || 0,
                   dismissesStaleReviews: config.required_pull_request_reviews?.dismiss_stale_reviews || false,
@@ -478,26 +278,106 @@ jobs:
                   blocksCreations: config.block_creations || false,
                   requiresConversationResolution: config.required_conversation_resolution || false,
                   lockBranch: config.lock_branch || false,
-                  requiresStatusChecks: !!config.required_status_checks,
-                  requiresStrictStatusChecks: config.required_status_checks?.strict || false,
-                  requiredStatusCheckContexts: requiredStatusCheckContexts
                 };
                 
-                // Only add actor IDs if they exist
-                if (bypassPullRequestActorIds.length > 0) {
-                  mutationParams.bypassPullRequestActorIds = bypassPullRequestActorIds;
+                // Add restriction settings if present
+                if (config.restrictions) {
+                  // Convert team names to team IDs
+                  const teamIds = [];
+                  if (config.restrictions.teams && config.restrictions.teams.length > 0) {
+                    for (const teamSlug of config.restrictions.teams) {
+                      try {
+                        const teamQuery = `
+                          query($org: String!, $teamSlug: String!) {
+                            organization(login: $org) {
+                              team(slug: $teamSlug) {
+                                id
+                              }
+                            }
+                          }
+                        `;
+                        
+                        const teamResult = await github.graphql(teamQuery, {
+                          org: org,
+                          teamSlug: teamSlug
+                        });
+                        
+                        if (teamResult.organization?.team?.id) {
+                          teamIds.push(teamResult.organization.team.id);
+                        }
+                      } catch (error) {
+                        core.warning(`Could not find team ID for ${teamSlug}: ${error.message}`);
+                      }
+                    }
+                  }
+                  
+                  // Add user and team restrictions
+                  if (teamIds.length > 0 || (config.restrictions.users && config.restrictions.users.length > 0)) {
+                    graphqlConfig.restrictsPushes = true;
+                    if (teamIds.length > 0) {
+                      graphqlConfig.pushActorIds = teamIds;
+                    }
+                  }
                 }
                 
-                if (pushActorIds.length > 0) {
-                  mutationParams.pushActorIds = pushActorIds;
-                }
+                // Create branch protection rule using GraphQL
+                const createMutation = `
+                  mutation(
+                  $repositoryId: ID!, 
+                  $pattern: String!, 
+                  $requiresApprovingReviews: Boolean!, 
+                  $requiredApprovingReviewCount: Int, 
+                  $dismissesStaleReviews: Boolean, 
+                  $requiresCodeOwnerReviews: Boolean,
+                  $bypassPullRequestActorIds: [ID!], 
+                  $requiresCommitSignatures: Boolean, 
+                  $isAdminEnforced: Boolean, 
+                  $requiresLinearHistory: Boolean, 
+                  $allowsForcePushes: Boolean, 
+                  $allowsDeletions: Boolean, 
+                  $blocksCreations: Boolean, 
+                  $requiresConversationResolution: Boolean, 
+                  $lockBranch: Boolean, 
+                  $restrictsPushes: Boolean, 
+                  $pushActorIds: [ID!]
+                  ) {
+                    createBranchProtectionRule(input: {
+                      repositoryId: $repositoryId,
+                      pattern: $pattern,
+                      requiresApprovingReviews: $requiresApprovingReviews,
+                      requiredApprovingReviewCount: $requiredApprovingReviewCount,
+                      dismissesStaleReviews: $dismissesStaleReviews,
+                      requiresCodeOwnerReviews: $requiresCodeOwnerReviews,
+                      bypassPullRequestActorIds: $bypassPullRequestActorIds,
+                      requiresCommitSignatures: $requiresCommitSignatures,
+                      isAdminEnforced: $isAdminEnforced,
+                      requiresLinearHistory: $requiresLinearHistory,
+                      allowsForcePushes: $allowsForcePushes,
+                      allowsDeletions: $allowsDeletions,
+                      blocksCreations: $blocksCreations,
+                      requiresConversationResolution: $requiresConversationResolution,
+                      lockBranch: $lockBranch,
+                      restrictsPushes: $restrictsPushes,
+                      pushActorIds: $pushActorIds
+                    }) {
+                      branchProtectionRule {
+                        id
+                        pattern
+                      }
+                    }
+                  }
+                `;
                 
-                const createResult = await github.graphql(createMutation, mutationParams);
-
-              core.info(`✅ Created branch protection rule for ${repo}@${branch}`);
+                // Create the branch protection rule
+                await github.graphql(createMutation, {
+                  repositoryId,
+                  pattern: branch,
+                  ...graphqlConfig,
+                });
+                
+                core.info(`✅ Created branch protection rule for ${repo}@${branch} (even if branch doesn't exist)`);
               } catch (e) {
                 core.error(`❌ Failed: ${repo}@${branch}: ${e.message}`);
-                core.error(e.stack);
               }
             };
             
@@ -519,11 +399,11 @@ jobs:
                       return;
                     }
                     else {
-                      // Delete all existing rulesets
-                      await github.rest.repos.deleteRepoRuleset({
-                        owner: org,
-                        repo: repo,
-                        ruleset_id: ruleset.id
+                    // Delete all existing rulesets
+                    await github.rest.repos.deleteRepoRuleset({
+                      owner: org,
+                      repo: repo,
+                      ruleset_id: ruleset.id
                       });
                     }
                     
@@ -616,16 +496,13 @@ jobs:
               core.info(`\n****** Processing ${org}/${repo}`);
               //Handle Rulesets
               await deleteAllRulesets(repo);
-              core.info('');
 
               // Currently commented out unless TechOps requires in future
               // Apply signature verification as a repository ruleset
               // await applySignatureVerificationRuleset(repo);
-              core.info('');
               
               // Delete all existing branch protections 
               await deleteBranchProtections(repo);
-              core.info('');
 
               // Apply to default branches
               for (const branch of branches.default || []) {
