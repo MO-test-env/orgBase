@@ -354,12 +354,13 @@ jobs:
                 }
                 
                 // Process bypass pull request actors if present
-                if (config.bypass_pull_request_actors) {
+                if (config.bypass_pull_request_allowances) {
+                  core.info('Processing bypass pull request actors...');
                   const bypassActorIds = [];
                   
                   // Process bypass teams
-                  if (config.bypass_pull_request_actors.teams && config.bypass_pull_request_actors.teams.length > 0) {
-                    for (const teamSlug of config.bypass_pull_request_actors.teams) {
+                  if (config.bypass_pull_request_allowances.teams && config.bypass_pull_request_allowances.teams.length > 0) {
+                    for (const teamSlug of config.bypass_pull_request_allowances.teams) {
                       try {
                         const teamQuery = `
                           query($org: String!, $teamSlug: String!) {
@@ -387,8 +388,8 @@ jobs:
                   }
                   
                   // Process bypass users
-                  if (config.bypass_pull_request_actors.users && config.bypass_pull_request_actors.users.length > 0) {
-                    for (const username of config.bypass_pull_request_actors.users) {
+                  if (config.bypass_pull_request_allowances.users && config.bypass_pull_request_allowances.users.length > 0) {
+                    for (const username of config.bypass_pull_request_allowances.users) {
                       try {
                         const userQuery = `
                           query($username: String!) {
