@@ -210,6 +210,8 @@ jobs:
 
             // Helper function to apply protection to a branch using GraphQL
             const applyBranchProtection = async (repo, branch, protectionType, config) => {
+
+              core.info(config);
               try {
                 core.info(`Applying ${protectionType} protection to ${org}/${repo}@${branch}`);
                 if(dryRun){
@@ -418,7 +420,7 @@ jobs:
                     core.info(`Added ${bypassActorIds.length} bypass actors for pull request reviews`);
                   }
                 }
-                core.info('\n');
+                core.info('*** \n');
                 
                 // Create branch protection rule using GraphQL
                 const createMutation = `
