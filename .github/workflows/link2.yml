@@ -31,7 +31,7 @@ permissions:
 
 env:
   RW_PAT: ${{ secrets.token }}
-  MIN_REVIEWERS: 0 
+  MIN_REVIEWERS: 2
   OWNER: ${{ inputs.owner }}
   REPO: ${{ inputs.repo }}
   PR_NUMBER: ${{ inputs.pr_number }}
