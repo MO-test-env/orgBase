@@ -212,7 +212,7 @@ jobs:
             const applyBranchProtection = async (repo, branch, protectionType, config) => {
 
               core.info(JSON.stringify(config));
-              core.info('\n', config.required_pull_request_reviews.bypass_pull_request_allowances)
+              core.info('\n', JSON.stringify(config.required_pull_request_reviews.bypass_pull_request_allowances), '\n #####')
               try {
                 core.info(`Applying ${protectionType} protection to ${org}/${repo}@${branch}`);
                 if(dryRun){
@@ -357,13 +357,13 @@ jobs:
                 }
                 
                 // Process bypass pull request actors if present
-                if (config.bypass_pull_request_allowances) {
+                if (config.required_pull_request_reviews.bypass_pull_request_allowances) {
                   core.info('Processing bypass pull request actors...');
                   const bypassActorIds = [];
                   
                   // Process bypass teams
-                  if (config.bypass_pull_request_allowances.teams && config.bypass_pull_request_allowances.teams.length > 0) {
-                    for (const teamSlug of config.bypass_pull_request_allowances.teams) {
+                  if (config.required_pull_request_reviews.bypass_pull_request_allowances.teams && config.required_pull_request_reviews.bypass_pull_request_allowances.teams.length > 0) {
+                    for (const teamSlug of config.required_pull_request_reviews.bypass_pull_request_allowances.teams) {
                       try {
                         const teamQuery = `
                           query($org: String!, $teamSlug: String!) {
@@ -391,8 +391,8 @@ jobs:
                   }
                   
                   // Process bypass users
-                  if (config.bypass_pull_request_allowances.users && config.bypass_pull_request_allowances.users.length > 0) {
-                    for (const username of config.bypass_pull_request_allowances.users) {
+                  if (config.required_pull_request_reviews.bypass_pull_request_allowances.users && config.required_pull_request_reviews.bypass_pull_request_allowances.users.length > 0) {
+                    for (const username of config.required_pull_request_reviews.bypass_pull_request_allowances.users) {
                       try {
                         const userQuery = `
                           query($username: String!) {
