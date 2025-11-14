@@ -4,11 +4,11 @@
 # API calls are used to dynamically determine which is default and which should be locked. 
 
 repositories:
-  - orgBase:
-    default:
-      - main
-      - feature/marissa
-    locked:
-      - master
-  - orgSubmod:
+  # - orgBase:
+  #   default:
+  #     - main
+  #     - feature/marissa
+  #   locked:
+  #     - master
+  # - orgSubmod:
   - orgSubmod2:
