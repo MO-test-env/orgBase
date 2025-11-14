@@ -287,7 +287,7 @@ jobs:
                     
                     if (userResult.search?.nodes) {
                       bypassPullRequestActorIds.push(...userResult.search.nodes.map(user => ({
-                        user: { id: user.id }
+                        actorId: user.id
                       })));
                     }
                   }
@@ -313,7 +313,7 @@ jobs:
                     
                     if (teamResult.organization?.teams?.nodes) {
                       bypassPullRequestActorIds.push(...teamResult.organization.teams.nodes.map(team => ({
-                        team: { id: team.id }
+                        actorId: team.id
                       })));
                     }
                   }
@@ -343,7 +343,7 @@ jobs:
                     
                     if (userResult.search?.nodes) {
                       pushActorIds.push(...userResult.search.nodes.map(user => ({
-                        user: { id: user.id }
+                        actorId: user.id
                       })));
                     }
                   }
@@ -369,7 +369,7 @@ jobs:
                     
                     if (teamResult.organization?.teams?.nodes) {
                       pushActorIds.push(...teamResult.organization.teams.nodes.map(team => ({
-                        team: { id: team.id }
+                        actorId: team.id
                       })));
                     }
                   }
@@ -398,8 +398,8 @@ jobs:
                     $blocksCreations: Boolean,
                     $requiresConversationResolution: Boolean,
                     $lockBranch: Boolean,
-                    $bypassPullRequestActorIds: [BypassActorInput!],
-                    $pushActorIds: [BypassActorInput!],
+                    $bypassPullRequestActorIds: [JSON!],
+                    $pushActorIds: [JSON!],
                     $requiresStatusChecks: Boolean,
                     $requiresStrictStatusChecks: Boolean,
                     $requiredStatusCheckContexts: [String!]
@@ -419,8 +419,8 @@ jobs:
                       blocksCreations: $blocksCreations,
                       requiresConversationResolution: $requiresConversationResolution,
                       lockBranch: $lockBranch,
-                      bypassPullRequestActorIds: $bypassPullRequestActorIds,
                       pushActorIds: $pushActorIds,
+                      bypassPullRequestActorIds: $bypassPullRequestActorIds,
                       requiresStatusChecks: $requiresStatusChecks,
                       requiresStrictStatusChecks: $requiresStrictStatusChecks,
                       requiredStatusCheckContexts: $requiredStatusCheckContexts
