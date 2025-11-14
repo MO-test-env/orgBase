@@ -212,7 +212,7 @@ jobs:
             const applyBranchProtection = async (repo, branch, protectionType, config) => {
 
               core.info(JSON.stringify(config));
-              core.info('\n', config.bypass_pull_request_allowances)
+              core.info('\n', config.required_pull_request_reviews.bypass_pull_request_allowances)
               try {
                 core.info(`Applying ${protectionType} protection to ${org}/${repo}@${branch}`);
                 if(dryRun){
