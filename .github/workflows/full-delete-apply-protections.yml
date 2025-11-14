@@ -270,21 +270,23 @@ jobs:
                   // Get user IDs for bypass users
                   if (config.bypass_pull_request_allowances.users?.length > 0) {
                     const userQuery = `
-                      query($logins: [String!]!) {
-                        users(first: 100, query: $logins.join(" ")) {
+                      query($logins: String!) {
+                        search(query: $logins, type: USER, first: 100) {
                           nodes {
-                            id
-                            login
+                            ... on User {
+                              id
+                              login
+                            }
                           }
                         }
                       }
                     `;
                     const userResult = await github.graphql(userQuery, {
-                      logins: config.bypass_pull_request_allowances.users
+                      logins: config.bypass_pull_request_allowances.users.join(' ')
                     });
                     
-                    if (userResult.users?.nodes) {
-                      bypassPullRequestActorIds.push(...userResult.users.nodes.map(user => ({
+                    if (userResult.search?.nodes) {
+                      bypassPullRequestActorIds.push(...userResult.search.nodes.map(user => ({
                         user: { id: user.id }
                       })));
                     }
@@ -293,9 +295,9 @@ jobs:
                   // Get team IDs for bypass teams
                   if (config.bypass_pull_request_allowances.teams?.length > 0) {
                     const teamQuery = `
-                      query($org: String!, $teamSlugs: [String!]!) {
+                      query($org: String!, $teamSlugs: String!) {
                         organization(login: $org) {
-                          teams(first: 100, query: $teamSlugs.join(" ")) {
+                          teams(first: 100, query: $teamSlugs) {
                             nodes {
                               id
                               slug
@@ -306,7 +308,7 @@ jobs:
                     `;
                     const teamResult = await github.graphql(teamQuery, {
                       org: org,
-                      teamSlugs: config.bypass_pull_request_allowances.teams
+                      teamSlugs: config.bypass_pull_request_allowances.teams.join(' ')
                     });
                     
                     if (teamResult.organization?.teams?.nodes) {
@@ -324,21 +326,23 @@ jobs:
                   // Get user IDs for push allowlist
                   if (config.restrictions.users?.length > 0) {
                     const userQuery = `
-                      query($logins: [String!]!) {
-                        users(first: 100, query: $logins.join(" ")) {
+                      query($logins: String!) {
+                        search(query: $logins, type: USER, first: 100) {
                           nodes {
-                            id
-                            login
+                            ... on User {
+                              id
+                              login
+                            }
                           }
                         }
                       }
                     `;
                     const userResult = await github.graphql(userQuery, {
-                      logins: config.restrictions.users
+                      logins: config.restrictions.users.join(' ')
                     });
                     
-                    if (userResult.users?.nodes) {
-                      pushActorIds.push(...userResult.users.nodes.map(user => ({
+                    if (userResult.search?.nodes) {
+                      pushActorIds.push(...userResult.search.nodes.map(user => ({
                         user: { id: user.id }
                       })));
                     }
@@ -347,9 +351,9 @@ jobs:
                   // Get team IDs for push allowlist
                   if (config.restrictions.teams?.length > 0) {
                     const teamQuery = `
-                      query($org: String!, $teamSlugs: [String!]!) {
+                      query($org: String!, $teamSlugs: String!) {
                         organization(login: $org) {
-                          teams(first: 100, query: $teamSlugs.join(" ")) {
+                          teams(first: 100, query: $teamSlugs) {
                             nodes {
                               id
                               slug
@@ -360,7 +364,7 @@ jobs:
                     `;
                     const teamResult = await github.graphql(teamQuery, {
                       org: org,
-                      teamSlugs: config.restrictions.teams
+                      teamSlugs: config.restrictions.teams.join(' ')
                     });
                     
                     if (teamResult.organization?.teams?.nodes) {
@@ -394,8 +398,8 @@ jobs:
                     $blocksCreations: Boolean,
                     $requiresConversationResolution: Boolean,
                     $lockBranch: Boolean,
-                    $bypassPullRequestActorIds: [BypassPullRequestActorInput!],
-                    $pushActorIds: [PushActorInput!],
+                    $bypassPullRequestActorIds: [BypassActorInput!],
+                    $pushActorIds: [BypassActorInput!],
                     $requiresStatusChecks: Boolean,
                     $requiresStrictStatusChecks: Boolean,
                     $requiredStatusCheckContexts: [String!]
