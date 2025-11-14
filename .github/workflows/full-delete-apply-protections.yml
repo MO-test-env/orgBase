@@ -208,8 +208,7 @@ jobs:
               }
             };
 
-
-            // Helper function to apply protection to a branch
+            // Helper function to apply protection to a branch using GraphQL
             const applyBranchProtection = async (repo, branch, protectionType, config) => {
               try {
                 core.info(`Applying ${protectionType} protection to ${org}/${repo}@${branch}`);
@@ -217,7 +216,7 @@ jobs:
                   core.info(`[DRY RUN] Would APPLY ${protectionType} protection to ${org}/${repo}@${branch}`);
                   return;
                 }
-                // Get repository ID using GraphQL
+                // Get repository ID and existing rules using GraphQL
                 const repoQuery = `
                   query($owner: String!, $name: String!) {
                     repository(owner: $owner, name: $name) {
@@ -247,7 +246,7 @@ jobs:
                 // Check if a rule with this pattern already exists
                 const existingRule = existingRules.find(rule => rule.pattern === branch);
                 
-                // Because the delete job runs before this the following block should never get hit, but I wrote them separately and checking here does not hurt
+                // Delete existing rule if it exists
                 if (existingRule) {
                   core.info(`Branch protection rule for pattern '${branch}' already exists. Updating...`);
                   const deleteMutation = `
@@ -263,26 +262,144 @@ jobs:
                   });
                   core.info(`Deleted existing rule for pattern '${branch}'`);
                 }
-                
-                // Create the basic branch protection rule without bypass actors
-                const minimalGraphqlConfig = {
-                  requiresApprovingReviews: config.required_pull_request_reviews ? true : false,
-                  requiredApprovingReviewCount: config.required_pull_request_reviews?.required_approving_review_count || 0,
-                  dismissesStaleReviews: config.required_pull_request_reviews?.dismiss_stale_reviews || false,
-                  requiresCodeOwnerReviews: config.required_pull_request_reviews?.require_code_owner_reviews || false,
-                  requiresCommitSignatures: config.required_signatures || false,
-                  isAdminEnforced: config.enforce_admins || false,
-                  requiresLinearHistory: config.required_linear_history || false,
-                  allowsForcePushes: config.allow_force_pushes || false,
-                  allowsDeletions: config.allow_deletions || false,
-                  blocksCreations: config.block_creations || false,
-                  requiresConversationResolution: config.required_conversation_resolution || false,
-                  lockBranch: config.lock_branch || false,
-                };
 
-                // Create branch protection rule using GraphQL (minimal version)
+                // Prepare bypass actor inputs if configured
+                const bypassPullRequestActorIds = [];
+                
+                if (protectionType === 'DEFAULT' && config.bypass_pull_request_allowances) {
+                  // Get user IDs for bypass users
+                  if (config.bypass_pull_request_allowances.users?.length > 0) {
+                    const userQuery = `
+                      query($logins: [String!]!) {
+                        users(first: 100, query: $logins.join(" ")) {
+                          nodes {
+                            id
+                            login
+                          }
+                        }
+                      }
+                    `;
+                    const userResult = await github.graphql(userQuery, {
+                      logins: config.bypass_pull_request_allowances.users
+                    });
+                    
+                    if (userResult.users?.nodes) {
+                      bypassPullRequestActorIds.push(...userResult.users.nodes.map(user => ({
+                        user: { id: user.id }
+                      })));
+                    }
+                  }
+                  
+                  // Get team IDs for bypass teams
+                  if (config.bypass_pull_request_allowances.teams?.length > 0) {
+                    const teamQuery = `
+                      query($org: String!, $teamSlugs: [String!]!) {
+                        organization(login: $org) {
+                          teams(first: 100, query: $teamSlugs.join(" ")) {
+                            nodes {
+                              id
+                              slug
+                            }
+                          }
+                        }
+                      }
+                    `;
+                    const teamResult = await github.graphql(teamQuery, {
+                      org: org,
+                      teamSlugs: config.bypass_pull_request_allowances.teams
+                    });
+                    
+                    if (teamResult.organization?.teams?.nodes) {
+                      bypassPullRequestActorIds.push(...teamResult.organization.teams.nodes.map(team => ({
+                        team: { id: team.id }
+                      })));
+                    }
+                  }
+                }
+                
+                // Prepare push allowance inputs if configured
+                const pushActorIds = [];
+                
+                if (protectionType === 'DEFAULT' && config.restrictions) {
+                  // Get user IDs for push allowlist
+                  if (config.restrictions.users?.length > 0) {
+                    const userQuery = `
+                      query($logins: [String!]!) {
+                        users(first: 100, query: $logins.join(" ")) {
+                          nodes {
+                            id
+                            login
+                          }
+                        }
+                      }
+                    `;
+                    const userResult = await github.graphql(userQuery, {
+                      logins: config.restrictions.users
+                    });
+                    
+                    if (userResult.users?.nodes) {
+                      pushActorIds.push(...userResult.users.nodes.map(user => ({
+                        user: { id: user.id }
+                      })));
+                    }
+                  }
+                  
+                  // Get team IDs for push allowlist
+                  if (config.restrictions.teams?.length > 0) {
+                    const teamQuery = `
+                      query($org: String!, $teamSlugs: [String!]!) {
+                        organization(login: $org) {
+                          teams(first: 100, query: $teamSlugs.join(" ")) {
+                            nodes {
+                              id
+                              slug
+                            }
+                          }
+                        }
+                      }
+                    `;
+                    const teamResult = await github.graphql(teamQuery, {
+                      org: org,
+                      teamSlugs: config.restrictions.teams
+                    });
+                    
+                    if (teamResult.organization?.teams?.nodes) {
+                      pushActorIds.push(...teamResult.organization.teams.nodes.map(team => ({
+                        team: { id: team.id }
+                      })));
+                    }
+                  }
+                }
+
+                // Prepare required status check contexts if configured
+                const requiredStatusCheckContexts = [];
+                if (protectionType === 'DEFAULT' && config.required_status_checks?.contexts?.length > 0) {
+                  requiredStatusCheckContexts.push(...config.required_status_checks.contexts);
+                }
+
+                // Create branch protection rule with all options using GraphQL
                 const createMutation = `
-                  mutation($repositoryId: ID!, $pattern: String!, $requiresApprovingReviews: Boolean!, $requiredApprovingReviewCount: Int, $dismissesStaleReviews: Boolean, $requiresCodeOwnerReviews: Boolean, $requiresCommitSignatures: Boolean, $isAdminEnforced: Boolean, $requiresLinearHistory: Boolean, $allowsForcePushes: Boolean, $allowsDeletions: Boolean, $blocksCreations: Boolean, $requiresConversationResolution: Boolean, $lockBranch: Boolean) {
+                  mutation(
+                    $repositoryId: ID!,
+                    $pattern: String!,
+                    $requiresApprovingReviews: Boolean!,
+                    $requiredApprovingReviewCount: Int,
+                    $dismissesStaleReviews: Boolean,
+                    $requiresCodeOwnerReviews: Boolean,
+                    $requiresCommitSignatures: Boolean,
+                    $isAdminEnforced: Boolean,
+                    $requiresLinearHistory: Boolean,
+                    $allowsForcePushes: Boolean,
+                    $allowsDeletions: Boolean,
+                    $blocksCreations: Boolean,
+                    $requiresConversationResolution: Boolean,
+                    $lockBranch: Boolean,
+                    $bypassPullRequestActorIds: [BypassPullRequestActorInput!],
+                    $pushActorIds: [PushActorInput!],
+                    $requiresStatusChecks: Boolean,
+                    $requiresStrictStatusChecks: Boolean,
+                    $requiredStatusCheckContexts: [String!]
+                  ) {
                     createBranchProtectionRule(input: {
                       repositoryId: $repositoryId,
                       pattern: $pattern,
@@ -297,61 +414,80 @@ jobs:
                       allowsDeletions: $allowsDeletions,
                       blocksCreations: $blocksCreations,
                       requiresConversationResolution: $requiresConversationResolution,
-                      lockBranch: $lockBranch
+                      lockBranch: $lockBranch,
+                      bypassPullRequestActorIds: $bypassPullRequestActorIds,
+                      pushActorIds: $pushActorIds,
+                      requiresStatusChecks: $requiresStatusChecks,
+                      requiresStrictStatusChecks: $requiresStrictStatusChecks,
+                      requiredStatusCheckContexts: $requiredStatusCheckContexts
                     }) {
                       branchProtectionRule {
                         id
                         pattern
+                        requiresApprovingReviews
+                        requiredApprovingReviewCount
+                        dismissesStaleReviews
+                        requiresCodeOwnerReviews
+                        requiresCommitSignatures
+                        isAdminEnforced
+                        requiresLinearHistory
+                        allowsForcePushes
+                        allowsDeletions
+                        blocksCreations
+                        requiresConversationResolution
+                        lockBranch
+                        bypassPullRequestAllowances(first: 10) {
+                          nodes {
+                            actor {
+                              ... on User {
+                                login
+                              }
+                              ... on Team {
+                                name
+                              }
+                            }
+                          }
+                        }
+                        pushAllowances(first: 10) {
+                          nodes {
+                            actor {
+                              ... on User {
+                                login
+                              }
+                              ... on Team {
+                                name
+                              }
+                            }
+                          }
+                        }
+                        requiredStatusCheckContexts
                       }
                     }
                   }
                 `;
                 
-                // Create the basic branch protection rule
+                // Create the branch protection rule with all options
                 const createResult = await github.graphql(createMutation, {
                   repositoryId,
                   pattern: branch,
-                  ...minimalGraphqlConfig,
+                  requiresApprovingReviews: config.required_pull_request_reviews ? true : false,
+                  requiredApprovingReviewCount: config.required_pull_request_reviews?.required_approving_review_count || 0,
+                  dismissesStaleReviews: config.required_pull_request_reviews?.dismiss_stale_reviews || false,
+                  requiresCodeOwnerReviews: config.required_pull_request_reviews?.require_code_owner_reviews || false,
+                  requiresCommitSignatures: config.required_signatures || false,
+                  isAdminEnforced: config.enforce_admins || false,
+                  requiresLinearHistory: config.required_linear_history || false,
+                  allowsForcePushes: config.allow_force_pushes || false,
+                  allowsDeletions: config.allow_deletions || false,
+                  blocksCreations: config.block_creations || false,
+                  requiresConversationResolution: config.required_conversation_resolution || false,
+                  lockBranch: config.lock_branch || false,
+                  bypassPullRequestActorIds: bypassPullRequestActorIds,
+                  pushActorIds: pushActorIds,
+                  requiresStatusChecks: !!config.required_status_checks,
+                  requiresStrictStatusChecks: config.required_status_checks?.strict || false,
+                  requiredStatusCheckContexts: requiredStatusCheckContexts
                 });
-                
-                if( protectionType === 'DEFAULT' ){
-                  // REST API to update the rule with bypass actors and restrictions
-                  const restParams = {
-                    owner: org,
-                    repo: repo,
-                    branch: branch,
-                    required_pull_request_reviews: config.required_pull_request_reviews || null,
-                    enforce_admins: config.enforce_admins || null,
-                    required_status_checks: config.required_status_checks || null,
-                    required_linear_history: config.required_linear_history || null,
-                    allow_force_pushes: config.allow_force_pushes || null,
-                    allow_deletions: config.allow_deletions || null,
-                    required_conversation_resolution: config.required_conversation_resolution || null,
-                    lock_branch: config.lock_branch || null,
-                    required_signatures: config.required_signatures || null
-                  };
-                  
-                  // Add bypass pull request allowances if configured
-                  if (config.bypass_pull_request_allowances) {
-                    restParams.bypass_pull_request_allowances = {
-                      users: config.bypass_pull_request_allowances.users || [],
-                      teams: config.bypass_pull_request_allowances.teams || [],
-                      apps: config.bypass_pull_request_allowances.apps || []
-                    };
-                  }
-                  
-                  // Add push restrictions if configured
-                  if (config.restrictions) {
-                    restParams.restrictions = {
-                      users: config.restrictions.users || [],
-                      teams: config.restrictions.teams || [],
-                      apps: config.restrictions.apps || []
-                    };
-                  }
-                  
-                  // Update branch protection with REST API to add bypass actors and restrictions
-                  await github.rest.repos.updateBranchProtection(restParams);
-                }
 
               core.info(`✅ Created branch protection rule for ${repo}@${branch}`);
               } catch (e) {
