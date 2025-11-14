@@ -318,10 +318,107 @@ jobs:
                       graphqlConfig.pushActorIds = teamIds;
                       core.info(`Restricting pushes to teams: ${teamIds.join(', ')}`);
                     }
+                    if (config.restrictions.users && config.restrictions.users.length > 0) {
+                      // If pushActorIds doesn't exist yet, initialize it
+                      if (!graphqlConfig.pushActorIds) {
+                        graphqlConfig.pushActorIds = [];
+                      }
+                      
+                      // Add user IDs to the push actors list
+                      for (const username of config.restrictions.users) {
+                        try {
+                          const userQuery = `
+                            query($username: String!) {
+                              user(login: $username) {
+                                id
+                              }
+                            }
+                          `;
+                          
+                          const userResult = await github.graphql(userQuery, {
+                            username: username
+                          });
+                          
+                          if (userResult.user?.id) {
+                            graphqlConfig.pushActorIds.push(userResult.user.id);
+                            core.info(`Added user ${username} to push restrictions`);
+                          }
+                        } catch (error) {
+                          core.warning(`Could not find user ID for ${username}: ${error.message}`);
+                        }
+                      }
+                      
+                      core.info(`Restricting pushes to users: ${config.restrictions.users.join(', ')}`);
+                    }
+                  }
+                }
+                
+                // Process bypass pull request actors if present
+                if (config.bypass_pull_request_actors) {
+                  const bypassActorIds = [];
+                  
+                  // Process bypass teams
+                  if (config.bypass_pull_request_actors.teams && config.bypass_pull_request_actors.teams.length > 0) {
+                    for (const teamSlug of config.bypass_pull_request_actors.teams) {
+                      try {
+                        const teamQuery = `
+                          query($org: String!, $teamSlug: String!) {
+                            organization(login: $org) {
+                              team(slug: $teamSlug) {
+                                id
+                              }
+                            }
+                          }
+                        `;
+                        
+                        const teamResult = await github.graphql(teamQuery, {
+                          org: org,
+                          teamSlug: teamSlug
+                        });
+                        
+                        if (teamResult.organization?.team?.id) {
+                          bypassActorIds.push(teamResult.organization.team.id);
+                          core.info(`Added team ${teamSlug} to bypass actors`);
+                        }
+                      } catch (error) {
+                        core.warning(`Could not find team ID for ${teamSlug}: ${error.message}`);
+                      }
+                    }
+                  }
+                  
+                  // Process bypass users
+                  if (config.bypass_pull_request_actors.users && config.bypass_pull_request_actors.users.length > 0) {
+                    for (const username of config.bypass_pull_request_actors.users) {
+                      try {
+                        const userQuery = `
+                          query($username: String!) {
+                            user(login: $username) {
+                              id
+                            }
+                          }
+                        `;
+                        
+                        const userResult = await github.graphql(userQuery, {
+                          username: username
+                        });
+                        
+                        if (userResult.user?.id) {
+                          bypassActorIds.push(userResult.user.id);
+                          core.info(`Added user ${username} to bypass actors`);
+                        }
+                      } catch (error) {
+                        core.warning(`Could not find user ID for ${username}: ${error.message}`);
+                      }
+                    }
+                  }
+                  
+                  if (bypassActorIds.length > 0) {
+                    graphqlConfig.bypassPullRequestActorIds = bypassActorIds;
+                    core.info(`Added ${bypassActorIds.length} bypass actors for pull request reviews`);
                   }
                 }
                 core.info('\n');
-
+                
                 // Create branch protection rule using GraphQL
                 const createMutation = `
                   mutation(
