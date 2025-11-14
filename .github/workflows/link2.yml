@@ -31,6 +31,7 @@ permissions:
 
 env:
   RW_PAT: ${{ secrets.token }}
+  MIN_REVIEWERS: 0 
   OWNER: ${{ inputs.owner }}
   REPO: ${{ inputs.repo }}
   PR_NUMBER: ${{ inputs.pr_number }}
@@ -568,7 +569,7 @@ jobs:
             function getStatusIcon(sub) {
               if (!sub.isBranchExist) return '❌';
               if (!sub.isPRCreated) return '🔄';
-              if (sub.approvals !== null && (sub.approvals === 0 || sub.changeRequests > 0)) return '⏳';
+              if (sub.approvals !== null && (sub.approvals < parseInt(process.env.MIN_REVIEWERS) || sub.changeRequests > 0)) return '⏳';
               if (sub.isPRCreated) return '✅';
               return '❓';
             }
@@ -577,7 +578,7 @@ jobs:
               if (!sub.isBranchExist) return '**Branch missing**';
               if (!sub.isPRCreated) return '**PR missing**';
               if (sub.approvals !== null) {
-                if (sub.approvals === 0) return '**Pending approval**';
+                if (sub.approvals < parseInt(process.env.MIN_REVIEWERS)) return `**Needs ${parseInt(process.env.MIN_REVIEWERS) - sub.approvals} more approval(s)**`;
                 if (sub.changeRequests > 0) return '**Changes requested**';
                 return '**Approved**';
               }
@@ -599,7 +600,7 @@ jobs:
             appendMsg += "\n### 🎯 Action Items\n\n";
             const missingBranches = submodules.filter(s => !s.isBranchExist);
             const missingPRs = submodules.filter(s => s.isBranchExist && !s.isPRCreated);
-            const pendingApprovals = submodules.filter(s => s.isPRCreated && (s.approvals === 0 || s.changeRequests > 0));
+            const pendingApprovals = submodules.filter(s => s.isPRCreated && (s.approvals < parseInt(process.env.MIN_REVIEWERS) || s.changeRequests > 0));
             
             // Check if reviewers were added to any PRs
             const reviewersAdded = prsWithReviewers.length > 0;
@@ -627,13 +628,7 @@ jobs:
               
               let reviewersInfo = '';
               if (reviewersList.length > 0 || teamReviewersList.length > 0) {
-                reviewersInfo += `👥 **Reviewers added**: `;
-                if (reviewersList.length > 0) reviewersInfo += `Users: ${reviewersList.join(', ')} `;
-                if (teamReviewersList.length > 0) reviewersInfo += `Teams: ${teamReviewersList.join(', ')}`;
-                reviewersInfo += '\n';
-              }
-              if (assigneesList.length > 0) {
-                reviewersInfo += `👤 **Assignees added**: ${assigneesList.join(', ')}\n`;
+                reviewersInfo += `👥 **Reviewers Synced**: `;
               }
               
               appendMsg += reviewersInfo;
