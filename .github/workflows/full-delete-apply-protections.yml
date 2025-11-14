@@ -286,9 +286,7 @@ jobs:
                     });
                     
                     if (userResult.search?.nodes) {
-                      bypassPullRequestActorIds.push(...userResult.search.nodes.map(user => ({
-                        actorId: user.id
-                      })));
+                      bypassPullRequestActorIds.push(...userResult.search.nodes.map(user => user.id));
                     }
                   }
                   
@@ -312,9 +310,7 @@ jobs:
                     });
                     
                     if (teamResult.organization?.teams?.nodes) {
-                      bypassPullRequestActorIds.push(...teamResult.organization.teams.nodes.map(team => ({
-                        actorId: team.id
-                      })));
+                      bypassPullRequestActorIds.push(...teamResult.organization.teams.nodes.map(team => team.id));
                     }
                   }
                 }
@@ -342,9 +338,7 @@ jobs:
                     });
                     
                     if (userResult.search?.nodes) {
-                      pushActorIds.push(...userResult.search.nodes.map(user => ({
-                        actorId: user.id
-                      })));
+                      pushActorIds.push(...userResult.search.nodes.map(user => user.id));
                     }
                   }
                   
@@ -368,9 +362,7 @@ jobs:
                     });
                     
                     if (teamResult.organization?.teams?.nodes) {
-                      pushActorIds.push(...teamResult.organization.teams.nodes.map(team => ({
-                        actorId: team.id
-                      })));
+                      pushActorIds.push(...teamResult.organization.teams.nodes.map(team => team.id));
                     }
                   }
                 }
@@ -398,8 +390,8 @@ jobs:
                     $blocksCreations: Boolean,
                     $requiresConversationResolution: Boolean,
                     $lockBranch: Boolean,
-                    $bypassPullRequestActorIds: [JSON!],
-                    $pushActorIds: [JSON!],
+                    $bypassPullRequestActorIds: [ID!],
+                    $pushActorIds: [ID!],
                     $requiresStatusChecks: Boolean,
                     $requiresStrictStatusChecks: Boolean,
                     $requiredStatusCheckContexts: [String!]
@@ -471,7 +463,7 @@ jobs:
                 `;
                 
                 // Create the branch protection rule with all options
-                const createResult = await github.graphql(createMutation, {
+                const mutationParams = {
                   repositoryId,
                   pattern: branch,
                   requiresApprovingReviews: config.required_pull_request_reviews ? true : false,
@@ -486,12 +478,21 @@ jobs:
                   blocksCreations: config.block_creations || false,
                   requiresConversationResolution: config.required_conversation_resolution || false,
                   lockBranch: config.lock_branch || false,
-                  bypassPullRequestActorIds: bypassPullRequestActorIds,
-                  pushActorIds: pushActorIds,
                   requiresStatusChecks: !!config.required_status_checks,
                   requiresStrictStatusChecks: config.required_status_checks?.strict || false,
                   requiredStatusCheckContexts: requiredStatusCheckContexts
-                });
+                };
+                
+                // Only add actor IDs if they exist
+                if (bypassPullRequestActorIds.length > 0) {
+                  mutationParams.bypassPullRequestActorIds = bypassPullRequestActorIds;
+                }
+                
+                if (pushActorIds.length > 0) {
+                  mutationParams.pushActorIds = pushActorIds;
+                }
+                
+                const createResult = await github.graphql(createMutation, mutationParams);
 
               core.info(`✅ Created branch protection rule for ${repo}@${branch}`);
               } catch (e) {
