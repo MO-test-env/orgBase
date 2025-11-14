@@ -316,12 +316,12 @@ jobs:
                     graphqlConfig.restrictsPushes = true;
                     if (teamIds.length > 0) {
                       graphqlConfig.pushActorIds = teamIds;
+                      core.info(`Restricting pushes to teams: ${teamIds.join(', ')}`);
                     }
                   }
                 }
-                core.info(bypassPullRequestActorIds);
                 core.info('\n');
-                core.info(pushActorIds);
+
                 // Create branch protection rule using GraphQL
                 const createMutation = `
                   mutation(
