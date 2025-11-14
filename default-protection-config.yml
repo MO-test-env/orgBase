@@ -18,12 +18,12 @@ branch_protection:
       users:
       - MOvenshire
       teams:
-      - ant-man21
+      - team1
   restrictions: # Required field for push access 
     users:
     - ant-man21
     teams:
-    - MOVENSHIRESFDFSF
+    - team1
   required_signatures: true
   enforce_admins: false
   required_linear_history: true
