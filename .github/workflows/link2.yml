@@ -582,6 +582,18 @@ jobs:
             core.info("Unmerged submodules:");
             core.info(unmergedJson);
             core.setOutput('unmerged', unmergedJson);
+            
+            // Check if the number of PRs found matches the number of updated submodules
+            const updatedSubmodules = Object.keys(submods).length;
+            const foundPRs = submodulesArray.filter(s => s.isPRCreated && s.pr_number && s.pr_number !== '0').length;
+            
+            core.info(`Updated submodules: ${updatedSubmodules}, Found PRs: ${foundPRs}`);
+            
+            if (updatedSubmodules > 0 && foundPRs !== updatedSubmodules) {
+              const errorMsg = `Mismatch between updated submodules (${updatedSubmodules}) and found PRs (${foundPRs}). Please ensure all submodule changes have corresponding PRs.`;
+              core.setFailed(errorMsg);
+              core.setOutput('failMsg', errorMsg);
+            }
 
       - name: Add reviewers and assignees to submodule PRs
         id: add-reviewers
@@ -757,7 +769,11 @@ jobs:
               resolutionSteps = "_Please ensure you have pushed up your branches or ensure that the base sha is pointing to the right place._";
             } else if ('${{ steps.pre-check-submod.conclusion }}' == 'failure'){
               appendMsg = "Submodule pre-check failed. " + (process.env.FAIL_MSG_PRE_CHECK_SUBMOD || "");
-              resolutionSteps = "_Please ensure all submodule PRs are created and properly linked._";
+              if (appendMsg.includes("Mismatch between updated submodules")) {
+                resolutionSteps = "_Please ensure all submodule changes have corresponding PRs. Each updated submodule must have exactly one PR._";
+              } else {
+                resolutionSteps = "_Please ensure all submodule PRs are created and properly linked._";
+              }
             } else {
               appendMsg = "Unknown error. Please check the job logs on **Actions** tab for more information.";
               resolutionSteps = "_Please try again later._";
