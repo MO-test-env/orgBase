@@ -654,6 +654,76 @@ jobs:
             
             core.setOutput('prs_with_reviewers_added', JSON.stringify(prsWithReviewersAdded));
 
+      - name: Add comment to submodule PRs linking back to base PR
+        id: comment-submod-prs
+        uses: actions/github-script@v7
+        env:
+          SUBMODULES_JSON: ${{ steps.pre-check-submod.outputs.submodules }}
+          BASE_PR_NUMBER: ${{ inputs.pr_number }}
+        with:
+          github-token: ${{ env.RW_PAT }}
+          script: |
+            const submodules = JSON.parse(process.env.SUBMODULES_JSON);
+            const basePrNumber = process.env.BASE_PR_NUMBER;
+            const owner = process.env.OWNER;
+            const repo = process.env.REPO;
+            
+            core.info(`Adding comments to submodule PRs linking back to base PR #${basePrNumber}`);
+            
+            // Construct the base PR URL
+            const basePrUrl = `https://github.com/${owner}/${repo}/pull/${basePrNumber}`;
+            
+            // Process each submodule that has an open PR
+            for (const submodule of submodules) {
+              if (submodule.isPRCreated && submodule.prState === 'open' && submodule.pr_number) {
+                try {
+                  // Check if there's already a comment linking back to the base PR
+                  const existingComments = await github.rest.issues.listComments({
+                    owner: process.env.OWNER,
+                    repo: submodule.repoName,
+                    issue_number: submodule.pr_number,
+                    per_page: 100
+                  });
+                  
+                  // Look for an existing comment that links back to the base PR
+                  const existingComment = existingComments.data.find(comment => 
+                    comment.body && 
+                    comment.body.includes('This submodule PR is part of a larger change') &&
+                    comment.body.includes(basePrUrl)
+                  );
+                  
+                  // Add a comment to the submodule PR linking back to the base PR
+                  const commentBody = `🔗 This submodule PR is part of a larger change in the parent repository.
+                  
+                  Please review the [base PR #${basePrNumber}](${basePrUrl}) for context on how this submodule change fits into the overall update.
+                  
+                  _This comment was automatically added by the submodule linking workflow._`;
+                  
+                  if (existingComment) {
+                    // Update the existing comment
+                    await github.rest.issues.updateComment({
+                      owner: process.env.OWNER,
+                      repo: submodule.repoName,
+                      comment_id: existingComment.id,
+                      body: commentBody
+                    });
+                    core.info(`Updated existing comment #${existingComment.id} on PR #${submodule.pr_number} in ${submodule.repoName}`);
+                  } else {
+                    // Create a new comment
+                    await github.rest.issues.createComment({
+                      owner: process.env.OWNER,
+                      repo: submodule.repoName,
+                      issue_number: submodule.pr_number,
+                      body: commentBody
+                    });
+                    core.info(`Added new comment to PR #${submodule.pr_number} in ${submodule.repoName} linking back to base PR #${basePrNumber}`);
+                  }
+                } catch (error) {
+                  core.warning(`Error adding/updating comment to PR #${submodule.pr_number} for ${submodule.repoName}: ${error.message}`);
+                }
+              }
+            }
+
       - name: Update comment with submodule PR links
         id: update-comment
         uses: actions/github-script@v7
