@@ -203,13 +203,6 @@ jobs:
               body: newBody,
             });
 
-      - name: Checkout PR branch
-        uses: actions/checkout@v4
-        with:
-          token:       ${{ env.RW_PAT }}
-          ref:         ${{ steps.pr.outputs.base_ref }}
-          fetch-depth: 0
-          submodules:  false
 
       # INIT SUBMOD INFO 
       - name: Read gitmodules file
