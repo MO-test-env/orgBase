@@ -376,12 +376,9 @@ jobs:
                       core.info(`Found exact match with PR branch name: ${exactMatch}`);
                       normalizedBranches = [exactMatch];
                     } else {
-                            // Fall back to first branch
-                            core.info(`Falling back to first branch: ${normalizedBranches[0]}`);
-                            normalizedBranches = [normalizedBranches[0]];
-                          }
-                        }
-                      }
+                      // Fall back to first branch
+                      core.info(`Falling back to first branch: ${normalizedBranches[0]}`);
+                      normalizedBranches = [normalizedBranches[0]];
                     }
                   }
 
