@@ -692,9 +692,9 @@ jobs:
                   );
                   
                   // Add a comment to the submodule PR linking back to the base PR
-                  let commentBody = `#🔗 This submodule PR is part of a larger change in the parent repository.\n`;
-                  commentBody += `Please review the [base PR #${basePrNumber}](${basePrUrl}) for context on how this submodule change fits into the overall update.
-                  commentBody += \n_This comment was automatically added by the submodule linking workflow._`;
+                  let commentBody = `## 🔗 This submodule PR is part of a larger change in the parent repository. \n`;
+                  commentBody += `Please review the [base PR #${basePrNumber}](${basePrUrl}) for context on how this submodule change fits into the overall update.`;
+                  commentBody += `\n_This comment was automatically added by the submodule linking workflow._`;
                   
                   if (existingComment) {
                     // Update the existing comment
