@@ -260,8 +260,8 @@ jobs:
               per_page: 100
             });
 
-            // Process each submodule
-            for (const [submodule, submoduleData] of Object.entries(gitModules)) {
+            // Process each submodule in parallel
+            const submodulePromises = Object.entries(gitModules).map(async ([submodule, submoduleData]) => {
               try {
                 // Get the submodule's content from the PR branch
                 const { data: prContent } = await github.rest.repos.getContent({
@@ -355,7 +355,7 @@ jobs:
                     core.warning(`No branches found for submodule ${submodule} with SHA ${sha} after extensive search`);
                     core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha} after extensive search`);
                     core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha} after extensive search.`);
-                    continue;
+                    return;
                   }
               
                   if (normalizedBranches.length > 1) {
@@ -386,15 +386,29 @@ jobs:
                   }
 
                   core.info(`Updating submodule ${submodule}: SHA=${sha}, Branch=${normalizedBranches[0]}`);
-                updatedModules[submodule] = {
-                    ...submoduleData,
-                  sha,
-                    prBranch: normalizedBranches[0]
+                  return {
+                    submodule,
+                    data: {
+                      ...submoduleData,
+                      sha,
+                      prBranch: normalizedBranches[0]
+                    }
                   };
                 }
               } catch (error) {
                 core.warning(`Error processing submodule ${submodule}: ${error.message}`);
-                continue;
+                return null;
+              }
+            });
+
+            // Wait for all submodule processing to complete
+            const results = await Promise.allSettled(submodulePromises);
+            
+            // Process results
+            for (const result of results) {
+              if (result.status === 'fulfilled' && result.value) {
+                const { submodule, data } = result.value;
+                updatedModules[submodule] = data;
               }
             }
 
@@ -496,7 +510,7 @@ jobs:
 
                 // If no PR found, keep the default values set earlier
                 if (!relevantPr) {
-                  continue;
+                  return { name, data: baseSubmodule };
                 }
                 
                 let prInfo = relevantPr;
