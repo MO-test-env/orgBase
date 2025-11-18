@@ -402,7 +402,17 @@ jobs:
             });
 
             // Wait for all submodule processing to complete
-            const results = await Promise.allSettled(submodulePromises);
+            let results;
+            try {
+              results = await Promise.allSettled(submodulePromises);
+            } catch (error) {
+              core.setFailed(`Error executing Promise.allSettled for submodules: ${error.message}`);
+              core.setOutput('failMsg', `Error executing Promise.allSettled for submodules: ${error.message}`);
+              return;
+            } finally {
+              // Cleanup operations can be added here if needed
+              // For now, we're just ensuring the promise execution is handled properly
+            }
             
             // Process results
             for (const result of results) {
