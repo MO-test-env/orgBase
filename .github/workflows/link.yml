@@ -353,9 +353,57 @@ jobs:
 
                   if (normalizedBranches.length === 0) {
                     core.warning(`No branches found for submodule ${submodule} with SHA ${sha} after extensive search`);
-                    core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha} after extensive search`);
-                    core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha} after extensive search.`);
-                    return;
+                    
+                    // Check if the submodule is on the default branch before failing
+                    try {
+                      // Get the default branch for the submodule
+                      const defaultBranch = submoduleData.subDefaultBranch;
+                      
+                      if (defaultBranch) {
+                        core.info(`Checking if SHA ${sha} is on the default branch '${defaultBranch}' for submodule ${submodule}`);
+                        
+                        // Get the SHA of the default branch
+                        const { data: defaultBranchRef } = await github.rest.git.getRef({
+                          owner: process.env.OWNER,
+                          repo: submoduleData.repoName,
+                          ref: `heads/${defaultBranch}`
+                        });
+                        
+                        const defaultBranchSha = defaultBranchRef.object.sha;
+                        
+                        // If the SHA matches the default branch, use the default branch
+                        if (sha === defaultBranchSha) {
+                          core.info(`Submodule ${submodule} is already on the default branch '${defaultBranch}' with SHA ${sha}`);
+                          normalizedBranches = [defaultBranch];
+                        } else {
+                          // Check if the SHA is in the history of the default branch
+                          const { data: comparison } = await github.rest.repos.compareCommits({
+                            owner: process.env.OWNER,
+                            repo: submoduleData.repoName,
+                            base: sha,
+                            head: defaultBranch
+                          });
+                          
+                          if (comparison.status === 'ahead' || comparison.status === 'identical') {
+                            core.info(`Submodule ${submodule} SHA ${sha} is in the history of the default branch '${defaultBranch}'`);
+                            normalizedBranches = [defaultBranch];
+                          } else {
+                            core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha} after extensive search`);
+                            core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha} after extensive search.`);
+                            return;
+                          }
+                        }
+                      } else {
+                        core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha} and no default branch information available`);
+                        core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha} and no default branch information available.`);
+                        return;
+                      }
+                    } catch (error) {
+                      core.warning(`Error checking if submodule ${submodule} is on default branch: ${error.message}`);
+                      core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha} after extensive search`);
+                      core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha} after extensive search.`);
+                      return;
+                    }
                   }
               
                   if (normalizedBranches.length > 1) {
