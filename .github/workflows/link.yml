@@ -508,7 +508,7 @@ jobs:
                   isPRCreated: false,
                   approvals: null,
                   merged: true,
-                  mergeable_state: 'clean',
+                  mergeable_state: null,
                   sha: sub.sha,
                 };
                 continue;
@@ -815,7 +815,7 @@ jobs:
             
             submodules.forEach(sub => {
               const icon = getStatusIcon(sub);
-              const prDisplay = sub.isPRCreated ? `[#${sub.pr_number}](${sub.prLink})` : (sub.pr_number === '0' ? 'default' : 'none');
+              const prDisplay = sub.isPRCreated ? `[#${sub.pr_number}](${sub.prLink})` : (sub.pr_number === '0' ? 'Already Merged' : 'none');
               const approvalsDisplay = sub.approvals !== null ? `${sub.approvals}` : '-';
               const stateDisplay = sub.merged || sub.prState || '-';
               appendMsg += `| ${icon} | \`${sub.path}\` | \`${sub.prBranch}\` | ${prDisplay} | ${approvalsDisplay} | ${stateDisplay} |\n`;
@@ -842,7 +842,7 @@ jobs:
                 
                 // Extract the branch name from the prBranch property if available
                 // Otherwise use the PR branch name from the base PR
-                const prBranch = sub.prBranch ? sub.prBranch.replace(/^origin\//, '') : `${{ steps.pr.outputs.head_ref}}`;
+                const prBranch = sub.prBranch ? sub.prBranch.replace(/^origin\//, '') : process.env.PR_BRANCH;
                 
                 // Skip if the branch name is the same as the base branch
                 if (prBranch === sub.baseBranch) {
