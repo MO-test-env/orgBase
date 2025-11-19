@@ -842,7 +842,7 @@ jobs:
                 
                 // Extract the branch name from the prBranch property if available
                 // Otherwise use the PR branch name from the base PR
-                const prBranch = sub.prBranch ? sub.prBranch.replace(/^origin//, '') : `${{ steps.pr.outputs.head_ref}}`;
+                const prBranch = sub.prBranch ? sub.prBranch.replace(/^origin\//, '') : `${{ steps.pr.outputs.head_ref}}`;
                 
                 // Skip if the branch name is the same as the base branch
                 if (prBranch === sub.baseBranch) {
