@@ -508,6 +508,7 @@ jobs:
                   isPRCreated: false,
                   approvals: null,
                   merged: true,
+                  prState: null,
                   mergeable_state: null,
                   sha: sub.sha,
                 };
