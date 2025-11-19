@@ -823,7 +823,7 @@ jobs:
             
             appendMsg += "\n### 🎯 Action Items\n\n";
             const missingBranches = submodules.filter(s => !s.isBranchExist);
-            const missingPRs = submodules.filter(s => s.isBranchExist && !s.isPRCreated);
+            const missingPRs = submodules.filter(s => s.isBranchExist && !s.isPRCreated && s.prBranch !== s.baseBranch);
             const pendingApprovals = submodules.filter(s => s.isPRCreated && (s.approvals < parseInt(process.env.MIN_REVIEWERS) || s.changeRequests > 0));
             
             // Check if reviewers were added to any PRs
@@ -835,9 +835,20 @@ jobs:
             if (missingPRs.length > 0) {
               appendMsg += `🔄 **Create PRs**:\n`;
               for (const sub of missingPRs) {
+                // Skip if the branch is the default branch
+                if (sub.prBranch === sub.baseBranch) {
+                  continue;
+                }
+                
                 // Extract the branch name from the prBranch property if available
                 // Otherwise use the PR branch name from the base PR
-                const prBranch = sub.prBranch ? sub.prBranch.replace(/^origin\//, '') : `${{ steps.pr.outputs.head_ref}}`;
+                const prBranch = sub.prBranch ? sub.prBranch.replace(/^origin//, '') : `${{ steps.pr.outputs.head_ref}}`;
+                
+                // Skip if the branch name is the same as the base branch
+                if (prBranch === sub.baseBranch) {
+                  continue;
+                }
+                
                 const compareUrl = `https://github.com/${owner}/${sub.directory}/compare/${sub.baseBranch}...${prBranch}?expand=1`;
                 appendMsg += `- [Create PR for ${sub.directory}](${compareUrl}) (${sub.baseBranch} ← ${prBranch})\n`;
               }
