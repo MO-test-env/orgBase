@@ -632,14 +632,16 @@ jobs:
             core.info(unmergedJson);
             core.setOutput('unmerged', unmergedJson);
             
-            // Check if the number of PRs found matches the number of updated submodules
+            // Check if the number of PRs found matches the number of updated submodules that need PRs
             const updatedSubmodules = Object.keys(submods).length;
+            const submodulesOnDefaultBranch = submodulesArray.filter(s => s.prBranch === s.baseBranch).length;
+            const submodulesNeedingPRs = updatedSubmodules - submodulesOnDefaultBranch;
             const foundPRs = submodulesArray.filter(s => s.isPRCreated && s.pr_number && s.pr_number !== '0').length;
             
-            core.info(`Updated submodules: ${updatedSubmodules}, Found PRs: ${foundPRs}`);
+            core.info(`Updated submodules: ${updatedSubmodules}, Submodules on default branch: ${submodulesOnDefaultBranch}, Submodules needing PRs: ${submodulesNeedingPRs}, Found PRs: ${foundPRs}`);
             
-            if (updatedSubmodules > 0 && foundPRs !== updatedSubmodules) {
-              const errorMsg = `Mismatch between updated submodules (${updatedSubmodules}) and found PRs (${foundPRs}). Please ensure all submodule changes have corresponding PRs.`;
+            if (submodulesNeedingPRs > 0 && foundPRs !== submodulesNeedingPRs) {
+              const errorMsg = `Mismatch between submodules needing PRs (${submodulesNeedingPRs}) and found PRs (${foundPRs}). Please ensure all submodule changes have corresponding PRs.`;
               core.setFailed(errorMsg);
               core.setOutput('failMsg', errorMsg);
             }
@@ -885,8 +887,8 @@ jobs:
               resolutionSteps = "_Please ensure you have pushed up your branches or ensure that the base sha is pointing to the right place._";
             } else if ('${{ steps.pre-check-submod.conclusion }}' == 'failure'){
               appendMsg = "Submodule pre-check failed. " + (process.env.FAIL_MSG_PRE_CHECK_SUBMOD || "");
-              if (appendMsg.includes("Mismatch between updated submodules")) {
-                resolutionSteps = "_Please ensure all submodule changes have corresponding PRs. Each updated submodule must have exactly one PR._";
+              if (appendMsg.includes("Mismatch between submodules needing PRs")) {
+                resolutionSteps = "_Please ensure all submodule changes have corresponding PRs. Each updated submodule must have exactly one PR, except for submodules already on their default branch._";
               } else {
                 resolutionSteps = "_Please ensure all submodule PRs are created and properly linked._";
               }
