@@ -508,8 +508,7 @@ jobs:
                   isPRCreated: false,
                   approvals: null,
                   merged: true,
-                  prState: null,
-                  mergeable_state: null,
+                  mergeable_state: 'clean',
                   sha: sub.sha,
                 };
                 continue;
@@ -599,7 +598,7 @@ jobs:
                 const approvedUsers = Object.values(latestByUser).filter(s => s === 'APPROVED');
                 const approvalCount = approvedUsers.length;
                 const changeRequestCount = Object.values(latestByUser).filter(s => s === 'CHANGES_REQUESTED').length;
-                const prState = prInfo.merged_at ? 'merged' : prInfo.state === 'closed' ? 'closed' : 'open';
+                const prState = prInfo.number === 0 ? null : prInfo.merged_at ? 'merged' : prInfo.state === 'closed' ? 'closed' : 'open';
                 
                 // Update the submodule with PR information
                 submodules[name] = {
