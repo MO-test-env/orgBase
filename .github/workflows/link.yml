@@ -818,7 +818,7 @@ jobs:
               const prDisplay = sub.isPRCreated ? `[#${sub.pr_number}](${sub.prLink})` : (sub.pr_number === '0' ? 'On Delivery Branch' : 'none');
               const approvalsDisplay = sub.approvals !== null ? `${sub.approvals}` : '-';
               let stateDisplay = sub.merged || sub.prState || '-';
-              if (sub.prState === null && sub.pr_number === '0' ){
+              if ( sub.pr_number === '0' ){
                 stateDisplay = '-';
               }
               appendMsg += `| ${icon} | \`${sub.path}\` | \`${sub.prBranch}\` | ${prDisplay} | ${approvalsDisplay} | ${stateDisplay} |\n`;
