@@ -817,7 +817,7 @@ jobs:
               const icon = getStatusIcon(sub);
               const prDisplay = sub.isPRCreated ? `[#${sub.pr_number}](${sub.prLink})` : (sub.pr_number === '0' ? 'Already Merged' : 'none');
               const approvalsDisplay = sub.approvals !== null ? `${sub.approvals}` : '-';
-              const stateDisplay = sub.merged || sub.prState || '-';
+              const stateDisplay = sub.merged || (sub.prState === null ? '-' : sub.prState) || '-';
               appendMsg += `| ${icon} | \`${sub.path}\` | \`${sub.prBranch}\` | ${prDisplay} | ${approvalsDisplay} | ${stateDisplay} |\n`;
             });
             
