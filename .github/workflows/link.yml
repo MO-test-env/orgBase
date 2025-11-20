@@ -246,6 +246,7 @@ jobs:
         env:
           GIT_MODULES: ${{ steps.read-modules-file.outputs.git_modules }}
           PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
         with:
           script: |
             const gitModules = JSON.parse(process.env.GIT_MODULES);
@@ -275,7 +276,7 @@ jobs:
                   const sha = prContent.sha;
                   
                   // Step 1: Try to find branches where the SHA is at the head (most accurate)
-                  let normalizedBranches = [];
+                  let branchesContainingSha = [];
                   try {
                     const { data: branches } = await github.rest.repos.listBranchesForHeadCommit({
                       owner: process.env.OWNER,
@@ -283,15 +284,72 @@ jobs:
                       commit_sha: sha
                     });
 
-                    normalizedBranches = branches
+                    branchesContainingSha = branches
                       .map(branch => branch.name)
                       .filter(branch => branch !== 'HEAD' && !branch.startsWith('origin/'));
                   } catch (error) {
                     core.warning(`Error finding branches for head commit ${sha}: ${error.message}`);
                   }
 
-                  // Step 2: If no branches found, try to find PRs containing this SHA
-                  if (normalizedBranches.length === 0) {
+                  // Step 2: If no branches found based on PR directly, check if sha is on default branch or target branch of the base ref (already delivered)
+                  if(branchesContainingSha.length === 0){
+                    core.info('Checking if SHA is on delivery branch ')
+                    // Get the default branch and base ref
+                    const defaultBranch = submoduleData.subDefaultBranch;
+                    const baseRef = process.env.BASE_REF;
+                    
+                    // Check branches to try in order
+                    const branchesToCheck = [];
+                    if (defaultBranch) branchesToCheck.push(defaultBranch);
+                    if (baseRef && (!defaultBranch || baseRef !== defaultBranch)) branchesToCheck.push(baseRef);
+                    
+                    // Try each branch
+                    for (const branchName of branchesToCheck) {
+                      try {
+                        core.info(`Checking if branch '${branchName}' includes SHA ${sha} for submodule ${submodule}`);
+                        
+                        // Directly check if the branch contains the commit using GitHub API
+                        const { data: commits } = await github.rest.repos.listCommits({
+                          owner: process.env.OWNER,
+                          repo: submoduleData.repoName,
+                          sha: branchName,
+                          per_page: 100
+                        });
+                        
+                        // Check if any of the commits match our SHA
+                        const foundCommit = commits.find(commit => commit.sha === sha);
+                        
+                        if (foundCommit) {
+                          core.info(`Found SHA ${sha} on branch '${branchName}' for submodule ${submodule}`);
+                          branchesContainingSha = [branchName];
+                          break;
+                        } else {
+                          // If not found in the first 100 commits, try using compareCommits as a fallback
+                          try {
+                          const { data: comparison } = await github.rest.repos.compareCommits({
+                            owner: process.env.OWNER,
+                            repo: submoduleData.repoName,
+                            base: sha,
+                            head: branchName
+                          });
+                          
+                          if (comparison.status === 'ahead' || comparison.status === 'identical') {
+                            core.info(`Submodule ${submodule} SHA ${sha} is in the history of branch '${branchName}'`);
+                            branchesContainingSha = [branchName];
+                            break;
+                            }
+                          } catch (compareError) {
+                            core.warning(`Error comparing commits for submodule ${submodule}: ${compareError.message}`);
+                          }
+                        }
+                      } catch (error) {
+                        core.warning(`Error checking if submodule ${submodule} is on branch '${branchName}': ${error.message}`);
+                      }
+                    }
+                  }
+
+                  // Step 3: If still no branch, check if there is a PR associated with this sha (this API checks if its a branch on an open PR or delivered sha )
+                  if (branchesContainingSha.length === 0) {
                     core.info(`No branches with SHA ${sha} as head found for submodule ${submodule}. Looking for PRs containing this SHA...`);
                     try {
                       const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
@@ -303,140 +361,39 @@ jobs:
                       if (prs.length > 0) {
                         // Extract branch names from PRs
                         const prBranches = prs.map(pr => pr.head.ref);
-                        normalizedBranches = prBranches.filter(branch => branch !== 'HEAD' && !branch.startsWith('origin/'));
-                        core.info(`Found PRs with branches: ${normalizedBranches.join(', ')} containing SHA ${sha}`);
+                        branchesContainingSha = prBranches.filter(branch => branch !== 'HEAD' && !branch.startsWith('origin/'));
+                        core.info(`Found PRs with branches: ${branchesContainingSha.join(', ')} containing SHA ${sha}`);
                       }
                     } catch (error) {
                       core.warning(`Error finding PRs for commit ${sha}: ${error.message}`);
                     }
                   }
 
-                  // Step 3: If still no branches found, try to search through all branches (this can be expensive with hundreds of branches)
-                  if (normalizedBranches.length === 0) {
-                    core.info(`No PRs found with SHA ${sha} for submodule ${submodule}. Searching through branches...`);
-                    try {
-                      // Get list of branches (limit to 100 to avoid excessive API calls)
-                      const { data: allBranches } = await github.rest.repos.listBranches({
-                        owner: process.env.OWNER,
-                        repo: submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git', ''),
-                        per_page: 100
-                      });
-                      
-                      // For each branch, check if it contains our commit
-                      // We'll limit this to avoid excessive API calls
-                      const branchesToCheck = allBranches.slice(0, 30); // Check up to 30 branches
-                      
-                      for (const branch of branchesToCheck) {
-                        try {
-                          const { data: comparison } = await github.rest.repos.compareCommits({
-                            owner: process.env.OWNER,
-                            repo: submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git', ''),
-                            base: sha,
-                            head: branch.name
-                          });
-                          
-                          // If the comparison shows our SHA is an ancestor of the branch head
-                          if (comparison.status === 'ahead' || comparison.status === 'identical') {
-                            normalizedBranches.push(branch.name);
-                            core.info(`Found branch ${branch.name} containing SHA ${sha}`);
-                            break; // Found one branch, that's enough
-                          }
-                        } catch (error) {
-                          // Skip errors for individual branches
-                          continue;
-                        }
-                      }
-                    } catch (error) {
-                      core.warning(`Error searching branches for commit ${sha}: ${error.message}`);
-                    }
-                  }
-
-                  if (normalizedBranches.length === 0) {
+                  // Parse the final results 
+                  if (branchesContainingSha.length === 0) {
                     core.warning(`No branches found for submodule ${submodule} with SHA ${sha} after extensive search`);
-                    
-                    // Check if the submodule is on the default branch before failing
-                    try {
-                      // Get the default branch for the submodule
-                      const defaultBranch = submoduleData.subDefaultBranch;
-                      
-                      if (defaultBranch) {
-                        core.info(`Checking if SHA ${sha} is on the default branch '${defaultBranch}' for submodule ${submodule}`);
-                        
-                        // Get the SHA of the default branch
-                        const { data: defaultBranchRef } = await github.rest.git.getRef({
-                          owner: process.env.OWNER,
-                          repo: submoduleData.repoName,
-                          ref: `heads/${defaultBranch}`
-                        });
-                        
-                        const defaultBranchSha = defaultBranchRef.object.sha;
-                        
-                        // If the SHA matches the default branch, use the default branch
-                        if (sha === defaultBranchSha) {
-                          core.info(`Submodule ${submodule} is already on the default branch '${defaultBranch}' with SHA ${sha}`);
-                          normalizedBranches = [defaultBranch];
-                        } else {
-                          // Check if the SHA is in the history of the default branch
-                          const { data: comparison } = await github.rest.repos.compareCommits({
-                            owner: process.env.OWNER,
-                            repo: submoduleData.repoName,
-                            base: sha,
-                            head: defaultBranch
-                          });
-                          
-                          if (comparison.status === 'ahead' || comparison.status === 'identical') {
-                            core.info(`Submodule ${submodule} SHA ${sha} is in the history of the default branch '${defaultBranch}'`);
-                            normalizedBranches = [defaultBranch];
-                          } else {
-                            core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha} after extensive search`);
-                            core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha} after extensive search.`);
-                            return;
-                          }
-                        }
-                      } else {
-                        core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha} and no default branch information available`);
-                        core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha} and no default branch information available.`);
-                        return;
-                      }
-                    } catch (error) {
-                      core.warning(`Error checking if submodule ${submodule} is on default branch: ${error.message}`);
-                      core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha} after extensive search`);
-                      core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha} after extensive search.`);
-                      return;
-                    }
+                    core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha}`);
+                    core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha}`);
+                    return;
                   }
-              
-                  if (normalizedBranches.length > 1) {
-                    core.info(`Submodule ${submodule} with SHA ${sha} is present on multiple branches: ${normalizedBranches.join(', ')}. Selecting best match.`);
-                    
-                    // Try to find a branch that matches the PR branch name pattern
-                    const prBranchName = process.env.PR_BRANCH;
-                    
-                    // Priority order for branch selection:
-                    // 1. Exact match with base PR branch name
-                    // 5. First in the list
-                    // TODO  - get this back to the original logic of matches base pr branch name, handle multiple rbanches with sha 
-                    // if multiple and any non main then STOP - cant pick a branch
-                    
-                    // Check for exact match with PR branch name
-                    const exactMatch = normalizedBranches.find(branch => branch === prBranchName);
-                    if (exactMatch) {
-                      core.info(`Found exact match with PR branch name: ${exactMatch}`);
-                      normalizedBranches = [exactMatch];
-                    } else {
-                      // Fall back to first branch
-                      core.info(`Falling back to first branch: ${normalizedBranches[0]}`);
-                      normalizedBranches = [normalizedBranches[0]];
-                    }
+                  if (branchesContainingSha.length > 1){
+                    core.setFailed(`Submodule ${submodule} with SHA ${sha} is present on multiple branches: ${branchesContainingSha.join(', ')}. `);
+                    core.setOutput("failMsg", `Submodule ${submodule} with SHA ${sha} is present on multiple branches: ${branchesContainingSha.join(', ')}. Workflow cannot guess best match.`);
+                    return;
                   }
+                  if (branchesContainingSha.length === 1) {
+                    core.info(`Submodule ${submodule} with SHA ${sha} is present on only 1 branch `);
+                    branchesContainingSha = [branchesContainingSha[0]];
+                  }
+                  
 
-                  core.info(`Updating submodule ${submodule}: SHA=${sha}, Branch=${normalizedBranches[0]}`);
+                  core.info(`Updating submodule ${submodule}: SHA=${sha}, Branch=${branchesContainingSha[0]}`);
                   return {
                     submodule,
                     data: {
                       ...submoduleData,
                       sha,
-                      prBranch: normalizedBranches[0]
+                      prBranch: branchesContainingSha[0]
                     }
                   };
                 }
