@@ -274,9 +274,11 @@ jobs:
 
                 if (prContent && prContent.type === 'submodule') {
                   const sha = prContent.sha;
-                  
-                  // Step 1: Try to find branches where the SHA is at the head (most accurate)
                   let branchesContainingSha = [];
+                  let prBranch = null;
+                  let prNumber = null;
+
+                  // Try to find branches where the SHA is at the head. This is very important to help create the PRs 
                   try {
                     const { data: branches } = await github.rest.repos.listBranchesForHeadCommit({
                       owner: process.env.OWNER,
@@ -284,15 +286,20 @@ jobs:
                       commit_sha: sha
                     });
 
-                    branchesContainingSha = branches
-                      .map(branch => branch.name)
-                      .filter(branch => branch !== 'HEAD' && !branch.startsWith('origin/'));
+                    branchesContainingSha = branches.map(branch => branch.name).filter(branch => branch !== 'HEAD' && !branch.startsWith('origin/'));
+                    if ( branchesContainingSha.length > 1 ){
+                      core.setFailed(`Submodule ${submodule} with SHA ${sha} is present on multiple branches: ${branchesContainingSha.join(', ')}. `);
+                      core.setOutput("failMsg", `Submodule ${submodule} with SHA ${sha} is present on multiple branches: ${branchesContainingSha.join(', ')}. Workflow cannot guess best match.`);
+                      return;
+                    } else {
+                      prBranch = branchesContainingSha[0];
+                    }
                   } catch (error) {
                     core.warning(`Error finding branches for head commit ${sha}: ${error.message}`);
                   }
 
-                  // Step 2: If no branches found based on PR directly, check if sha is on default branch or target branch of the base ref (already delivered)
-                  if(branchesContainingSha.length === 0){
+                  // If no branches found based on PR directly, check if sha is on default branch or target branch of the base ref (already delivered)
+                  if( prBranch == null ){
                     core.info('Checking if SHA is on delivery branch ')
                     // Get the default branch and base ref
                     const defaultBranch = submoduleData.subDefaultBranch;
@@ -321,7 +328,8 @@ jobs:
                         
                         if (foundCommit) {
                           core.info(`Found SHA ${sha} on branch '${branchName}' for submodule ${submodule}`);
-                          branchesContainingSha = [branchName];
+                          prBranch = branchName; 
+                          prNumber = 0; // Indicate already merged
                           break;
                         } else {
                           // If not found in the first 100 commits, try using compareCommits as a fallback
@@ -335,7 +343,8 @@ jobs:
                           
                           if (comparison.status === 'ahead' || comparison.status === 'identical') {
                             core.info(`Submodule ${submodule} SHA ${sha} is in the history of branch '${branchName}'`);
-                            branchesContainingSha = [branchName];
+                            prBranch = branchName;
+                            prNumber = 0; // Indicate already merged
                             break;
                             }
                           } catch (compareError) {
@@ -347,22 +356,38 @@ jobs:
                       }
                     }
                   }
-
-                  // Step 3: If still no branch, check if there is a PR associated with this sha (this API checks if its a branch on an open PR or delivered sha )
-                  if (branchesContainingSha.length === 0) {
+                  // If still no branch OR no pr number, check if there is a PR associated with this sha/ branch to fill out missing details 
+                  // This API checks if its a branch on an open PR or delivered sha. The most recently modified will be first. 
+                  if (prBranch === null || prNumber == null) {
                     core.info(`No branches with SHA ${sha} as head found for submodule ${submodule}. Looking for PRs containing this SHA...`);
                     try {
                       const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
                         owner: process.env.OWNER,
                         repo: submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git', ''),
-                        commit_sha: sha
+                        commit_sha: sha, 
+                        sort: 'updated',
                       });
                       
                       if (prs.length > 0) {
-                        // Extract branch names from PRs
+                        // Extract branch names from PRs and filter out invalid ones
                         const prBranches = prs.map(pr => pr.head.ref);
                         branchesContainingSha = prBranches.filter(branch => branch !== 'HEAD' && !branch.startsWith('origin/'));
+                        
                         core.info(`Found PRs with branches: ${branchesContainingSha.join(', ')} containing SHA ${sha}`);
+                        if (prs.length > 1) {
+                          core.warning(`Submodule ${submodule} SHA ${sha} is present on multiple open PRs. Using most recently modified (PR #${prNumber}) for branch ${prBranch}`);
+                          // Could fail here but I think most recent is OK. 
+                        }
+                        // Use the most recently modified PR (first in the sorted list)
+                        const mostRecentPr = prs[0];
+                        prNumber = mostRecentPr.number;
+                        prBranch = mostRecentPr.head.ref; // Set the branch from the PR
+                      } else {
+                        core.info(`No PRs found for commit ${sha} in submodule ${submodule}`);
+                        if (prBranch != null){
+                          // No PRs found, set to -1 to indicate PR not created yet
+                          prNumber = -1;
+                        }
                       }
                     } catch (error) {
                       core.warning(`Error finding PRs for commit ${sha}: ${error.message}`);
@@ -370,30 +395,23 @@ jobs:
                   }
 
                   // Parse the final results 
-                  if (branchesContainingSha.length === 0) {
-                    core.warning(`No branches found for submodule ${submodule} with SHA ${sha} after extensive search`);
+                  // if neither fail, if no PR but yes br then ok
+                  if (prBranch === null){
+                    core.warning(`No branch found for submodule ${submodule} with SHA ${sha} after extensive search`);
                     core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha}`);
                     core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha}`);
                     return;
                   }
-                  if (branchesContainingSha.length > 1){
-                    core.setFailed(`Submodule ${submodule} with SHA ${sha} is present on multiple branches: ${branchesContainingSha.join(', ')}. `);
-                    core.setOutput("failMsg", `Submodule ${submodule} with SHA ${sha} is present on multiple branches: ${branchesContainingSha.join(', ')}. Workflow cannot guess best match.`);
-                    return;
-                  }
-                  if (branchesContainingSha.length === 1) {
-                    core.info(`Submodule ${submodule} with SHA ${sha} is present on only 1 branch `);
-                    branchesContainingSha = [branchesContainingSha[0]];
-                  }
-                  
-
-                  core.info(`Updating submodule ${submodule}: SHA=${sha}, Branch=${branchesContainingSha[0]}`);
+              
+                  //Key for initializing PR numbers: 0 already merged, -1 PR not created yet, else actual PR number 
+                  core.info(`Updating submodule ${submodule}: SHA=${sha}, Branch=${prBranch}, PR Number=${prNumber}`);
                   return {
                     submodule,
                     data: {
                       ...submoduleData,
                       sha,
-                      prBranch: branchesContainingSha[0]
+                      prBranch: prBranch,
+                      prNumber: prNumber
                     }
                   };
                 }
@@ -456,123 +474,82 @@ jobs:
             for (const [name, sub] of Object.entries(submods)) {
               let prBranch = (sub.prBranch || '').replace(/^origin\//, '');
               
-              if (prBranch === sub.baseBranch) {
-                submodules[name] = {
-                  ...sub,
-                  pr_number: '0',
-                  prLink: null,
-                  isBranchExist: true,
-                  isPRCreated: false,
-                  approvals: null,
-                  merged: true,
-                  mergeable_state: 'clean',
-                  sha: sub.sha,
-                };
+              // Reuse the PR number found in the previous step
+              // Create full submodule obj: path, url, baseBranch, configuredBranch, subDefaultBranch, repoName, sha, prBranch, prNumber, prLink, isBranchExist, isPrCreated, approvals, merged, mergeableState
+
+              let prNumber = sub.prNumber;
+              // If we already have a PR number from the previous step, use it
+              if (prNumber !== null && prNumber !== undefined) {
+                if (prNumber === 0) {
+                  // Already merged
+                  submodules[name] = {
+                    ...sub,
+                    pr_number: '0',
+                    prLink: null,
+                    isPRCreated: false,
+                    merged: true,
+                    mergeableState: 'clean'
+                  };
+                } else if (prNumber === -1) {
+                  // PR not created yet
+                  submodules[name] = {
+                    ...sub,
+                    pr_number: null,
+                    prLink: null,
+                    isPRCreated: false,
+                    merged: false
+                  };
+                } else {
+                  // PR exists
+                  submodules[name] = {
+                    ...sub,
+                    pr_number: prNumber,
+                    prLink: `https://github.com/${process.env.OWNER}/${sub.repoName}/pull/${prNumber}`,
+                    isPRCreated: true,
+                    merged: false
+                  };
+                  
+                  // Get additional PR information
+                  // TODO ADD BACK IN RETRY LOOP 
+                  try {
+                    const { data: prInfo } = await github.rest.pulls.get({
+                      owner: process.env.OWNER,
+                      repo: sub.repoName,
+                      pull_number: prNumber
+                    });
+                    
+                    const { data: reviews } = await github.rest.pulls.listReviews({
+                      owner: process.env.OWNER,
+                      repo: sub.repoName,
+                      pull_number: prNumber,
+                    });
+                    
+                    const latestByUser = {};
+                    for (const review of reviews) {
+                      latestByUser[review.user.login] = review.state;
+                    }
+                    const approvedUsers = Object.values(latestByUser).filter(s => s === 'APPROVED');
+                    const approvalCount = approvedUsers.length;
+                    const changeRequestCount = Object.values(latestByUser).filter(s => s === 'CHANGES_REQUESTED').length;
+                    const prState = prInfo.number === 0 ? null : prInfo.merged_at ? 'merged' : prInfo.state === 'closed' ? 'closed' : 'open';
+                    
+                    submodules[name] = {
+                      ...sub,
+                      prLink: prInfo.html_url,
+                      approvals: approvalCount,
+                      changeRequests: changeRequestCount,
+                      prState: prState,
+                      merged: prInfo.merged,
+                      mergeableState: prInfo.mergeable_state
+                    };
+                  } catch (error) {
+                    console.log(`Error getting additional PR info for submodule ${name}: ${error.message}`);
+                  }
+                }
                 continue;
               }
               
-              // Start with base submodule info
-              submodules[name] = {
-                ...sub,
-                directory: sub.repoName,
-                branchName: prBranchName,
-                isBranchExist: true,
-                isPRCreated: false,
-                merged: false
-              };
-              
-              try {
-                // Try to find PR by commit SHA first (most accurate)
-                const prsWithCommit = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                  owner: process.env.OWNER,
-                  repo: sub.repoName,
-                  commit_sha: sub.sha
-                });
 
-                let relevantPr = prsWithCommit.data.find(pr => pr.base.ref === sub.baseBranch);
-
-                // If no PR found but we know the branch name, check if the SHA is in that branch's history
-                if (!relevantPr && prBranch) {
-                  // Use the branch-based approach as fallback
-                  let branchPrs = await github.rest.pulls.list({
-                    owner: process.env.OWNER,
-                    repo: sub.repoName,
-                    head: `${process.env.OWNER}:${prBranch}`,
-                    base: sub.baseBranch,
-                    state: 'all',
-                    sort: 'updated', 
-                    direction: 'desc',
-                    per_page: 4,
-                  });
-                  
-                  // For each PR from this branch, check if it contains our SHA
-                  for (const pr of branchPrs.data) {
-                    const commits = await github.rest.pulls.listCommits({
-                      owner: process.env.OWNER,
-                      repo: sub.repoName,
-                      pull_number: pr.number
-                    });
-                    
-                    if (commits.data.some(commit => commit.sha === sub.sha)) {
-                      relevantPr = pr;
-                      break;
-                    }
-                  }
-                }
-
-                // If no PR found, keep the default values set earlier
-                if (!relevantPr) {
-                  return { name, data: baseSubmodule };
-                }
-                
-                let prInfo = relevantPr;
-                if (!prInfo.merged && (prInfo.mergeable_state === undefined || prInfo.mergeable_state === 'unknown')) {
-                  for (let i = 0; i < 3; i++) {
-                    console.log(`Retrying... ${i}`);
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                    const retry = await github.rest.pulls.get({
-                      owner: process.env.OWNER,
-                      repo: sub.repoName,
-                      pull_number: prInfo.number
-                    });
-                    prInfo = retry.data;
-                    if (prInfo.merged === true || (prInfo.mergeable_state !== undefined && prInfo.mergeable_state !== 'unknown')) {
-                      break;
-                    }
-                  }
-                }
-                
-                const { data: reviews } = await github.rest.pulls.listReviews({
-                  owner: process.env.OWNER,
-                  repo: sub.repoName,
-                  pull_number: prInfo.number,
-                });
-                
-                const latestByUser = {};
-                for (const review of reviews) {
-                  latestByUser[review.user.login] = review.state;
-                }
-                const approvedUsers = Object.values(latestByUser).filter(s => s === 'APPROVED');
-                const approvalCount = approvedUsers.length;
-                const changeRequestCount = Object.values(latestByUser).filter(s => s === 'CHANGES_REQUESTED').length;
-                const prState = prInfo.number === 0 ? null : prInfo.merged_at ? 'merged' : prInfo.state === 'closed' ? 'closed' : 'open';
-                
-                // Update the submodule with PR information
-                submodules[name] = {
-                  ...submodules[name],
-                  pr_number: prInfo.number,
-                  ticketNum: prInfo.number,
-                  prLink: prInfo.html_url,
-                  isPRCreated: true,
-                  approvals: approvalCount,
-                  changeRequests: changeRequestCount,
-                  prState: prState,
-                  merged: prInfo.merged,
-                  mergeable_state: prInfo.mergeable_state
-                };
-              } catch (error) {
-                console.log(`Error processing submodule ${name}: ${error.message}`);
-              }
             }
             
             // Convert object to array for output
