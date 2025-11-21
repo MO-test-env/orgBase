@@ -240,7 +240,7 @@ jobs:
             core.setOutput('git_modules', json);
       
       - name: Update submodules with SHA, PR branch, and PR number where possible
-        id: diff-submodules
+        id: diff-submodule-getprbr-getprnum
         uses: actions/github-script@v7
         env:
           GIT_MODULES: ${{ steps.read-modules-file.outputs.git_modules }}
@@ -337,9 +337,9 @@ jobs:
                   prNumber = prObj.number;
 
                   // warning if head-of-branch contradicts PR branch
-                  if (headBranches.length === 1 && headBranches[0] !== prBranch) {
+                  if (branchesContainingSha.length === 1 && branchesContainingSha[0] !== prBranch) {
                     core.warning(
-                      `SHA ${sha} is HEAD of '${headBranches[0]}' but open PR uses branch '${prBranch}'.`
+                      `SHA ${sha} is HEAD of '${branchesContainingSha[0]}' but open PR uses branch '${prBranch}'.`
                     );
                   }
                 }
@@ -355,15 +355,15 @@ jobs:
                 }
 
                 // SHA is HEAD of exactly one branch → no PR yet
-                else if (headBranches.length === 1) {
-                  prBranch = headBranches[0];
+                else if (branchesContainingSha.length === 1) {
+                  prBranch = branchesContainingSha[0];
                   prNumber = -1;
                 }
 
                 // SHA is HEAD of multiple branches → ambiguous
-                else if (headBranches.length > 1) {
+                else if (branchesContainingSha.length > 1) {
                   core.setFailed(
-                    `SHA ${sha} is HEAD of multiple branches (${headBranches}) and has no PR.`
+                    `SHA ${sha} is HEAD of multiple branches (${branchesContainingSha}) and has no PR.`
                   );
                   return;
                 }
