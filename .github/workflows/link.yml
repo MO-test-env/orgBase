@@ -763,6 +763,7 @@ jobs:
                 const compareUrl = `https://github.com/${owner}/${sub.repoName}/compare/${sub.baseBranch}...${prBranch}?expand=1`;
                 appendMsg += `- [Create PR for ${sub.repoName}](${compareUrl}) (${sub.baseBranch} ← ${prBranch})\n`;
               }
+              appendMsg += '\n';
             }
             if (pendingApprovals.length > 0) {
               appendMsg += `👀 **Request reviews**: ${pendingApprovals.map(s => '[' + s.repoName + '#' + s.prNumber + '](' + s.prLink + ')').join(', ')}\n`;
