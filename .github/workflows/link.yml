@@ -502,7 +502,7 @@ jobs:
                 } else {
                   // PR exists, need to pre-check/ fetch more info 
                     try {
-                    // Check mergeability/ conflicts
+                      // Check mergeability/ conflicts
                       // Retry logic for getting PR info when merged or mergeable_state is undefined
                       let prInfo = null;
                       let retryCount = 0;
@@ -548,7 +548,7 @@ jobs:
                         core.warning(`PR info still incomplete after retries (merged: ${prInfo.merged}, mergeable_state: ${prInfo.mergeable_state})`);
                       }
 
-                    // Check approvals 
+                      // Check approvals 
                       const { data: reviews } = await github.rest.pulls.listReviews({
                         owner: process.env.OWNER,
                         repo: sub.repoName,
@@ -571,7 +571,7 @@ jobs:
                         isPRCreated: true,
                         prState: prState,
                         merged: prInfo.merged,
-                        mergeableState: prInfo.mergeable_state
+                        mergeableState: prInfo.mergeable_state,
                         approvals: approvalCount,
                         changeRequests: changeRequestCount,
                       };
