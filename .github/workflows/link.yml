@@ -759,7 +759,7 @@ jobs:
             const { data: comment } = await github.rest.issues.getComment({ owner, repo, comment_id: commentId, });
             
             function getStatusIcon(sub) {
-              if (!sub.isBranchExist) return '❌';
+              if (!sub.prBranch) return '❌';
               if (!sub.isPRCreated) return '🔄';
               if (sub.approvals !== null && (sub.approvals < parseInt(process.env.MIN_REVIEWERS) || sub.changeRequests > 0)) return '⏳';
               if (sub.isPRCreated) return '✅';
@@ -767,7 +767,7 @@ jobs:
             }
             
             function getStatusText(sub) {
-              if (!sub.isBranchExist) return '**Branch missing**';
+              if (!sub.prBranch) return '**Branch missing**';
               if (!sub.isPRCreated) return '**PR missing**';
               if (sub.approvals !== null) {
                 if (sub.approvals < parseInt(process.env.MIN_REVIEWERS)) return '**Pending approval**';
@@ -793,8 +793,8 @@ jobs:
             });
             
             appendMsg += "\n### 🎯 Action Items\n\n";
-            const missingBranches = submodulesAfterPrecheck.filter(s => !s.isBranchExist);
-            const missingPRs = submodulesAfterPrecheck.filter(s => s.isBranchExist && !s.isPRCreated && s.prBranch !== s.baseBranch);
+            const missingBranches = submodulesAfterPrecheck.filter(s => !s.prBranch);
+            const missingPRs = submodulesAfterPrecheck.filter(s => s.prBranch && !s.isPRCreated && s.prBranch !== s.baseBranch);
             const pendingApprovals = submodulesAfterPrecheck.filter(s => s.isPRCreated && (s.approvals < parseInt(process.env.MIN_REVIEWERS) || s.changeRequests > 0));
             
             // Check if reviewers were added to any PRs
