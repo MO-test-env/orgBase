@@ -699,7 +699,7 @@ jobs:
             function getStatusIcon(sub) {
               if (!sub.prBranch) return '❌';
               if (!sub.isPRCreated && sub.prNumber === -1) return '🔄';
-              if (!sub.isPRCreated) return '❌';
+              if (!sub.isPRCreated) return '☑️';
               if (sub.approvals !== null && (sub.approvals < parseInt(process.env.MIN_REVIEWERS) || sub.changeRequests > 0)) return '⏳';
               if (sub.isPRCreated) return '✅';
               return '❓';
