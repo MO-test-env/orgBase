@@ -34,7 +34,7 @@ env:
   MIN_REVIEWERS: 2
   OWNER: ${{ inputs.owner }}
   REPO: ${{ inputs.repo }}
-  BASE_PR_NUMBER: ${{ inputs.base_pr_number }}
+  BASE_PR_NUMBER: ${{ inputs.pr_number }}
   COMMENT_ID: ${{ inputs.comment_id }}
 
 jobs:
@@ -676,7 +676,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           SUBMODULES_JSON: ${{ steps.pre-check-submod.outputs.submod_after_precheck }}
-          BASE_PR_NUMBER: ${{ inputs.base_pr_number }}
+          BASE_PR_NUMBER: ${{ env.BASE_PR_NUMBER }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
