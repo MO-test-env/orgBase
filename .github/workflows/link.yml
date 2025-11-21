@@ -11,8 +11,8 @@ on:
         description: 'Repository'
         required: true
         type: string
-      base_pr_number:
-        description: 'PR Number'
+      pr_number:
+        description: 'Base PR Number'
         required: true
         type: number
       comment_id:
