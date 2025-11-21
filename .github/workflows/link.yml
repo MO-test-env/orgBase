@@ -423,7 +423,7 @@ jobs:
                   submodulesAfterPrecheck[name] = {
                     ...sub,
                     prLink: null,
-                    isPRCreated: true,
+                    isPRCreated: false,
                     merged: true,
                     mergeableState: 'clean', 
                     approvals: null,
