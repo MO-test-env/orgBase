@@ -240,7 +240,7 @@ jobs:
             core.setOutput('git_modules', json);
       
       - name: Update submodules with SHA, PR branch, and PR number where possible
-        id: diff-submodule-getprbr-getprnum
+        id: diff-getprbr-getprnum
         uses: actions/github-script@v7
         env:
           GIT_MODULES: ${{ steps.read-modules-file.outputs.git_modules }}
@@ -403,7 +403,7 @@ jobs:
         id: pre-check-submod
         uses: actions/github-script@v7
         env:
-          SUBMODULES_JSON: ${{ steps.diff-submodules.outputs.submod_with_pr_branches }}
+          SUBMODULES_JSON: ${{ steps.diff-getprbr-getprnum.outputs.submod_with_pr_branches }}
           PR_BRANCH: ${{ steps.pr.outputs.head_ref }}
           BASE_BRANCH: ${{ steps.pr.outputs.base_ref }}
         with:
@@ -526,7 +526,7 @@ jobs:
             const submodulesAfterPrecheckJson = JSON.stringify(submodulesArray, null, 2);
             core.info("Submodule JSON:");
             core.info(submodulesAfterPrecheckJson);
-            core.setOutput('submod_after_precheck', submodulesAfterPrecheckJson);
+              core.setOutput('submod_after_precheck', submodulesAfterPrecheckJson);
             
             // Filter only unmerged submodules
             const unmerged = submodulesArray.filter(s => s.merged === false);
@@ -792,7 +792,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           JOB_NAME: ${{ github.job }}
-          FAIL_MSG_DIFF_SUBMODULES: ${{ steps.diff-submodules.outputs.failMsg }}
+          FAIL_MSG_DIFF_SUBMODULES: ${{ steps.diff-getprbr-getprnum.outputs.failMsg }}
           FAIL_MSG_PRE_CHECK_SUBMOD: ${{ steps.pre-check-submod.outputs.failMsg }}
         with:
           script: |
@@ -804,8 +804,8 @@ jobs:
             let appendMsg = "";
             let resolutionSteps = "";
             
-            if ('${{ steps.diff-submodules.conclusion }}' == 'failure'){
-              appendMsg = "Submodule diff failed. " + (process.env.FAIL_MSG_DIFF_SUBMODULES || "");
+            if ('${{ steps.diff-getprbr-getprnum.conclusion }}' == 'failure'){
+              appendMsg = "Failed to parse submodule diff, get submodule PR branches, or submodule PR numbers." + (process.env.FAIL_MSG_DIFF_SUBMODULES || "");
               resolutionSteps = "_Please ensure you have pushed up your branches or ensure that the base sha is pointing to the right place._";
             } else if ('${{ steps.pre-check-submod.conclusion }}' == 'failure'){
               appendMsg = "Submodule pre-check failed. " + (process.env.FAIL_MSG_PRE_CHECK_SUBMOD || "");
