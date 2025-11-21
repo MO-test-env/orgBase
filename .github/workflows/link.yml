@@ -251,7 +251,6 @@ jobs:
           script: |
             const gitModules = JSON.parse(process.env.GIT_MODULES);
             const submodulesWithPrBranches = {};
-            const submodulesWithPrBranches = {};
             const errors = [];
 
             // Get the list of changed files in the PR
