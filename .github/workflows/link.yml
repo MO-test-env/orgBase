@@ -511,7 +511,8 @@ jobs:
                     prLink: null,
                     isPRCreated: false,
                     merged: true,
-                    mergeableState: 'clean'
+                    mergeableState: 'clean', 
+                    approvals: null,
                   };
                 } else if (prNumber === -1) {
                   // PR not created yet (no precheck needed)
@@ -519,7 +520,8 @@ jobs:
                     ...sub,
                     prLink: null,
                     isPRCreated: false,
-                    merged: false
+                    merged: false, 
+                    approvals: null,
                   };
                 } else {
                   // PR exists, need to pre-check/ fetch more info 
