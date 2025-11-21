@@ -357,7 +357,7 @@ jobs:
                   }
                   // If still no branch OR no pr number, check if there is a PR associated with this sha/ branch to fill out missing details 
                   // This API checks if its a branch on an open PR or delivered sha. The most recently modified will be first. 
-                  if (prBranch === null) {
+                  if (prNumber === null) {
                     core.info(`No branches with SHA ${sha} as head found for submodule ${submodule}. Looking for PRs containing this SHA...`);
                     try {
                       const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
