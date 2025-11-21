@@ -279,6 +279,7 @@ jobs:
 
                   // Try to find branches where the SHA is at the head. This is very important to help create the PRs 
                   try {
+                    core.info(`Checking ${submoduleData.repoName}`);
                     const { data: branches } = await github.rest.repos.listBranchesForHeadCommit({
                       owner: process.env.OWNER,
                       repo: submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git', ''),
@@ -313,41 +314,49 @@ jobs:
                       try {
                         core.info(`Checking if branch '${branchName}' includes SHA ${sha} for submodule ${submodule}`);
                         
-                        // Directly check if the branch contains the commit using GitHub API
-                        const { data: commits } = await github.rest.repos.listCommits({
-                          owner: process.env.OWNER,
-                          repo: submoduleData.repoName,
-                          sha: branchName,
-                          per_page: 100
-                        });
-                        
-                        // Check if any of the commits match our SHA
-                        const foundCommit = commits.find(commit => commit.sha === sha);
-                        
-                        if (foundCommit) {
-                          core.info(`Found SHA ${sha} on branch '${branchName}' for submodule ${submodule}`);
-                          prBranch = branchName; 
-                          prNumber = 0; // Indicate already merged
-                          break;
-                        } else {
-                          // If not found in the first 100 commits, try using compareCommits as a fallback
-                          try {
-                          const { data: comparison } = await github.rest.repos.compareCommits({
+                        // Check if the commit exists in the repository at all
+                        try {
+                          const { data: commit } = await github.rest.git.getCommit({
                             owner: process.env.OWNER,
                             repo: submoduleData.repoName,
-                            base: sha,
-                            head: branchName
+                            commit_sha: sha
                           });
                           
-                          if (comparison.status === 'ahead' || comparison.status === 'identical') {
-                            core.info(`Submodule ${submodule} SHA ${sha} is in the history of branch '${branchName}'`);
-                            prBranch = branchName;
-                            prNumber = 0; // Indicate already merged
-                            break;
+                          // Commit exists, now check if it's reachable from the branch
+                          try {
+                            // Check if the commit is reachable from the branch
+                            const { data: reachability } = await github.rest.git.getRef({
+                              owner: process.env.OWNER,
+                              repo: submoduleData.repoName,
+                              ref: `heads/${branchName}`
+                            });
+                            
+                            // We can't directly check reachability with the GitHub API,
+                            // so we'll use a different approach: check if the commit is in the branch's history
+                            
+                            // List commits on the branch and see if our SHA is among them
+                            const { data: branchCommits } = await github.rest.repos.listCommits({
+                              owner: process.env.OWNER,
+                              repo: submoduleData.repoName,
+                              sha: branchName,
+                              per_page: 100
+                            });
+                            
+                            const foundCommit = branchCommits.find(commit => commit.sha === sha);
+                            if (foundCommit) {
+                              core.info(`Found SHA ${sha} on branch '${branchName}' for submodule ${submodule}`);
+                              prBranch = branchName; 
+                              prNumber = 0; // Indicate already merged
+                              break;
                             }
-                          } catch (compareError) {
-                            core.warning(`Error comparing commits for submodule ${submodule}: ${compareError.message}`);
+                          } catch (refError) {
+                            // If we can't get the ref, try another approach
+                            core.warning(`Could not check reachability for branch '${branchName}': ${refError.message}`);
                           }
+                        } catch (commitError) {
+                          // Commit doesn't exist in repository
+                          core.warning(`Commit ${sha} does not exist in repository ${submoduleData.repoName}`);
+                          break;
                         }
                       } catch (error) {
                         core.warning(`Error checking if submodule ${submodule} is on branch '${branchName}': ${error.message}`);
@@ -381,11 +390,19 @@ jobs:
                         prBranch = mostRecentPr.head.ref; // Set the branch from the PR
                       } else {
                         core.info(`No PRs found for commit ${sha} in submodule ${submodule}`);
-                        // No PRs found and no branch found, this is a failure case
-                        core.warning(`No branch found for submodule ${submodule} with SHA ${sha} after extensive search`);
-                        core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha}`);
-                        core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha}`);
-                        return;
+                        // Check if we already found the commit on a branch (but it's not the HEAD of that branch)
+                        if (prBranch !== null) {
+                          // We found the commit on a branch (like main), but it's not the HEAD
+                          // This means it was merged directly to the branch without a PR
+                          core.info(`Commit ${sha} was found on branch ${prBranch} but is not the HEAD. Treating as already merged.`);
+                          prNumber = 0; // Indicate already merged
+                        } else {
+                          // No PRs found and no branch found, this is a failure case
+                          core.warning(`No branch found for submodule ${submodule} with SHA ${sha} after extensive search`);
+                          core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha}`);
+                          core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha}`);
+                          return;
+                        }
                       }
                     } catch (error) {
                       core.warning(`Error finding PRs for commit ${sha}: ${error.message}`);
@@ -407,6 +424,12 @@ jobs:
                     core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha}`);
                     core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha}`);
                     return;
+                  }
+                  
+                  // If we have a branch but no PR number, treat it as valid (already merged)
+                  // This handles the case where a commit was merged directly to the branch without a PR
+                  if (prNumber === null && prBranch !== null) {
+                    prNumber = 0; // Indicate already merged
                   }
               
                   //Key for initializing PR numbers: 0 already merged, -1 PR not created yet, else actual PR number 
@@ -483,7 +506,7 @@ jobs:
               if (prNumber !== null && prNumber !== undefined) {
                 if (prNumber === 0) {
                   // Already merged (no pre-check needed)
-                  submodules[name] = {
+                  submodulesAfterPrecheck[name] = {
                     ...sub,
                     prLink: null,
                     isPRCreated: false,
