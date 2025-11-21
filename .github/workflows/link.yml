@@ -11,7 +11,7 @@ on:
         description: 'Repository'
         required: true
         type: string
-      pr_number:
+      base_pr_number:
         description: 'PR Number'
         required: true
         type: number
@@ -34,7 +34,7 @@ env:
   MIN_REVIEWERS: 2
   OWNER: ${{ inputs.owner }}
   REPO: ${{ inputs.repo }}
-  PR_NUMBER: ${{ inputs.pr_number }}
+  BASE_PR_NUMBER: ${{ inputs.base_pr_number }}
   COMMENT_ID: ${{ inputs.comment_id }}
 
 jobs:
@@ -60,7 +60,7 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const prNumber = process.env.PR_NUMBER;
+            const prNumber = process.env.BASE_PR_NUMBER;
             const pr = await github.rest.pulls.get({
               owner: process.env.OWNER,
               repo: process.env.REPO,
@@ -83,7 +83,6 @@ jobs:
             
             core.setOutput("head_ref", pr.data.head.ref);
             core.setOutput("base_ref", pr.data.base.ref);
-            core.setOutput("pr_number", pr.data.number);
             core.setOutput("reviewers", JSON.stringify(reviewers));
             core.setOutput("team_reviewers", JSON.stringify(teamReviewers));
             core.setOutput("assignees", JSON.stringify(assignees));
@@ -257,7 +256,7 @@ jobs:
             const { data: files } = await github.rest.pulls.listFiles({
               owner: process.env.OWNER,
               repo: process.env.REPO,
-              pull_number: process.env.PR_NUMBER,
+              pull_number: process.env.BASE_PR_NUMBER,
               per_page: 100
             });
 
@@ -677,7 +676,7 @@ jobs:
         uses: actions/github-script@v7
         env:
           SUBMODULES_JSON: ${{ steps.pre-check-submod.outputs.submod_after_precheck }}
-          BASE_PR_NUMBER: ${{ inputs.pr_number }}
+          BASE_PR_NUMBER: ${{ inputs.base_pr_number }}
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
@@ -783,7 +782,7 @@ jobs:
             
             submodulesAfterPrecheck.forEach(sub => {
               const icon = getStatusIcon(sub);
-              const prDisplay = sub.isPRCreated ? `[#${sub.pr_number}](${sub.prLink})` : (sub.prNumber === '0' ? 'On Delivery Branch' : 'none');
+              const prDisplay = sub.isPRCreated ? `[#${sub.prNumber}](${sub.prLink})` : (sub.prNumber === '0' ? 'On Delivery Branch' : 'none');
               const approvalsDisplay = sub.approvals !== null ? `${sub.approvals}` : '-';
               let stateDisplay = sub.merged || sub.prState || '-';
               if ( sub.prNumber === '0' ){
