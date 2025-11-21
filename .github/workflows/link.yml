@@ -238,7 +238,7 @@ jobs:
             core.info("Submodules JSON:");
             core.info(json);
             core.setOutput('git_modules', json);
-
+      
       - name: Update submodules with SHA, PR branch, and PR number where possible
         id: diff-submodules
         uses: actions/github-script@v7
@@ -250,20 +250,25 @@ jobs:
           script: |
             const gitModules = JSON.parse(process.env.GIT_MODULES);
             const submodulesWithPrBranches = {};
-            const errors = [];
 
-            // Get the list of changed files in the PR
-            const { data: files } = await github.rest.pulls.listFiles({
-              owner: process.env.OWNER,
-              repo: process.env.REPO,
-              pull_number: process.env.BASE_PR_NUMBER,
-              per_page: 100
-            });
-
-            // Process each submodule in parallel
-            const submodulePromises = Object.entries(gitModules).map(async ([submodule, submoduleData]) => {
+            // Helper: check if sha is anywhere on a branch (not only HEAD)
+            async function shaInBranch(owner, repo, branch, sha) {
               try {
-                // Get the submodule's content from the PR branch
+                const { data: commits } = await github.rest.repos.listCommits({
+                  owner,
+                  repo,
+                  sha: branch,
+                  per_page: 100
+                });
+                return commits.some(c => c.sha === sha);
+              } catch (err) {
+                return false;
+              }
+            }
+
+            for (const [submodule, submoduleData] of Object.entries(gitModules)) {
+              try {
+                // Get the SHA of the submodule from the PR branch
                 const { data: prContent } = await github.rest.repos.getContent({
                   owner: process.env.OWNER,
                   repo: process.env.REPO,
@@ -271,212 +276,134 @@ jobs:
                   ref: process.env.PR_BRANCH
                 });
 
-                if (prContent && prContent.type === 'submodule') {
-                  const sha = prContent.sha;
-                  let branchesContainingSha = [];
-                  let prBranch = null;
-                  let prNumber = null;
+                if (!prContent || prContent.type !== "submodule") {
+                  // Not submodule change so ignore
+                  continue;
+                }
 
-                  // Try to find branches where the SHA is at the head. This is very important to help create the PRs 
-                  try {
-                    core.info(`Checking ${submoduleData.repoName}`);
-                    const { data: branches } = await github.rest.repos.listBranchesForHeadCommit({
+                const sha = prContent.sha;
+                const repoName = submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git','');
+                const submodBaseBranch = submoduleData.baseBranch;
+
+                let branchesContainingSha = [];
+                let prBranch = null;
+                let prNumber = null;
+
+                // Try to find branches where the SHA is at the head. This is very important to help create the PRs 
+                try {
+                  const { data: branches } = await github.rest.repos.listBranchesForHeadCommit({
+                    owner: process.env.OWNER,
+                    repo: repoName,
+                    commit_sha: sha,
+                  });
+                  branchesContainingSha = branches.map(b => b.name);
+                } catch (err) {
+                  core.warning(`Could not list branches for head commit ${sha}: ${err.message}`);
+                }
+
+                // Check if SHA is on the default branch (like if delivered or reverted)
+                let isShaOnBaseBranch = false;
+                if (submodBaseBranch) {
+                  isShaOnBaseBranch = await shaInBranch(process.env.OWNER, repoName, submodBaseBranch, sha);
+                }
+
+                // Find all PRs associated with the commit
+                let prs = [];
+                try {
+                  const { data: prList } =
+                    await github.rest.repos.listPullRequestsAssociatedWithCommit({
                       owner: process.env.OWNER,
-                      repo: submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git', ''),
+                      repo: repoName,
                       commit_sha: sha
                     });
+                  prs = prList;
+                } catch (err) {
+                  core.warning(`Unable to find PRs associated with ${sha}: ${err.message}`);
+                }
 
-                    branchesContainingSha = branches.map(branch => branch.name).filter(branch => branch !== 'HEAD' && !branch.startsWith('origin/'));
-                    if ( branchesContainingSha.length > 1 ){
-                      core.warning(`Submodule ${submodule} with SHA ${sha} is present on multiple branches: ${branchesContainingSha.join(', ')}. Using first match.`);
-                      prBranch = branchesContainingSha[0];
-                    } else if (branchesContainingSha.length === 1) {
-                      prBranch = branchesContainingSha[0];
-                    }
-                  } catch (error) {
-                    core.warning(`Error finding branches for head commit ${sha}: ${error.message}`);
-                  }
+                const openPRs = prs.filter(pr => pr.state === "open");
+                const mergedPRs = prs.filter(pr => pr.merged_at);
 
-                  // If no branches found based on PR directly, check if sha is on default branch or target branch of the base ref (already delivered)
-                  if( prBranch == null ){
-                    core.info('Checking if SHA is on delivery branch ')
-                    // Get the default branch and base ref
-                    const defaultBranch = submoduleData.subDefaultBranch;
-                    const baseRef = process.env.BASE_REF;
-                    
-                    // Check branches to try in order
-                    const branchesToCheck = [];
-                    if (defaultBranch) branchesToCheck.push(defaultBranch);
-                    if (baseRef && (!defaultBranch || baseRef !== defaultBranch)) branchesToCheck.push(baseRef);
-                    
-                    // Try each branch
-                    for (const branchName of branchesToCheck) {
-                      try {
-                        core.info(`Checking if branch '${branchName}' includes SHA ${sha} for submodule ${submodule}`);
-                        
-                        // Check if the commit exists in the repository at all
-                        try {
-                          const { data: commit } = await github.rest.git.getCommit({
-                            owner: process.env.OWNER,
-                            repo: submoduleData.repoName,
-                            commit_sha: sha
-                          });
-                          
-                          // Commit exists, now check if it's reachable from the branch
-                          try {
-                            // Check if the commit is reachable from the branch
-                            const { data: reachability } = await github.rest.git.getRef({
-                              owner: process.env.OWNER,
-                              repo: submoduleData.repoName,
-                              ref: `heads/${branchName}`
-                            });
-                            
-                            // We can't directly check reachability with the GitHub API,
-                            // so we'll use a different approach: check if the commit is in the branch's history
-                            
-                            // List commits on the branch and see if our SHA is among them
-                            const { data: branchCommits } = await github.rest.repos.listCommits({
-                              owner: process.env.OWNER,
-                              repo: submoduleData.repoName,
-                              sha: branchName,
-                              per_page: 100
-                            });
-                            
-                            const foundCommit = branchCommits.find(commit => commit.sha === sha);
-                            if (foundCommit) {
-                              core.info(`Found SHA ${sha} on branch '${branchName}' for submodule ${submodule}`);
-                              prBranch = branchName; 
-                              prNumber = 0; // Indicate already merged
-                              break;
-                            }
-                          } catch (refError) {
-                            // If we can't get the ref, try another approach
-                            core.warning(`Could not check reachability for branch '${branchName}': ${refError.message}`);
-                          }
-                        } catch (commitError) {
-                          // Commit doesn't exist in repository
-                          core.warning(`Commit ${sha} does not exist in repository ${submoduleData.repoName}`);
-                          break;
-                        }
-                      } catch (error) {
-                        core.warning(`Error checking if submodule ${submodule} is on branch '${branchName}': ${error.message}`);
-                      }
-                    }
-                  }
-                  // If still no branch OR no pr number, check if there is a PR associated with this sha/ branch to fill out missing details 
-                  // This API checks if its a branch on an open PR or delivered sha. The most recently modified will be first. 
-                  if (prNumber === null) {
-                    core.info(`No branches with SHA ${sha} as head found for submodule ${submodule}. Looking for PRs containing this SHA...`);
-                    try {
-                      const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
-                        owner: process.env.OWNER,
-                        repo: submoduleData.repoName || submoduleData.url.split('/').pop().replace('.git', ''),
-                        commit_sha: sha, 
-                        sort: 'updated',
-                      });
-                      
-                      if (prs.length > 0) {
-                        // Extract branch names from PRs and filter out invalid ones
-                        const prBranches = prs.map(pr => pr.head.ref);
-                        branchesContainingSha = prBranches.filter(branch => branch !== 'HEAD' && !branch.startsWith('origin/'));
-                        
-                        core.info(`Found PRs with branches: ${branchesContainingSha.join(', ')} containing SHA ${sha}`);
-                        if (prs.length > 1) {
-                          core.warning(`Submodule ${submodule} SHA ${sha} is present on multiple open PRs. Using most recently modified (PR #${prs[0].number}) for branch ${prs[0].head.ref}`);
-                        }
-                        // Use the most recently modified PR (first in the sorted list)
-                        const mostRecentPr = prs[0];
-                        prNumber = mostRecentPr.number;
-                        prBranch = mostRecentPr.head.ref; // Set the branch from the PR
-                      } else {
-                        core.info(`No PRs found for commit ${sha} in submodule ${submodule}`);
-                        // Check if we already found the commit on a branch (but it's not the HEAD of that branch)
-                        if (prBranch !== null) {
-                          // We found the commit on a branch (like main), but it's not the HEAD
-                          // This means it was merged directly to the branch without a PR
-                          core.info(`Commit ${sha} was found on branch ${prBranch} but is not the HEAD. Treating as already merged.`);
-                          prNumber = 0; // Indicate already merged
-                        } else {
-                          // No PRs found and no branch found, this is a failure case
-                          core.warning(`No branch found for submodule ${submodule} with SHA ${sha} after extensive search`);
-                          core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha}`);
-                          core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha}`);
-                          return;
-                        }
-                      }
-                    } catch (error) {
-                      core.warning(`Error finding PRs for commit ${sha}: ${error.message}`);
-                      // If we can't find PRs and don't have a branch, this is a failure
-                      core.warning(`No branch found for submodule ${submodule} with SHA ${sha} after extensive search`);
-                      core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha} from PR`);
-                      core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha}`);
-                      return;
-                    }
-                  } else if (prBranch !== null && prNumber == null) {
-                    // We have a branch but no PR number, set to -1 to indicate PR not created yet
-                    prNumber = -1;
-                  }
+                // SHA is HEAD of a branch without a PR
+                if (branchesContainingSha.length > 0) {
+                  prBranch = branchesContainingSha[0];
+                  prNumber = -1; // PR not created yet
 
-                  // Parse the final results 
-                  // if neither fail, if no PR but yes br then ok
-                  if (prBranch === null){
-                    core.warning(`No branch found for submodule ${submodule} with SHA ${sha} after extensive search`);
-                    core.setFailed(`No branches found for submodule ${submodule} with SHA ${sha}`);
-                    core.setOutput("failMsg", `No branches found for submodule ${submodule} with SHA ${sha}`);
+                  // If also associated with a PR → warn on mismatch
+                  if (openPRs.length === 1) {
+                    const prBranchName = openPRs[0].head.ref;
+                    if (prBranchName !== prBranch) {
+                      core.warning(
+                        `SHA ${sha} is HEAD of branch '${prBranch}' but associated PR uses branch '${prBranchName}'.`
+                      );
+                    }
+                    prBranch = prBranchName;
+                    prNumber = openPRs[0].number;
+                  }
+                }
+
+                // SHA is not head but exists on default branch
+                else if (isShaOnBaseBranch) {
+                  prBranch = submodBaseBranch;
+                  prNumber = 0;
+                }
+
+                // PR associations
+                else {
+                  // Multiple open PRs → fail
+                  if (openPRs.length > 1) {
+                    core.setFailed(
+                      `SHA ${sha} is associated with multiple OPEN PRs: ${openPRs.map(p => p.number)}`
+                    );
                     return;
                   }
-                  
-                  // If we have a branch but no PR number, treat it as valid (already merged)
-                  // This handles the case where a commit was merged directly to the branch without a PR
-                  if (prNumber === null && prBranch !== null) {
-                    prNumber = 0; // Indicate already merged
-                  }
-              
-                  //Key for initializing PR numbers: 0 already merged, -1 PR not created yet, else actual PR number 
-                  core.info(`Updating submodule ${submodule}: SHA=${sha}, Branch=${prBranch}, PR Number=${prNumber}`);
-                  return {
-                    submodule,
-                    data: {
-                      ...submoduleData,
-                      sha,
-                      prBranch: prBranch,
-                      prNumber: prNumber
+
+                  // One open PR → use it
+                  if (openPRs.length === 1) {
+                    const prBranchName = openPRs[0].head.ref;
+
+                    // Warn if HEAD-branch check contradicts this
+                    if (branchesContainingSha.length === 1 && branchesContainingSha[0] !== prBranchName) {
+                      core.warning(
+                        `SHA ${sha} is HEAD of '${branchesContainingSha[0]}' but associated PR uses '${prBranchName}'.`
+                      );
                     }
-                  };
+
+                    prBranch = prBranchName;
+                    prNumber = openPRs[0].number;
+                  }
+
+                  // No open PRs but merged PRs exist → merged
+                  else if (mergedPRs.length > 0) {
+                    prBranch = submodBaseBranch;
+                    prNumber = 0;
+                  }
+
+                  // No PR at all → ambiguous
+                  else {
+                    core.setFailed(
+                      `SHA ${sha} is NOT on head of any branch, not on default branch, and has no associated PRs.`
+                    );
+                    return;
+                  }
                 }
-              } catch (error) {
-                core.warning(`Error processing submodule ${submodule}: ${error.message}`);
-                return null;
-              }
-            });
 
-            // Wait for all submodule processing to complete
-            let results;
-            try {
-              results = await Promise.allSettled(submodulePromises);
-            } catch (error) {
-              core.setFailed(`Error executing Promise.allSettled for submodules: ${error.message}`);
-              core.setOutput('failMsg', `Error executing Promise.allSettled for submodules: ${error.message}`);
-              return;
-            } finally {
-              // Cleanup operations can be added here if needed
-              // For now, we're just ensuring the promise execution is handled properly
-            }
-            
-            // Process results
-            for (const result of results) {
-              if (result.status === 'fulfilled' && result.value) {
-                const { submodule, data } = result.value;
-                submodulesWithPrBranches[submodule] = data;
-              }
-            }
+                //
+                // Save result
+                //
+                submodulesWithPrBranches[submodule] = {
+                  ...submoduleData,
+                  sha,
+                  prBranch,
+                  prNumber
+                };
 
-            // Handle any errors
-            if (errors.length > 0) {
-              const errorMsg = errors.join('\n');
-              core.setFailed('The following errors occurred while processing submodules:\n' + errorMsg);
-              core.setOutput('failMsg', errorMsg);
-              return;
+                core.info(`Resolved ${submodule}: sha=${sha}, branch=${prBranch}, prNumber=${prNumber}`);
+
+              } catch (err) {
+                core.setFailed(`Error processing submodule ${submodule}: ${err.message}`);
+                return;
+              }
             }
 
             const submodulesWithPrBranchesJSON = JSON.stringify(submodulesWithPrBranches, null, 2);
