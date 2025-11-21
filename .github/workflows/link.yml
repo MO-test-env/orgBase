@@ -51,7 +51,7 @@ jobs:
             const repo = process.env.REPO;
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
             let appendMsg = "\n# 🔗 Submodule Link Workflow\n";
-            appendMsg += `[View workflow](${runUrl})\n`;
+            appendMsg += `[🖥️ View workflow](${runUrl})\n`;
             appendMsg += "**_(Step 1/2)_** Fetching PR details and submodule info...";
             await github.rest.issues.updateComment({ owner, repo, comment_id: commentId, body: appendMsg, });
 
