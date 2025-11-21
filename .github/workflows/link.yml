@@ -294,7 +294,7 @@ jobs:
                   const { data: branches } = await github.rest.repos.listBranchesForHeadCommit({
                     owner: process.env.OWNER,
                     repo: repoName,
-                    commit_sha: sha,
+                    commit_sha: sha
                   });
                   branchesContainingSha = branches.map(b => b.name);
                 } catch (err) {
@@ -324,73 +324,59 @@ jobs:
                 const openPRs = prs.filter(pr => pr.state === "open");
                 const mergedPRs = prs.filter(pr => pr.merged_at);
 
-                // SHA is HEAD of a branch without a PR
-                if (branchesContainingSha.length > 0) {
-                  prBranch = branchesContainingSha[0];
-                  prNumber = -1; // PR not created yet
-
-                  // If also associated with a PR → warn on mismatch
-                  if (openPRs.length === 1) {
-                    const prBranchName = openPRs[0].head.ref;
-                    if (prBranchName !== prBranch) {
-                      core.warning(
-                        `SHA ${sha} is HEAD of branch '${prBranch}' but associated PR uses branch '${prBranchName}'.`
-                      );
-                    }
-                    prBranch = prBranchName;
-                    prNumber = openPRs[0].number;
-                  }
-                }
-
-                // SHA is not head but exists on default branch
-                else if (isShaOnBaseBranch) {
+                // SHA on delivery branch 
+                if (isShaOnBaseBranch) {
                   prBranch = submodBaseBranch;
                   prNumber = 0;
                 }
 
-                // PR associations
-                else {
-                  // Multiple open PRs → fail
-                  if (openPRs.length > 1) {
-                    core.setFailed(
-                      `SHA ${sha} is associated with multiple OPEN PRs: ${openPRs.map(p => p.number)}`
+                // SHA has exactly one open PR
+                else if (openPRs.length === 1) {
+                  const prObj = openPRs[0];
+                  prBranch = prObj.head.ref;
+                  prNumber = prObj.number;
+
+                  // warning if head-of-branch contradicts PR branch
+                  if (headBranches.length === 1 && headBranches[0] !== prBranch) {
+                    core.warning(
+                      `SHA ${sha} is HEAD of '${headBranches[0]}' but open PR uses branch '${prBranch}'.`
                     );
-                    return;
-                  }
-
-                  // One open PR → use it
-                  if (openPRs.length === 1) {
-                    const prBranchName = openPRs[0].head.ref;
-
-                    // Warn if HEAD-branch check contradicts this
-                    if (branchesContainingSha.length === 1 && branchesContainingSha[0] !== prBranchName) {
-                      core.warning(
-                        `SHA ${sha} is HEAD of '${branchesContainingSha[0]}' but associated PR uses '${prBranchName}'.`
-                      );
-                    }
-
-                    prBranch = prBranchName;
-                    prNumber = openPRs[0].number;
-                  }
-
-                  // No open PRs but merged PRs exist → merged
-                  else if (mergedPRs.length > 0) {
-                    prBranch = submodBaseBranch;
-                    prNumber = 0;
-                  }
-
-                  // No PR at all → ambiguous
-                  else {
-                    core.setFailed(
-                      `SHA ${sha} is NOT on head of any branch, not on default branch, and has no associated PRs.`
-                    );
-                    return;
                   }
                 }
 
-                //
+                // SHA has merged PR(s)
+                else if (mergedPRs.length >= 1) {
+                  const latest = mergedPRs.sort(
+                    (a, b) => new Date(b.merged_at) - new Date(a.merged_at)
+                  )[0];
+
+                  prBranch = latest.head.ref;
+                  prNumber = latest.number;
+                }
+
+                // SHA is HEAD of exactly one branch → no PR yet
+                else if (headBranches.length === 1) {
+                  prBranch = headBranches[0];
+                  prNumber = -1;
+                }
+
+                // SHA is HEAD of multiple branches → ambiguous
+                else if (headBranches.length > 1) {
+                  core.setFailed(
+                    `SHA ${sha} is HEAD of multiple branches (${headBranches}) and has no PR.`
+                  );
+                  return;
+                }
+
+                // No PRs, not on head, not on base branch → fail
+                else {
+                  core.setFailed(
+                    `Could not determine PR or branch for SHA ${sha}. Not on default branch, not head of branch, no PRs.`
+                  );
+                  return;
+                }
+
                 // Save result
-                //
                 submodulesWithPrBranches[submodule] = {
                   ...submoduleData,
                   sha,
@@ -407,10 +393,11 @@ jobs:
             }
 
             const submodulesWithPrBranchesJSON = JSON.stringify(submodulesWithPrBranches, null, 2);
-            core.info("Added sha, PR branch, and PR number to submodule data JSON:");
+            core.info("Added sha, PR branch, and PR number:");
             core.info(submodulesWithPrBranchesJSON);
 
             core.setOutput('submod_with_pr_branches', submodulesWithPrBranchesJSON);
+
 
       - name: Pre-check all Submodules and add additional submodule fields 
         id: pre-check-submod
