@@ -436,7 +436,7 @@ jobs:
                   submodulesAfterPrecheck[name] = {
                     ...sub,
                     prLink: null,
-                    isPRCreated: false,
+                    isPRCreated: true,
                     merged: true,
                     mergeableState: 'clean', 
                     approvals: null,
@@ -711,7 +711,8 @@ jobs:
             
             function getStatusIcon(sub) {
               if (!sub.prBranch) return '❌';
-              if (!sub.isPRCreated) return '🔄';
+              if (!sub.isPRCreated && sub.prNumber === -1) return '🔄';
+              if (!sub.isPRCreated) return '❌';
               if (sub.approvals !== null && (sub.approvals < parseInt(process.env.MIN_REVIEWERS) || sub.changeRequests > 0)) return '⏳';
               if (sub.isPRCreated) return '✅';
               return '❓';
@@ -719,6 +720,7 @@ jobs:
             
             function getStatusText(sub) {
               if (!sub.prBranch) return '**Branch missing**';
+              if (!sub.isPRCreated && sub.prNumber === -1) return '**Create PR**';
               if (!sub.isPRCreated) return '**PR missing**';
               if (sub.approvals !== null) {
                 if (sub.approvals < parseInt(process.env.MIN_REVIEWERS)) return '**Pending approval**';
@@ -734,7 +736,7 @@ jobs:
             
             submodulesAfterPrecheck.forEach(sub => {
               const icon = getStatusIcon(sub);
-              const prDisplay = sub.isPRCreated ? `[#${sub.prNumber}](${sub.prLink})` : (sub.prNumber === '0' ? 'On Delivery Branch' : 'none');
+              const prDisplay = sub.isPRCreated ? `[#${sub.prNumber}](${sub.prLink})` : (sub.prNumber === 0 ? 'On Delivery Branch' : (sub.prNumber === -1 ? '**Create PR**' : 'none'));
               const approvalsDisplay = sub.approvals !== null ? `${sub.approvals}` : '-';
               let stateDisplay = sub.merged || sub.prState || '-';
               if ( sub.prNumber === '0' ){
