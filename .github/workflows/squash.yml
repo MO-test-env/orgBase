@@ -75,14 +75,14 @@ jobs:
               `Squash ${commits.data.length} commits\n\n` +
               commits.data.map(c => `- ${c.commit.message}`).join('\n');
 
-            // 1. Get HEAD commit (for tree SHA)
+            // Get HEAD commit (for tree SHA)
             const headCommit = await github.rest.git.getCommit({
               owner: headOwner,
               repo: headRepo,
               commit_sha: headSha,
             });
 
-            // 2. Create new commit with same tree and HEAD as parent
+            // Create new commit with same tree and HEAD as parent
             const newCommit = await github.rest.git.createCommit({
               owner: headOwner,
               repo: headRepo,
@@ -91,7 +91,7 @@ jobs:
               parents: [headSha],
             });
 
-            // 3. Update the branch IN THE HEAD REPO (fixes Not Found)
+            // Update the branch IN THE HEAD REPO 
             await github.rest.git.updateRef({
               owner: headOwner,
               repo: headRepo,
