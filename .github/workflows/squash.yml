@@ -28,7 +28,7 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const prNumber = core.getInput("pr_number");
+            const prNumber = parseInt("${{ inputs.pr_number }}");
             const { owner, repo } = context.repo;
 
             const commits = await github.rest.pulls.listCommits({
