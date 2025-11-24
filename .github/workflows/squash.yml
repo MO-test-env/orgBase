@@ -30,11 +30,13 @@ jobs:
           github-token: ${{ env.RW_PAT }}
           script: |
             const prNumber = parseInt("${{ inputs.pr_number }}");
-            
+            const owner = process.env.OWNER;
+            const repo = process.env.REPO;
+
             // Get the PR details
             const pr = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner,
+              repo,
               pull_number: prNumber,
             });
             
