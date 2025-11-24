@@ -15,18 +15,13 @@ permissions:
 
 env:
   RW_PAT: ${{ secrets.GITHUB_TOKEN }}
-  PR_NUMBER: ${{ inputs.pr_number }}
-
-concurrency:
-  group: squash-operations-${{ github.repository }}
-  cancel-in-progress: false
 
 jobs:
   squash-pr:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Check PR and commits
+      - name: Check PR commits
         id: check
         uses: actions/github-script@v7
         with:
@@ -48,8 +43,8 @@ jobs:
               core.setOutput("squash_result", "proceed");
             }
 
-      - name: Squash commits via Git API
-        if: steps.check.outputs.squash_result == 'proceed'
+      - name: Squash commits (API only)
+        if: steps.check.outputs.squash == 'proceed'
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
@@ -65,20 +60,18 @@ jobs:
               pull_number: prNumber,
             });
 
-            const headRef = pr.data.head.ref;   // branch name
-            const headSha = pr.data.head.sha;   // head commit SHA
+            const headSha = pr.data.head.sha;
 
-            // List commits
+            // Get all commits for message aggregation
             const commits = await github.rest.pulls.listCommits({
               owner,
               repo,
               pull_number: prNumber,
             });
 
-            // Compose squash commit message
-            const msg =
-              `Squash: ${commits.data.length} commits\n\n` +
-              commits.data.map(c => `- ${c.commit.message}`).join('\n');
+            const squashMessage =
+              `Squash ${commits.data.length} commits\n\n` +
+              commits.data.map(c => `- ${c.commit.message}`).join("\n");
 
             // Retrieve the HEAD commit’s tree
             const headCommit = await github.rest.git.getCommit({
@@ -87,7 +80,7 @@ jobs:
               commit_sha: headSha,
             });
 
-            const headTreeSha = headCommit.data.tree.sha;
+            const treeSha = headCommit.data.tree.sha;
 
 
             // Create a new commit with:
@@ -96,9 +89,9 @@ jobs:
             const newCommit = await github.rest.git.createCommit({
               owner,
               repo,
-              message: msg,
-              tree: headTreeSha,
-              parents: [pr.data.base.sha], // Make history linear from base
+              message: squashMessage,
+              tree: treeSha,
+              parents: [headSha],   // ⚠️ must use HEAD, not base
             });
 
             // Force update PR branch reference to point to the new commit
