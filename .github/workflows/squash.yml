@@ -21,7 +21,6 @@ jobs:
   squash-pr:
     runs-on: ubuntu-latest
     timeout-minutes: 3
-
     steps:
       - name: Squash commits
         id: squash
@@ -33,71 +32,75 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
-            // Get the PR details
+            // Get PR metadata
             const pr = await github.rest.pulls.get({
               owner,
               repo,
               pull_number: prNumber,
             });
 
-            // Get PR commits
+            // Get all commits in PR
             const { data: commits } = await github.rest.pulls.listCommits({
               owner,
               repo,
               pull_number: prNumber
             });
 
-            core.info(`Found ${commits.length} commits in PR #${prNumber}`);
-
             if (commits.length <= 1) {
               core.setOutput("squash_needed", "false");
-              core.info("No need to squash - PR has only one commit");
+              core.info("PR has only one commit; skipping squash.");
               return;
             }
 
-            const squashCommitMessage = `${pr.data.title} \n\n ${pr.data.body || ''}\n\nSquashed commits: ${commits.length}`;
+            core.info(`Found ${commits.length} commits in PR #${prNumber}`);
 
-            try {
-              // Get the PR base commit details
-              const { data: baseCommit } = await github.rest.git.getCommit({
-                owner,
-                repo,
-                commit_sha: pr.data.base.sha
-              });
+            const firstCommit = commits[0];
+            const headCommit = commits[commits.length - 1];
 
-              // Head commit is still the last PR commit
-              const headCommitSha = commits[commits.length - 1].sha;
+            // Get the head commit tree
+            const { data: headCommitData } = await github.rest.git.getCommit({
+              owner,
+              repo,
+              commit_sha: headCommit.sha
+            });
 
-              const { data: headCommit } = await github.rest.git.getCommit({
-                owner,
-                repo,
-                commit_sha: headCommitSha
-              });
+            // Get the FIRST PR commit’s parent
+            // This is the correct parent for the squashed commit
+            const { data: firstCommitData } = await github.rest.git.getCommit({
+              owner,
+              repo,
+              commit_sha: firstCommit.sha
+            });
 
-              // Create the new squash commit using the base commit's parent as the parent
-              // This ensures all commits from the PR branch are included in the squash
-              const { data: newCommit } = await github.rest.git.createCommit({
-                owner,
-                repo,
-                message: squashCommitMessage,
-                tree: headCommit.tree.sha,
-                parents: baseCommit.parents
-              });
+            const parentSha = firstCommitData.parents[0].sha;
+            core.info(`Using first PR commit’s parent as squash parent: ${parentSha}`);
 
-              // Update the PR branch to point to the squash commit
-              const branchRef = pr.data.head.ref;
-              await github.rest.git.updateRef({
-                owner,
-                repo,
-                ref: `heads/${branchRef}`,
-                sha: newCommit.sha,
-                force: true
-              });
+            // Build commit message
+            const squashMessage = `${pr.data.title}
 
-              core.info(`Successfully squashed commits into new commit ${newCommit.sha}`);
-              core.setOutput("squash_result", "success");
+    ${pr.data.body || ''}
 
-            } catch (error) {
-              core.setFailed(`Failed to squash commits: ${error.message}`);
-              core.setOutput("squash_result", "failed");
-            }
+    Squashed commits: ${commits.length}`;
+
+            // Create the new squashed commit
+            const { data: newCommit } = await github.rest.git.createCommit({
+              owner,
+              repo,
+              message: squashMessage,
+              tree: headCommitData.tree.sha,
+              parents: [parentSha]
+            });
+
+            // Force-update the PR branch to point to the new squash commit
+            const branchRef = pr.data.head.ref;
+
+            await github.rest.git.updateRef({
+              owner,
+              repo,
+              ref: `heads/${branchRef}`,
+              sha: newCommit.sha,
+              force: true
+            });
+
+            core.info(`Squash completed. New commit: ${newCommit.sha}`);
+            core.setOutput("squash_result", "success");
