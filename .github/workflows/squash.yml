@@ -1,32 +1,12 @@
 name: Squash
 
 on:
-  workflow_call:
+  workflow_dispatch:
     inputs:
-      username:
-        description: 'User that triggered the workflow'
-        required: true
-        type: string
-      owner:
-        description: 'Organization'
-        required: true
-        type: string
-      repo:
-        description: 'Repository'
-        required: true
-        type: string
       pr_number:
         description: 'PR Number'
         required: true
         type: number
-      comment_id:
-        description: 'Comment ID'
-        required: true
-        type: number
-    secrets:
-      token:
-        description: 'Personal Access Token with RW access to repo contents, PRs'
-        required: true
 
 permissions:
   issues: write
@@ -34,15 +14,11 @@ permissions:
   contents: write
 
 env:
-  RW_PAT: ${{ secrets.token }}
-  USERNAME: ${{ inputs.username }}
-  OWNER: ${{ inputs.owner }}
-  REPO: ${{ inputs.repo }}
+  RW_PAT: ${{ secrets.GITHUB_TOKEN }}
   PR_NUMBER: ${{ inputs.pr_number }}
-  COMMENT_ID: ${{ inputs.comment_id }}
 
 concurrency:
-  group: squash-operations-${{ inputs.owner }}-${{ inputs.repo }}
+  group: squash-operations-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -50,40 +26,53 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Comment start
+      - name: Check PR and commits
+        id: check
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const commentId = process.env.COMMENT_ID;
-            const owner = process.env.OWNER;
-            const repo = process.env.REPO;
-            const { data: comment } = await github.rest.issues.getComment({
-              owner,
-              repo,
-              comment_id: commentId,
-            });
-            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
-            let appendMsg = "\n # 🗜️ Squash workflow started #\n";
-            appendMsg = appendMsg + `[🖥️ View this workflow run](${runUrl})`;
-            appendMsg = appendMsg + "\n**_(Step 1/3)_** Initializing \n - Checking user permissions.";
-            const newBody = comment.body + appendMsg;
-            await github.rest.issues.updateComment({
-              owner,
-              repo,
-              comment_id: commentId,
-              body: newBody,
-            });
+            const owner = "${{ github.repository_owner }}";
+            const repo = "${{ github.event.repository.name }}";
+            const prNumber = parseInt("${{ inputs.pr_number }}");
+            
+            try {
+              // Get the PR details
+              const pr = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: prNumber,
+              });
+              
+              // Get commits for this PR
+              const commitsResponse = await github.rest.pulls.listCommits({
+                owner,
+                repo,
+                pull_number: prNumber,
+              });
+              
+              // Check if there's more than one commit to squash
+              if (commitsResponse.data.length <= 1) {
+                core.setOutput("squash_result", "skipped");
+                return;
+              }
+              
+              core.setOutput("squash_result", "proceed");
+            } catch (error) {
+              core.setFailed(`Failed to check PR: ${error.message}`);
+              core.setOutput("squash_result", "failed");
+            }
 
       - name: Squash commits
         id: squash
+        if: steps.check.outputs.squash_result == 'proceed'
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const owner = process.env.OWNER;
-            const repo = process.env.REPO;
-            const prNumber = process.env.PR_NUMBER;
+            const owner = "${{ github.repository_owner }}";
+            const repo = "${{ github.event.repository.name }}";
+            const prNumber = parseInt("${{ inputs.pr_number }}");
             
             try {
               // Get the PR details
@@ -203,37 +192,3 @@ jobs:
               core.setFailed(`Failed to squash commits: ${error.message}`);
               core.setOutput("squash_result", "failed");
             }
-            
-      - name: Comment result
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const commentId = process.env.COMMENT_ID;
-            const owner = process.env.OWNER;
-            const repo = process.env.REPO;
-            const { data: comment } = await github.rest.issues.getComment({
-              owner,
-              repo,
-              comment_id: commentId,
-            });
-            
-            // Get the squash result from the previous step
-            const squashResult = "${{ steps.squash.outputs.squash_result }}";
-            let appendMsg = "";
-            
-            if (squashResult === "success") {
-              appendMsg = "\n - Commits squashed successfully!";
-            } else if (squashResult === "skipped") {
-              appendMsg = "\n - PR has only one commit, skipping squash.";
-            } else {
-              appendMsg = "\n - Failed to squash commits. Please check the workflow logs.";
-            }
-            
-            const newBody = comment.body + appendMsg;
-            await github.rest.issues.updateComment({
-              owner,
-              repo,
-              comment_id: commentId,
-              body: newBody,
-            });
