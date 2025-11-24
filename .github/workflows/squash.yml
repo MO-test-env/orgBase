@@ -27,8 +27,8 @@ jobs:
         with:
           github-token: ${{ env.RW_PAT }}
           script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
+            const owner = 'MO-test-env';
+            const repo = 'orgBase';
             const prNumber = core.getInput("pr_number");
 
             const commits = await github.rest.pulls.listCommits({
