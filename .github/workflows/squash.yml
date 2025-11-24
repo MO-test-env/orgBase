@@ -55,67 +55,46 @@ jobs:
               return;
             }
             
-            // Get the latest commit
-            const latestCommit = commits[commits.length - 1];
-            const baseCommit = commits[0];
-            
             // Create a new squash commit
             const squashCommitMessage = `${pr.data.title}\n\n${pr.data.body || ''}\n\nSquashed commits: ${commits.length}`;
             
             try {
-              // Get the base commit SHA
+              // Get the first commit SHA (base)
               const baseCommitSha = commits[0].sha;
               
-              // Get the latest commit SHA
-              const latestCommitSha = commits[commits.length - 1].sha;
+              // Get the last commit SHA (head)
+              const headCommitSha = commits[commits.length - 1].sha;
               
-              // Create a new branch with the combined changes
-              // 1. Get the tree for the base commit
-              const { data: baseTree } = await github.rest.git.getCommit({
+              // Get the tree from the head commit
+              const { data: headCommit } = await github.rest.git.getCommit({
                 owner,
                 repo,
-                commit_sha: baseCommitSha
+                commit_sha: headCommitSha
               });
               
-              // 2. Get the tree for the latest commit
-              const { data: latestTree } = await github.rest.git.getCommit({
-                owner,
-                repo,
-                commit_sha: latestCommitSha
-              });
-              
-              // 3. Create a new tree with the combined changes
-              // This is a simplified approach - in practice, you would need to:
-              // - Get all the trees for commits in between
-              // - Merge them together
-              // - Create a new tree
-              
-              // For now, we'll create a new commit that combines the changes
-              // by creating a commit that points to the latest tree but has
-              // the combined message
-              const newCommitMessage = `${pr.data.title}\n\n${pr.data.body || ''}\n\nSquashed commits: ${commits.length}`;
-              
-              // 4. Create a new commit with the combined changes
+              // Create a new commit with the combined changes
               const { data: newCommit } = await github.rest.git.createCommit({
                 owner,
                 repo,
-                message: newCommitMessage,
-                tree: latestTree.tree.sha,
+                message: squashCommitMessage,
+                tree: headCommit.tree.sha,
                 parents: [baseCommitSha]
               });
               
-              // 5. Update the PR branch to point to this new commit
-              // We need to get the branch reference first
+              // Update the branch to point to the new commit
               const branchRef = pr.data.head.ref;
-              const { data: ref } = await github.rest.git.updateRef({
+              await github.rest.git.updateRef({
                 owner,
                 repo,
                 ref: `heads/${branchRef}`,
-                sha: newCommit.sha, 
+                sha: newCommit.sha,
                 force: true
               });
               
-              core.info(`Successfully squashed ${commits.length} commits (${baseCommitSha} to ${latestCommitSha}) into a single commit ${newCommit.sha}`);
+              // The original commits are now orphaned and will be garbage collected
+              // This effectively removes all traces of the original commits
+              
+              core.info(`Successfully squashed ${commits.length} commits into a single commit ${newCommit.sha}`);
               core.setOutput("squash_result", "success");
             } catch (error) {
               core.setFailed(`Failed to squash commits: ${error.message}`);
