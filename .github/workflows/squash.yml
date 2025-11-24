@@ -112,31 +112,45 @@ jobs:
                 return;
               }
               
-              // Get all commit messages
-              const { execSync } = require('child_process');
-              const run = (cmd, options = {}) => {
-                console.log(`$ ${cmd}`);
-                return execSync(cmd, { stdio: 'pipe', encoding: 'utf8', ...options }).trim();
-              };
+              // Get the current branch reference
+              const { data: refData } = await github.rest.git.getRef({
+                owner,
+                repo,
+                ref: `heads/${headRef}`
+              });
+              const currentBranchSha = refData.object.sha;
               
-              // Fetch latest base and head
-              run(`git fetch origin ${baseRef}:refs/remotes/origin/${baseRef}`);
-              run(`git fetch origin ${headRef}:refs/remotes/origin/${headRef}`);
-              run(`git checkout ${headRef}`);
+              // Get the current commit to extract tree SHA
+              const { data: commitData } = await github.rest.git.getCommit({
+                owner,
+                repo,
+                commit_sha: currentBranchSha
+              });
+              const currentTreeSha = commitData.tree.sha;
               
-              // Find common base commit
-              const base = run(`git merge-base HEAD origin/${baseRef}`);
-              
-              // Get all commit messages
-              const msgs = run(`git log --reverse --pretty=format:"%s%n%b" ${base}..HEAD`);
+              // Combine all commit messages
+              const msgs = commits.map(commit => `${commit.commit.message}\n`).join('');
               const subject = `${prTitle} - Squash`;
+              const body = msgs;
               
-              // Reset to base and create new commit
-              run(`git reset --soft ${base}`);
-              run(`git commit -m "${subject}" -m "${msgs.replace(/"/g, '\\"')}"`);
+              // Create a new commit with the same tree but combined messages
+              const { data: newCommit } = await github.rest.git.createCommit({
+                owner,
+                repo,
+                message: subject,
+                body: body,
+                tree: currentTreeSha,
+                parents: [currentBranchSha]
+              });
               
-              // Push changes back to PR branch
-              run(`git push --force-with-lease origin ${headRef}`);
+              // Update the branch reference to point to the new commit
+              await github.rest.git.updateRef({
+                owner,
+                repo,
+                ref: `heads/${headRef}`,
+                sha: newCommit.sha,
+                force: true
+              });
               
               core.info(`Successfully squashed ${commits.length} commits into a single commit`);
               core.setOutput("squash_result", "success");
