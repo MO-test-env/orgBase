@@ -100,72 +100,106 @@ jobs:
                 pull_number: prNumber,
               });
               
-              const commits = commitsResponse.data;
-              const headRef = pr.data.head.ref;
-              const baseRef = pr.data.base.ref;
-              const prTitle = pr.data.title;
-              
-              // Skip if there's only one commit
-              if (commits.length <= 1) {
-                core.info(`PR has only ${commits.length} commit(s), skipping squash`);
+              // Check if there's more than one commit to squash
+              if (commitsResponse.data.length <= 1) {
                 core.setOutput("squash_result", "skipped");
                 return;
               }
               
-              // Get the base commit (common ancestor)
-              const baseCommitResponse = await github.rest.repos.compareCommits({
-                owner,
-                repo,
-                base: baseRef,
-                head: headRef
-              });
+              // Get the base commit (first commit in the PR)
+              const baseCommit = commitsResponse.data[0];
+              
+              // Get the head commit (last commit in the PR)
+              const headCommit = commitsResponse.data[commitsResponse.data.length - 1];
+              
+              // Create a new commit that squashes all commits
+              // We'll use the head commit as the base and add all the changes
+              const squashCommitMessage = `Squashed ${commitsResponse.data.length} commits\n\n` +
+                commitsResponse.data.map(commit => `- ${commit.commit.message}`).join('\n');
+              
+              // Get the base branch reference
+              const baseRef = pr.data.base.ref;
               
               // Get the base commit SHA
-              const baseCommitSha = baseCommitResponse.data.base_commit.sha;
+              const baseCommitSha = pr.data.base.sha;
               
-              // Get the current branch reference
-              const { data: refData } = await github.rest.git.getRef({
+              // Get the head commit SHA
+              const headCommitSha = pr.data.head.sha;
+              
+              // Create a new branch for the squash operation
+              const squashBranchName = `squash-${prNumber}-${Date.now()}`;
+              
+              // Create the squash branch from the base
+              await github.rest.git.createRef({
                 owner,
                 repo,
-                ref: `heads/${headRef}`
+                ref: `refs/heads/${squashBranchName}`,
+                sha: baseCommitSha,
               });
-              const currentBranchSha = refData.object.sha;
               
-              // Get the current commit to extract tree SHA
-              const { data: commitData } = await github.rest.git.getCommit({
+              // Get the files that were changed in the PR
+              const filesResponse = await github.rest.pulls.listFiles({
                 owner,
                 repo,
-                commit_sha: currentBranchSha
+                pull_number: prNumber,
               });
-              const currentTreeSha = commitData.tree.sha;
               
-              // Combine all commit messages
-              const msgs = commits.map(commit => `${commit.commit.message}\n`).join('');
-              const subject = `${prTitle} - Squash`;
-              const body = msgs;
+              // Apply all the changes to the squash branch
+              for (const file of filesResponse.data) {
+                // Get the content of the file at the head commit
+                try {
+                  const contentResponse = await github.rest.repos.getContent({
+                    owner,
+                    repo,
+                    path: file.filename,
+                    ref: headCommitSha,
+                  });
+                  
+                  // Update the file on the squash branch
+                  await github.rest.repos.createOrUpdateFileContents({
+                    owner,
+                    repo,
+                    path: file.filename,
+                    message: squashCommitMessage,
+                    content: contentResponse.data.content,
+                    branch: squashBranchName,
+                  });
+                } catch (error) {
+                  // If the file doesn't exist in the base, create it
+                  if (error.status === 404) {
+                    // Get the content of the file at the head commit
+                    const contentResponse = await github.rest.repos.getContent({
+                      owner,
+                      repo,
+                      path: file.filename,
+                      ref: headCommitSha,
+                    });
+                    
+                    // Create the file on the squash branch
+                    await github.rest.repos.createOrUpdateFileContents({
+                      owner,
+                      repo,
+                      path: file.filename,
+                      message: squashCommitMessage,
+                      content: contentResponse.data.content,
+                      branch: squashBranchName,
+                    });
+                  } else {
+                    throw error;
+                  }
+                }
+              }
               
-              // Create a new commit with the same tree but combined messages
-              const { data: newCommit } = await github.rest.git.createCommit({
+              // Update the PR to point to the new squash branch
+              await github.rest.pulls.update({
                 owner,
                 repo,
-                message: subject,
-                body: body,
-                tree: currentTreeSha,
-                parents: [baseCommitSha]  // Point to base commit instead of current commit
+                pull_number: prNumber,
+                head: `${owner}:${squashBranchName}`,
               });
               
-              // Update the branch reference to point to the new commit
-              await github.rest.git.updateRef({
-                owner,
-                repo,
-                ref: `heads/${headRef}`,
-                sha: newCommit.sha,
-                force: true
-              });
-              
-              core.info(`Successfully squashed ${commits.length} commits into a single commit`);
               core.setOutput("squash_result", "success");
-            } catch (error) {de
+            } catch (error) {
               core.setFailed(`Failed to squash commits: ${error.message}`);
               core.setOutput("squash_result", "failed");
             }
@@ -185,7 +219,7 @@ jobs:
             });
             
             // Get the squash result from the previous step
-            const squashResult = process.env.SQUASH_RESULT || "success";
+            const squashResult = "${{ steps.squash.outputs.squash_result }}";
             let appendMsg = "";
             
             if (squashResult === "success") {
