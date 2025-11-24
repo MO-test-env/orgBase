@@ -119,30 +119,23 @@ jobs:
               const latestCommitSha = commits[commits.length - 1].sha;
               
               // Get the commit before the base commit on the target branch
-              // This is the commit that the PR is based on
+              // We need to get the base of the PR (the commit on the target branch that this PR is based on)
+              const baseOfPr = pr.data.base.sha;
+              
+              // Get the tree for the base of the PR
               const baseCommitResponse = await github.rest.repos.getCommit({
                 owner,
                 repo,
-                ref: baseCommitSha,
+                ref: baseOfPr,
               });
               
-              // Get the parent commit of the base commit (this is the commit before the base commit on the target branch)
-              const parentCommitSha = baseCommitResponse.data.parents[0].sha;
+              const baseTreeSha = baseCommitResponse.data.commit.tree.sha;
               
-              // Get the tree for the parent commit (commit before the base commit)
-              const parentCommitResponse = await github.rest.repos.getCommit({
-                owner,
-                repo,
-                ref: parentCommitSha,
-              });
-              
-              const baseTreeSha = parentCommitResponse.data.commit.tree.sha;
-              
-              // Get the diff between the parent commit and latest commit
+              // Get the diff between the base of the PR and latest commit
               const diffResponse = await github.rest.repos.compareCommits({
                 owner,
                 repo,
-                basehead: `${parentCommitSha}...${latestCommitSha}`,
+                basehead: `${baseOfPr}...${latestCommitSha}`,
               });
               
               // Create a new tree with the combined changes
@@ -182,7 +175,7 @@ jobs:
                 repo,
                 message: `Squashed ${commits.length} commits\n\n${commits.map(c => c.commit.message).join("\n\n").substring(0, 65535)}`,
                 tree: newTreeSha,
-                parents: [parentCommitSha], // Use the parent commit as the parent
+                parents: [baseOfPr], // Use the base of the PR as the parent
               });
               
               const newCommitSha = newCommitResponse.data.sha;
@@ -197,7 +190,7 @@ jobs:
                 force: true,
               });
               
-              core.info(`Successfully squashed ${commits.length} commits (${parentCommitSha.substring(0, 8)} to ${latestCommitSha.substring(0, 8)}) into a single commit ${newCommitSha.substring(0, 8)}`);
+              core.info(`Successfully squashed ${commits.length} commits (${baseOfPr.substring(0, 8)} to ${latestCommitSha.substring(0, 8)}) into a single commit ${newCommitSha.substring(0, 8)}`);
               core.setOutput("squash_result", "success");
             } catch (error) {
               core.setFailed(`Failed to squash commits: ${error.message}`);
