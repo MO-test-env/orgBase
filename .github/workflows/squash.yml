@@ -39,49 +39,62 @@ jobs:
               repo,
               pull_number: prNumber,
             });
-            
-            // Get the commits in the PR
+
+            // Get PR commits
             const { data: commits } = await github.rest.pulls.listCommits({
               owner,
               repo,
               pull_number: prNumber
             });
-            
+
             core.info(`Found ${commits.length} commits in PR #${prNumber}`);
-            
+
             if (commits.length <= 1) {
               core.setOutput("squash_needed", "false");
               core.info("No need to squash - PR has only one commit");
               return;
             }
-            
-            // Create a new squash commit
-            const squashCommitMessage = `${pr.data.title}\n\n${pr.data.body || ''}\n\nSquashed commits: ${commits.length}`;
-            
+
+            const squashCommitMessage = `${pr.data.title} \n\n ${pr.data.body || ''}\n\nSquashed commits: ${commits.length}`;
+
             try {
-              // Get the first commit SHA (base)
-              const baseCommitSha = commits[0].sha;
-              
-              // Get the last commit SHA (head)
+              // Get the PR base commit SHA
+              const baseSha = pr.data.base.sha;
+
+              // Fetch that commit so we can get its parent
+              const { data: baseCommit } = await github.rest.git.getCommit({
+                owner,
+                repo,
+                commit_sha: baseSha
+              });
+
+              if (!baseCommit.parents || baseCommit.parents.length === 0) {
+                throw new Error("Base commit has no parent; cannot determine prior commit.");
+              }
+
+              // Use the parent of the base commit
+              const parentBeforeBaseSha = baseCommit.parents[0].sha;
+              core.info(`Using commit before base: ${parentBeforeBaseSha}`);
+
+              // Head commit is still the last PR commit
               const headCommitSha = commits[commits.length - 1].sha;
-              
-              // Get the tree from the head commit
+
               const { data: headCommit } = await github.rest.git.getCommit({
                 owner,
                 repo,
                 commit_sha: headCommitSha
               });
-              
-              // Create a new commit with the combined changes
+
+              // Create the new squash commit using prior-to-base as the parent
               const { data: newCommit } = await github.rest.git.createCommit({
                 owner,
                 repo,
                 message: squashCommitMessage,
                 tree: headCommit.tree.sha,
-                parents: [baseCommitSha]
+                parents: [parentBeforeBaseSha]
               });
-              
-              // Update the branch to point to the new commit
+
+              // Update the PR branch to point to the squash commit
               const branchRef = pr.data.head.ref;
               await github.rest.git.updateRef({
                 owner,
@@ -90,12 +103,10 @@ jobs:
                 sha: newCommit.sha,
                 force: true
               });
-              
-              // The original commits are now orphaned and will be garbage collected
-              // This effectively removes all traces of the original commits
-              
-              core.info(`Successfully squashed ${commits.length} commits into a single commit ${newCommit.sha}`);
+
+              core.info(`Successfully squashed commits into new commit ${newCommit.sha}`);
               core.setOutput("squash_result", "success");
+
             } catch (error) {
               core.setFailed(`Failed to squash commits: ${error.message}`);
               core.setOutput("squash_result", "failed");
