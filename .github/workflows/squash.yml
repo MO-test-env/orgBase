@@ -112,6 +112,17 @@ jobs:
                 return;
               }
               
+              // Get the base commit (common ancestor)
+              const baseCommitResponse = await github.rest.repos.compareCommits({
+                owner,
+                repo,
+                base: baseRef,
+                head: headRef
+              });
+              
+              // Get the base commit SHA
+              const baseCommitSha = baseCommitResponse.data.base_commit.sha;
+              
               // Get the current branch reference
               const { data: refData } = await github.rest.git.getRef({
                 owner,
@@ -140,7 +151,7 @@ jobs:
                 message: subject,
                 body: body,
                 tree: currentTreeSha,
-                parents: [currentBranchSha]
+                parents: [baseCommitSha]  // Point to base commit instead of current commit
               });
               
               // Update the branch reference to point to the new commit
@@ -154,7 +165,7 @@ jobs:
               
               core.info(`Successfully squashed ${commits.length} commits into a single commit`);
               core.setOutput("squash_result", "success");
-            } catch (error) {
+            } catch (error) {de
               core.setFailed(`Failed to squash commits: ${error.message}`);
               core.setOutput("squash_result", "failed");
             }
