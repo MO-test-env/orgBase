@@ -85,83 +85,151 @@ jobs:
             const repo = process.env.REPO;
             const prNumber = process.env.PR_NUMBER;
             
-            // Get the PR details
-            const pr = await github.rest.pulls.get({
-              owner,
-              repo,
-              pull_number: prNumber,
-            });
-            
-            // Get the commits in the PR
-            const { data: commits } = await github.rest.pulls.listCommits({
-              owner,
-              repo,
-              pull_number: prNumber
-            });
-            
-            core.info(`Found ${commits.length} commits in PR #${prNumber}`);
-            
-            if (commits.length <= 1) {
-              core.setOutput("squash_needed", "false");
-              core.info("No need to squash - PR has only one commit");
-              return;
-            }
-            
-            // Get the latest commit SHA
-            const latestCommitSha = commits[commits.length - 1].sha;
-            
-            // Create a new squash commit
-            const squashCommitMessage = `${pr.data.title}\n\n${pr.data.body || ''}\n\nSquashed commits: ${commits.length}`;
-            
             try {
-              // Get the base commit SHA
+              // Get the PR details
+              const pr = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: prNumber,
+              });
+              
+              // Get commits for this PR
+              const commitsResponse = await github.rest.pulls.listCommits({
+                owner,
+                repo,
+                pull_number: prNumber,
+              });
+              
+              const commits = commitsResponse.data;
+              if (commits.length === 0) {
+                throw new Error("No commits found in PR");
+              }
+              
+              // For a single commit, we don't need to squash
+              if (commits.length === 1) {
+                core.info("Only one commit found, no squashing needed");
+                core.setOutput("squash_result", "success");
+                return;
+              }
+              
+              // Get the base commit (first commit in the PR)
               const baseCommitSha = commits[0].sha;
               
-              // Get the latest commit SHA
+              // Get the latest commit (last commit in the PR)
               const latestCommitSha = commits[commits.length - 1].sha;
               
-              // Get the tree for the latest commit
-              const { data: latestCommit } = await github.rest.git.getCommit({
+              // Get the commit before the base commit on the target branch
+              // This is the commit that the PR is based on
+              const baseCommitResponse = await github.rest.repos.getCommit({
                 owner,
                 repo,
-                commit_sha: latestCommitSha
+                ref: baseCommitSha,
               });
               
-              // Get the tree for the latest commit
-              const { data: latestTree } = await github.rest.git.getTree({
+              // Get the parent commit of the base commit (this is the commit before the base commit on the target branch)
+              const parentCommitSha = baseCommitResponse.data.parents[0].sha;
+              
+              // Get the tree for the parent commit (commit before the base commit)
+              const parentCommitResponse = await github.rest.repos.getCommit({
                 owner,
                 repo,
-                tree_sha: latestCommit.tree.sha,
-                recursive: true
+                ref: parentCommitSha,
               });
               
-              // Create a new commit with the combined changes
-              const newCommitMessage = `${pr.data.title}\n\n${pr.data.body || ''}\n\nSquashed commits: ${commits.length}`;
+              const baseTreeSha = parentCommitResponse.data.commit.tree.sha;
               
-              // Create a new commit that combines all changes
-              const { data: newCommit } = await github.rest.git.createCommit({
+              // Get the diff between the parent commit and latest commit
+              const diffResponse = await github.rest.repos.compareCommits({
                 owner,
                 repo,
-                message: newCommitMessage,
-                tree: latestTree.sha,
-                parents: [baseCommitSha]
+                basehead: `${parentCommitSha}...${latestCommitSha}`,
               });
               
-              // Update the PR branch to point to this new commit
-              const branchRef = pr.data.head.ref;
-              const { data: updatedRef } = await github.rest.git.updateRef({
+              // Create a new tree with the combined changes
+              const treeItems = [];
+              
+              // Process each file change in the diff
+              for (const file of diffResponse.data.files) {
+                if (file.status === "added" || file.status === "modified") {
+                  treeItems.push({
+                    path: file.filename,
+                    mode: "100644",
+                    type: "blob",
+                    content: file.patch ? 
+                      // Extract the file content from the patch
+                      extractFileContentFromPatch(file.patch) : 
+                      ""
+                  });
+                } else if (file.status === "removed") {
+                  // For removed files, we don't add them to the tree
+                  continue;
+                }
+              }
+              
+              // Create the new tree
+              const newTreeResponse = await github.rest.git.createTree({
                 owner,
                 repo,
-                ref: `heads/${branchRef}`,
-                sha: newCommit.sha, 
-                force: true  // Overwrite the existing branch
+                tree: treeItems,
+                base_tree: baseTreeSha,
               });
               
-              core.info(`Successfully squashed ${commits.length} commits (${baseCommitSha} to ${latestCommitSha}) into a single commit ${newCommit.sha}`);
+              const newTreeSha = newTreeResponse.data.sha;
+              
+              // Create a new commit with the squashed changes
+              const newCommitResponse = await github.rest.git.createCommit({
+                owner,
+                repo,
+                message: `Squashed ${commits.length} commits\n\n${commits.map(c => c.commit.message).join("\n\n").substring(0, 65535)}`,
+                tree: newTreeSha,
+                parents: [parentCommitSha], // Use the parent commit as the parent
+              });
+              
+              const newCommitSha = newCommitResponse.data.sha;
+              
+              // Update the PR branch with the new commit
+              const prHeadRef = pr.data.head.ref;
+              await github.rest.git.updateRef({
+                owner,
+                repo,
+                ref: `heads/${prHeadRef}`,
+                sha: newCommitSha,
+                force: true,
+              });
+              
+              core.info(`Successfully squashed ${commits.length} commits (${parentCommitSha.substring(0, 8)} to ${latestCommitSha.substring(0, 8)}) into a single commit ${newCommitSha.substring(0, 8)}`);
               core.setOutput("squash_result", "success");
             } catch (error) {
               core.setFailed(`Failed to squash commits: ${error.message}`);
               core.setOutput("squash_result", "failed");
+            }
+            
+            // Helper function to extract file content from patch
+            function extractFileContentFromPatch(patch) {
+              // This is a simplified implementation
+              // In practice, you might want to use a proper diff parser
+              const lines = patch.split('\n');
+              let content = '';
+              let inHunk = false;
+              
+              for (const line of lines) {
+                if (line.startsWith('@@')) {
+                  inHunk = true;
+                  continue;
+                }
+                
+                if (inHunk && line.startsWith('+')) {
+                  content += line.substring(1) + '\n';
+                } else if (inHunk && line.startsWith('-')) {
+                  // Skip removed lines
+                  continue;
+                } else if (inHunk && line.startsWith(' ')) {
+                  // Context lines are kept
+                  content += line.substring(1) + '\n';
+                }
+              }
+              
+              return content;
             }
 
       - name: Comment result
@@ -178,7 +246,15 @@ jobs:
               comment_id: commentId,
             });
             
-            let appendMsg = "\n - Commits squashed successfully!";
+            // Get the squash result from the previous step
+            const squashResult = process.env.SQUASH_RESULT || "success";
+            let appendMsg = "";
+            
+            if (squashResult === "success") {
+              appendMsg = "\n - Commits squashed successfully!";
+            } else {
+              appendMsg = "\n - Failed to squash commits. Please check the workflow logs.";
+            }
             
             const newBody = comment.body + appendMsg;
             await github.rest.issues.updateComment({
