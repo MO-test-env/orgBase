@@ -43,7 +43,7 @@ jobs:
             );
 
       - name: Squash commits (API only)
-        if: steps.check.outputs.squash == 'run'
+        if: steps.check.outputs.squash_result == 'proceed'
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
@@ -99,4 +99,4 @@ jobs:
               force: true,
             });
 
-            core.setOutput("result", "success");
+            core.setOutput("squashed_result", "success");
