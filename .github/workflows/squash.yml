@@ -74,64 +74,6 @@ jobs:
               comment_id: commentId,
               body: newBody,
             });
-       
-      - name: Get PR details
-        id: pr
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const prNumber = process.env.PR_NUMBER;
-            const pr = await github.rest.pulls.get({
-              owner: process.env.OWNER,
-              repo: process.env.REPO,
-              pull_number: prNumber,
-            });
-            
-            // Get the commits in the PR
-            const { data: commits } = await github.rest.pulls.listCommits({
-              owner: process.env.OWNER,
-              repo: process.env.REPO,
-              pull_number: prNumber
-            });
-            
-            core.setOutput("commits_count", commits.length);
-            
-            core.setOutput("head_ref", pr.data.head.ref);
-            core.setOutput("base_ref", pr.data.base.ref);
-            core.setOutput("pr_number", pr.data.number);
-            core.setOutput("title", pr.data.title);
-            core.setOutput("body", pr.data.body);
-            core.setOutput("mergeable", pr.data.mergeable);
-            core.setOutput("merged", pr.data.merged);
-            core.setOutput("mergeable_state", pr.data.mergeable_state);
-            core.setOutput("state", pr.data.state);
-
-
-      - name: Comment on PR info success
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ env.RW_PAT }}
-          script: |
-            const commentId = process.env.COMMENT_ID;
-            const owner = process.env.OWNER;
-            const repo = process.env.REPO;
-            const { data: comment } = await github.rest.issues.getComment({
-              owner,
-              repo,
-              comment_id: commentId,
-            });
-            let appendMsg = "\n - Successfully checked user permissions and PR data.\n - Preparing to squash commits.";
-            if('${{ steps.pr.outputs.merged}}' == 'true'){
-              appendMsg = "\n ## Nothing to squash. ##"
-            }
-            const newBody = comment.body + appendMsg;
-            await github.rest.issues.updateComment({
-              owner,
-              repo,
-              comment_id: commentId,
-              body: newBody,
-            });
 
       - name: Squash commits
         id: squash
@@ -142,6 +84,13 @@ jobs:
             const owner = process.env.OWNER;
             const repo = process.env.REPO;
             const prNumber = process.env.PR_NUMBER;
+            
+            // Get the PR details
+            const pr = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: prNumber,
+            });
             
             // Get the commits in the PR
             const { data: commits } = await github.rest.pulls.listCommits({
@@ -163,7 +112,7 @@ jobs:
             const baseCommit = commits[0];
             
             // Create a new squash commit
-            const squashCommitMessage = `${steps.pr.outputs.title}\n\n${steps.pr.outputs.body || ''}\n\nSquashed commits: ${commits.length}`;
+            const squashCommitMessage = `${pr.data.title}\n\n${pr.data.body || ''}\n\nSquashed commits: ${commits.length}`;
             
             try {
               // Update the PR with a single commit using GitHub API
