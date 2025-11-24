@@ -111,7 +111,8 @@ jobs:
                 owner,
                 repo,
                 ref: `heads/${branchRef}`,
-                sha: newCommit.sha
+                sha: newCommit.sha, 
+                force: true
               });
               
               core.info(`Successfully squashed ${commits.length} commits (${baseCommitSha} to ${latestCommitSha}) into a single commit ${newCommit.sha}`);
