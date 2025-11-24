@@ -100,4 +100,31 @@ jobs:
               force: true,
             });
 
+            // Delete the original commits by creating a new branch with only the squashed commit
+            // First, create a new branch name
+            const newBranchName = `${branch}-squashed-${Date.now()}`;
+            
+            // Create the new branch with only the squashed commit
+            await github.rest.git.createRef({
+              owner: headOwner,
+              repo: headRepo,
+              ref: `refs/heads/${newBranchName}`,
+              sha: newCommit.data.sha
+            });
+            
+            // Update the PR to point to the new branch
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+              head: `${headOwner}:${newBranchName}`
+            });
+            
+            // Delete the old branch (this will remove all traces of original commits)
+            await github.rest.git.deleteRef({
+              owner: headOwner,
+              repo: headRepo,
+              ref: `heads/${branch}`
+            });
+
             core.setOutput("squashed_result", "success");
