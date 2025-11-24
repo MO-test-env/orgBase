@@ -109,12 +109,6 @@ jobs:
               // Get the base branch reference
               const baseRef = pr.data.base.ref;
               
-              // Get the base commit SHA
-              const baseCommitSha = pr.data.base.sha;
-              
-              // Get the head commit SHA
-              const headCommitSha = pr.data.head.sha;
-              
               // Create a new branch for the squash operation
               const squashBranchName = `squash-${prNumber}-${Date.now()}`;
               
@@ -123,7 +117,7 @@ jobs:
                 owner,
                 repo,
                 ref: `refs/heads/${squashBranchName}`,
-                sha: baseCommitSha,
+                sha: pr.data.base.sha,
               });
               
               // Get the files that were changed in the PR
@@ -141,7 +135,7 @@ jobs:
                     owner,
                     repo,
                     path: file.filename,
-                    ref: headCommitSha,
+                    ref: pr.data.head.sha,
                   });
                   
                   // Update the file on the squash branch
@@ -161,7 +155,7 @@ jobs:
                       owner,
                       repo,
                       path: file.filename,
-                      ref: headCommitSha,
+                      ref: pr.data.head.sha,
                     });
                     
                     // Create the file on the squash branch
