@@ -9,6 +9,7 @@ on:
         type: number
 
 permissions:
+  issues: write
   pull-requests: write
   contents: write
 
