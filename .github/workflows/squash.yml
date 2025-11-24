@@ -29,7 +29,7 @@ jobs:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const prNumber = parseInt(core.getInput("pr_number"));
+            const prNumber = core.getInput("pr_number");
 
             const commits = await github.rest.pulls.listCommits({
               owner,
