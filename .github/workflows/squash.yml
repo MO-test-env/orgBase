@@ -101,130 +101,50 @@ jobs:
               });
               
               const commits = commitsResponse.data;
-              if (commits.length === 0) {
-                throw new Error("No commits found in PR");
-              }
+              const headRef = pr.data.head.ref;
+              const baseRef = pr.data.base.ref;
+              const prTitle = pr.data.title;
               
-              // For a single commit, we don't need to squash
-              if (commits.length === 1) {
-                core.info("Only one commit found, no squashing needed");
-                core.setOutput("squash_result", "success");
+              // Skip if there's only one commit
+              if (commits.length <= 1) {
+                core.info(`PR has only ${commits.length} commit(s), skipping squash`);
+                core.setOutput("squash_result", "skipped");
                 return;
               }
               
-              // Get the base commit (first commit in the PR)
-              const baseCommitSha = commits[0].sha;
+              // Get all commit messages
+              const { execSync } = require('child_process');
+              const run = (cmd, options = {}) => {
+                console.log(`$ ${cmd}`);
+                return execSync(cmd, { stdio: 'pipe', encoding: 'utf8', ...options }).trim();
+              };
               
-              // Get the latest commit (last commit in the PR)
-              const latestCommitSha = commits[commits.length - 1].sha;
+              // Fetch latest base and head
+              run(`git fetch origin ${baseRef}:refs/remotes/origin/${baseRef}`);
+              run(`git fetch origin ${headRef}:refs/remotes/origin/${headRef}`);
+              run(`git checkout ${headRef}`);
               
-              // Get the commit before the base commit on the target branch
-              // We need to get the base of the PR (the commit on the target branch that this PR is based on)
-              const baseOfPr = pr.data.base.sha;
+              // Find common base commit
+              const base = run(`git merge-base HEAD origin/${baseRef}`);
               
-              // Get the tree for the base of the PR
-              const baseCommitResponse = await github.rest.repos.getCommit({
-                owner,
-                repo,
-                ref: baseOfPr,
-              });
+              // Get all commit messages
+              const msgs = run(`git log --reverse --pretty=format:"%s%n%b" ${base}..HEAD`);
+              const subject = `${prTitle} - Squash`;
               
-              const baseTreeSha = baseCommitResponse.data.commit.tree.sha;
+              // Reset to base and create new commit
+              run(`git reset --soft ${base}`);
+              run(`git commit -m "${subject}" -m "${msgs.replace(/"/g, '\\"')}"`);
               
-              // Get the diff between the base of the PR and latest commit
-              const diffResponse = await github.rest.repos.compareCommits({
-                owner,
-                repo,
-                basehead: `${baseOfPr}...${latestCommitSha}`,
-              });
+              // Push changes back to PR branch
+              run(`git push --force-with-lease origin ${headRef}`);
               
-              // Create a new tree with the combined changes
-              const treeItems = [];
-              
-              // Process each file change in the diff
-              for (const file of diffResponse.data.files) {
-                if (file.status === "added" || file.status === "modified") {
-                  treeItems.push({
-                    path: file.filename,
-                    mode: "100644",
-                    type: "blob",
-                    content: file.patch ? 
-                      // Extract the file content from the patch
-                      extractFileContentFromPatch(file.patch) : 
-                      ""
-                  });
-                } else if (file.status === "removed") {
-                  // For removed files, we don't add them to the tree
-                  continue;
-                }
-              }
-              
-              // Create the new tree
-              const newTreeResponse = await github.rest.git.createTree({
-                owner,
-                repo,
-                tree: treeItems,
-                base_tree: baseTreeSha,
-              });
-              
-              const newTreeSha = newTreeResponse.data.sha;
-              
-              // Create a new commit with the squashed changes
-              const newCommitResponse = await github.rest.git.createCommit({
-                owner,
-                repo,
-                message: `Squashed ${commits.length} commits\n\n${commits.map(c => c.commit.message).join("\n\n").substring(0, 65535)}`,
-                tree: newTreeSha,
-                parents: [baseOfPr], // Use the base of the PR as the parent
-              });
-              
-              const newCommitSha = newCommitResponse.data.sha;
-              
-              // Update the PR branch with the new commit
-              const prHeadRef = pr.data.head.ref;
-              await github.rest.git.updateRef({
-                owner,
-                repo,
-                ref: `heads/${prHeadRef}`,
-                sha: newCommitSha,
-                force: true,
-              });
-              
-              core.info(`Successfully squashed ${commits.length} commits (${baseOfPr.substring(0, 8)} to ${latestCommitSha.substring(0, 8)}) into a single commit ${newCommitSha.substring(0, 8)}`);
+              core.info(`Successfully squashed ${commits.length} commits into a single commit`);
               core.setOutput("squash_result", "success");
             } catch (error) {
               core.setFailed(`Failed to squash commits: ${error.message}`);
               core.setOutput("squash_result", "failed");
             }
             
-            // Helper function to extract file content from patch
-            function extractFileContentFromPatch(patch) {
-              // This is a simplified implementation
-              // In practice, you might want to use a proper diff parser
-              const lines = patch.split('\n');
-              let content = '';
-              let inHunk = false;
-              
-              for (const line of lines) {
-                if (line.startsWith('@@')) {
-                  inHunk = true;
-                  continue;
-                }
-                
-                if (inHunk && line.startsWith('+')) {
-                  content += line.substring(1) + '\n';
-                } else if (inHunk && line.startsWith('-')) {
-                  // Skip removed lines
-                  continue;
-                } else if (inHunk && line.startsWith(' ')) {
-                  // Context lines are kept
-                  content += line.substring(1) + '\n';
-                }
-              }
-              
-              return content;
-            }
-
       - name: Comment result
         uses: actions/github-script@v7
         with:
@@ -245,6 +165,8 @@ jobs:
             
             if (squashResult === "success") {
               appendMsg = "\n - Commits squashed successfully!";
+            } else if (squashResult === "skipped") {
+              appendMsg = "\n - PR has only one commit, skipping squash.";
             } else {
               appendMsg = "\n - Failed to squash commits. Please check the workflow logs.";
             }
