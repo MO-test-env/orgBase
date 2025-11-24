@@ -58,23 +58,12 @@ jobs:
             const squashCommitMessage = `${pr.data.title} \n\n ${pr.data.body || ''}\n\nSquashed commits: ${commits.length}`;
 
             try {
-              // Get the PR base commit SHA
-              const baseSha = pr.data.base.sha;
-
-              // Fetch that commit so we can get its parent
+              // Get the PR base commit details
               const { data: baseCommit } = await github.rest.git.getCommit({
                 owner,
                 repo,
-                commit_sha: baseSha
+                commit_sha: pr.data.base.sha
               });
-
-              if (!baseCommit.parents || baseCommit.parents.length === 0) {
-                throw new Error("Base commit has no parent; cannot determine prior commit.");
-              }
-
-              // Use the parent of the base commit
-              const parentBeforeBaseSha = baseCommit.parents[0].sha;
-              core.info(`Using commit before base: ${parentBeforeBaseSha}`);
 
               // Head commit is still the last PR commit
               const headCommitSha = commits[commits.length - 1].sha;
@@ -85,13 +74,14 @@ jobs:
                 commit_sha: headCommitSha
               });
 
-              // Create the new squash commit using prior-to-base as the parent
+              // Create the new squash commit using the base commit's parent as the parent
+              // This ensures all commits from the PR branch are included in the squash
               const { data: newCommit } = await github.rest.git.createCommit({
                 owner,
                 repo,
                 message: squashCommitMessage,
                 tree: headCommit.tree.sha,
-                parents: [parentBeforeBaseSha]
+                parents: baseCommit.parents
               });
 
               // Update the PR branch to point to the squash commit
