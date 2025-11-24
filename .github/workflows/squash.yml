@@ -76,11 +76,7 @@ jobs:
             core.info(`Using first PR commit’s parent as squash parent: ${parentSha}`);
 
             // Build commit message
-            const squashMessage = `${pr.data.title}
-
-    ${pr.data.body || ''}
-
-    Squashed commits: ${commits.length}`;
+            const squashMessage = `${pr.data.title}\n\n${pr.data.body || ''}\n\nSquashed commits: ${commits.length}`;
 
             // Create the new squashed commit
             const { data: newCommit } = await github.rest.git.createCommit({
