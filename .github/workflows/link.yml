@@ -66,6 +66,16 @@ jobs:
               repo: process.env.REPO,
               pull_number: prNumber,
             });
+            core.setOutput("head_ref", pr.data.head.ref);
+            core.setOutput("base_ref", pr.data.base.ref);
+            
+            // Get default branch of base repo 
+            const { data: repo } = await github.rest.repos.get({
+              owner: process.env.OWNER,
+              repo: process.env.REPO,
+            });
+            core.setOutput("default_branch", repo.default_branch);
+            core.setOutput("isMergeIntoDefaultBranch", pr.data.base.ref == repo.default_branch);
             
             // Get reviewers for the PR
             const { data: reviewData } = await github.rest.pulls.listRequestedReviewers({
@@ -81,8 +91,6 @@ jobs:
             // Get assignees
             const assignees = pr.data.assignees ? pr.data.assignees.map(assignee => assignee.login) : [];
             
-            core.setOutput("head_ref", pr.data.head.ref);
-            core.setOutput("base_ref", pr.data.base.ref);
             core.setOutput("reviewers", JSON.stringify(reviewers));
             core.setOutput("team_reviewers", JSON.stringify(teamReviewers));
             core.setOutput("assignees", JSON.stringify(assignees));
@@ -117,7 +125,7 @@ jobs:
             core.info(`Changed top-level paths from PR: ${JSON.stringify(unique)}`);
             core.setOutput("changed_paths", JSON.stringify(unique));
 
-      - name: Parse .gitmodules (raw)
+      - name: Parse .gitmodules
         id: parse-gitmodules
         uses: actions/github-script@v7
         env:
@@ -187,6 +195,7 @@ jobs:
         env:
           RAW_SUBMODULES: ${{ steps.parse-gitmodules.outputs.raw_submodules }}
           BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          IS_MERGE_INTO_DEFAULT_BRANCH: ${{ steps.pr.outputs.isMergeIntoDefaultBranch }}
         with:
           script: |
             const raw = JSON.parse(process.env.RAW_SUBMODULES || "{}");
@@ -234,8 +243,7 @@ jobs:
 
               //  compute baseBranch 
               let baseBranch;
-
-            if (baseRef === subDefaultBranch) {
+            if (process.env.IS_MERGE_INTO_DEFAULT_BRANCH === 'true')  {
               baseBranch = subDefaultBranch;
               core.info(`Using default branch '${baseBranch}' for submodule ${name}`);
             } else {
