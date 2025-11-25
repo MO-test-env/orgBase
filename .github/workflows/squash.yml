@@ -1,4 +1,4 @@
-name: Squash (with Author Preservation)
+name: Squash
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: Squash commits
+      - name: Squash 
         id: squash
         uses: actions/github-script@v7
         with:
@@ -76,16 +76,23 @@ jobs:
             core.info(`Using first PR commit’s parent as squash parent: ${parentSha}`);
 
             // Build commit message
-            const squashMessage = `${pr.data.title}\n\n${pr.data.body || ''}\n\nSquashed commits: ${commits.length}`;
+            const squashMessage = `${pr.data.title}\n\n${pr.data.body || ''}\n\nSquashed commits: ${commits.length} (preserving original author and signature)`;
 
-            // Get the author and committer information from the head commit to preserve metadata
+            // Get the author, committer, and signature information from the head commit to preserve metadata
             const author = headCommitData.author;
             const committer = headCommitData.committer;
             
-            core.info(`Preserving original author metadata: ${author.name} <${author.email}>`);
+            // Check if the head commit has a signature
+            const signature = headCommitData.verification && headCommitData.verification.signature ? headCommitData.verification.signature : null;
+            const payload = headCommitData.verification && headCommitData.verification.payload ? headCommitData.verification.payload : null;
             
-            // Create the new squashed commit with preserved author and committer metadata
-            const { data: newCommit } = await github.rest.git.createCommit({
+            core.info(`Preserving original author metadata: ${author.name} <${author.email}>`);
+            if (signature) {
+              core.info(`Preserving original commit signature`);
+            }
+            
+            // Create the new squashed commit with preserved author, committer, and signature metadata
+            let commitOptions = {
               owner,
               repo,
               message: squashMessage,
@@ -101,7 +108,14 @@ jobs:
                 email: committer.email,
                 date: committer.date
               }
-            });
+            };
+            
+            // Add signature if available
+            if (signature && payload) {
+              commitOptions.signature = signature;
+            }
+            
+            const { data: newCommit } = await github.rest.git.createCommit(commitOptions);
 
             // Force-update the PR branch to point to the new squash commit
             const branchRef = pr.data.head.ref;
