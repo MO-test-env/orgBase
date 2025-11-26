@@ -46,7 +46,7 @@ jobs:
           owner: MO-test-env
           repo: ${{ inputs.repo }} 
           pr_number: ${{ inputs.pr_number }}
-          rw_pat: ${{ env.RW_PAT }}
+          token: ${{ env.RW_PAT }}
 
       - name: Run squash action 
         uses: ./.github/actions/api-rebase
@@ -54,4 +54,4 @@ jobs:
           owner: MO-test-env
           repo: ${{ inputs.repo }} 
           pr_number: ${{ inputs.pr_number }}
-          rw_pat: ${{ env.RW_PAT }}
+          token: ${{ env.RW_PAT }}
