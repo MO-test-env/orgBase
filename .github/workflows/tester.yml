@@ -1,0 +1,47 @@
+name: tester
+
+on:
+  workflow_dispatch:
+    inputs:
+      owner:
+        description: "Owner of the repo"
+        required: true
+        type: string
+        default: "MO-test-env"
+      repo:
+        description: "Repo name"
+        required: true
+        type: string
+        default: "orgBase"
+      pr_number:
+        description: "PR number to squash"
+        required: true
+        type: number
+        default: 78
+        
+
+permissions:
+  contents: write  
+  issues: write
+  pull-requests: write
+
+env:
+  RW_PAT: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  call-squash:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run squash action
+        uses: ./.github/actions/squash
+        with:
+          owner: MO-test-env
+          repo: ${{ inputs.repo }} 
+          pr_number: ${{ inputs.pr_number }}
+
+      - name: Run squash action 
+        uses: ./.github/actions/api-rebase-pr
+        with:
+          owner: MO-test-env
+          repo: ${{ inputs.repo }} 
+          pr_number: ${{ inputs.pr_number }}
