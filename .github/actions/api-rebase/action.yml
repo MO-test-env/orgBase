@@ -1,4 +1,3 @@
-# File: .github/actions/api-rebase-pr/action.yml
 name: API Rebase PR
 description: "Rebase a PR branch on top of its target branch using only the GitHub API"
 
@@ -46,10 +45,6 @@ runs:
           core.info(`PR #${prNumber} branch: ${prBranch}`);
           core.info(`Target branch: ${baseBranch}`);
 
-          // Get latest commit SHA of the target branch
-          const { data: baseRef } = await github.rest.git.getRef({ owner, repo, ref: `heads/${baseBranch}` });
-          const baseSha = baseRef.object.sha;
-
           // Get all commits in PR branch
           const { data: prCommits } = await github.rest.pulls.listCommits({ owner, repo, pull_number: prNumber });
 
@@ -60,16 +55,26 @@ runs:
             return;
           }
 
-          // Check if branch already matches base
-          const headSha = prCommits[prCommits.length - 1].sha;
-          if (headSha === baseSha) {
+          // Use compareCommits to check if rebase is needed
+          const comparison = await github.rest.repos.compareCommits({
+            owner,
+            repo,
+            base: baseBranch,
+            head: prBranch
+          });
+
+          if (comparison.data.status === "identical" || comparison.data.status === "behind") {
             core.setOutput("rebase_needed", "false");
             core.setOutput("rebase_result", "skipped");
-            core.info("PR branch already matches target branch; skipping rebase.");
+            core.info(`PR branch is already up-to-date with ${baseBranch}; skipping rebase.`);
             return;
           }
 
-          let parentSha = baseSha;
+          core.info(`PR branch needs rebasing (status: ${comparison.data.status}).`);
+
+          // Get latest commit SHA of the target branch
+          const { data: baseRef } = await github.rest.git.getRef({ owner, repo, ref: `heads/${baseBranch}` });
+          let parentSha = baseRef.object.sha;
           let newCommitSha;
 
           for (const commit of prCommits) {
