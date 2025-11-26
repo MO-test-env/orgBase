@@ -32,14 +32,14 @@ jobs:
   call-squash:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PR branch
+      - name: Checkout 
         uses: actions/checkout@v4
         with:
           token:       ${{ env.RW_PAT }}
           ref:         ${{ github.ref }} 
           fetch-depth: 0
           submodules:  false
-          
+
       - name: Run squash action
         uses: ./.github/actions/api-squash
         with:
