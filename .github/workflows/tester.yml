@@ -33,14 +33,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Run squash action
-        uses: ./.github/actions/squash
+        uses: ./.github/actions/api-squash
         with:
           owner: MO-test-env
           repo: ${{ inputs.repo }} 
           pr_number: ${{ inputs.pr_number }}
 
       - name: Run squash action 
-        uses: ./.github/actions/api-rebase-pr
+        uses: ./.github/actions/api-rebase
         with:
           owner: MO-test-env
           repo: ${{ inputs.repo }} 
