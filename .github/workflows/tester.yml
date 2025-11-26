@@ -60,7 +60,7 @@ jobs:
           
       - name: Squash 
         id: squash
-        if: inputs.squash == 'true'
+        if: inputs.squash == true
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
@@ -90,7 +90,7 @@ jobs:
             
       - name: Rebase
         id: rebase
-        if: inputs.rebase == 'true'
+        if: inputs.rebase == true
         uses: actions/github-script@v7
         with:
           github-token: ${{ env.RW_PAT }}
