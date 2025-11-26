@@ -18,7 +18,7 @@ jobs:
     if: |
       github.event.issue.pull_request != null &&
       github.event.comment.body == '/link'
-    uses: MO-test-env/orgBase/.github/workflows/link.yml@main
+    uses: MO-test-env/Scripts/.github/workflows/link.yml@main
     with:
       owner: ${{ github.repository_owner }}
       repo: ${{ github.event.repository.name }}

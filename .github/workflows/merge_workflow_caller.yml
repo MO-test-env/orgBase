@@ -19,7 +19,7 @@ jobs:
       github.event.issue.pull_request != null &&
       github.event.issue.state == 'open' &&
       github.event.comment.body == '/merge'
-    uses: MO-test-env/orgBase/.github/workflows/merge.yml@main
+    uses: MO-test-env/Scripts/.github/workflows/merge.yml@main
     with:
       username: ${{ github.actor }}
       owner: ${{ github.repository_owner }}
