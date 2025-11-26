@@ -32,26 +32,16 @@ jobs:
   call-squash:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout 
-        uses: actions/checkout@v4
-        with:
-          token:       ${{ env.RW_PAT }}
-          ref:         ${{ github.ref }} 
-          fetch-depth: 1
-          submodules:  false
-
       - name: Run squash action
-        uses: ./.github/actions/api-squash
+        uses: ./.github/actions/squash
         with:
           owner: MO-test-env
           repo: ${{ inputs.repo }} 
           pr_number: ${{ inputs.pr_number }}
-          token: ${{ env.RW_PAT }}
 
       - name: Run squash action 
-        uses: ./.github/actions/api-rebase
+        uses: ./.github/actions/api-rebase-pr
         with:
           owner: MO-test-env
           repo: ${{ inputs.repo }} 
           pr_number: ${{ inputs.pr_number }}
-          token: ${{ env.RW_PAT }}

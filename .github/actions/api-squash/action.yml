@@ -16,9 +16,6 @@ inputs:
     description: "PR number to squash"
     required: true
     default: 1
-  token:
-    description: "GitHub token"
-    required: true
 
 # Outputs for downstream workflows
 outputs:
@@ -30,11 +27,14 @@ outputs:
 runs:
   using: "composite"
   steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
     - name: Squash PR commits
       id: squash
       uses: actions/github-script@v7
       with:
-        github-token: ${{ inputs.token }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
           const prNumber = parseInt("${{ inputs.pr_number }}");
           const owner = "${{ inputs.owner }}";
