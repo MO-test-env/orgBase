@@ -30,7 +30,7 @@ env:
 
 jobs:
   fetch:
-    runs-on: isg-ocp-x86-small
+    runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
       # - name: Import GPG key
