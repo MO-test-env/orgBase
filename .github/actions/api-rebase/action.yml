@@ -14,9 +14,6 @@ inputs:
     description: "PR number to rebase"
     required: true
     type: number
-  token:
-    description: "GitHub token"
-    required: true
 
 outputs:
   rebase_result:
@@ -31,7 +28,7 @@ runs:
       id: rebase
       uses: actions/github-script@v7
       with:
-        github-token: ${{ inputs.token }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
           const prNumber = parseInt("${{ inputs.pr_number }}");
           const owner = "${{ inputs.owner }}";
