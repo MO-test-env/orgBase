@@ -34,7 +34,7 @@ permissions:
   contents: write
 
 env:
-  RW_PAT: ${{ secrets.token }}
+  RW_PAT: ${{ secrets.WORKFLOWS }}
   MIN_REVIEWERS: 2
   USERNAME: ${{ inputs.username }}
   OWNER: ${{ inputs.owner }}
@@ -753,7 +753,7 @@ jobs:
         with:
           token:       ${{ env.RW_PAT }}
           ref:         ${{ steps.pr.outputs.base_ref }}
-          fetch-depth: 0
+          fetch-depth: 1
           submodules:  false
 
       # setup GPG and auth for bot user 
