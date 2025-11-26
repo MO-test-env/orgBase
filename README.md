@@ -13,3 +13,27 @@
 - **Octokit** - <https://github.com/octokit>
 
 Base change 1
+
+
+1. pre-check base for conflicts and approvals 
+2. Determine changed submod from PR diff and their sha
+3. Parse .gitmodules 
+4. enrich submod info with default branches, repo name, base branch pr branch and pr number 
+5. pre-check submodules for conflicts and approvals 
+6. shallow checkout base 
+7. setup GPG and auth for bot user 
+8. init submodule pr branches
+9. merge submods 
+    - squash all commits if needed sign and push back up to pr branch 
+    - rebase 
+    - pre-form commit title and body (including pr link)
+    - merge --ff-only sign and commit submodule merge  
+10. bump submodules 
+11. squash all commits and push back up to pr branch 
+12. manual rebase to resolve pointer conflicts 
+13. sign and push up to pr brnach 
+14. merge base 
+    - pre-form commit title and body including pr link
+    - merge --ff-only sign and commit base merge
+    
+
