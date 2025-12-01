@@ -17,7 +17,7 @@ on:
         description: "PR number to squash"
         required: true
         type: number
-        default: 78
+        default: 80
       squash:
         type: boolean
         default: true
