@@ -17,7 +17,7 @@ on:
         description: "PR number to squash"
         required: true
         type: number
-        default: 83
+        default: 80
       squash:
         type: boolean
         default: true
@@ -106,7 +106,7 @@ jobs:
             
             // Call the apiRebasePR function
             //const result = await prUtils.apiRebasePR(github, core, owner, repo, prNumber);
-            const result = await prUtils.apiCherryPickPR(github, core, owner, repo, prNumber);
+            const result = await prUtils.apiCherryPickToRebasePR(github, core, owner, repo, prNumber);
             
             // Set outputs based on the result
             if (!result.rebaseNeeded) {
